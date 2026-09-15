@@ -1,0 +1,18 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Tirith runtime state (leases, task board, daemon info). Contracts, notices
+# and decisions under .tirith/ are meant to be committed.
+/.tirith/runtime/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+# keep .cursor/mcp.json committed; it is project config
+*.swp
+
+# Serena local overrides and caches
+/.serena/cache/
+/.serena/project.local.yml

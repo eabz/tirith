@@ -1,0 +1,212 @@
+# Rust rules
+
+These rules are binding for every agent and human contributing to Tirith.
+They are distilled from the sources in [02-sources.md](02-sources.md);
+where a rule cites a source, the source explains the why in more depth.
+
+## Toolchain and configuration
+
+- Edition **2024**. Stable toolchain, whatever `rustup` gives you; no
+  nightly features.
+- `cargo fmt` with the repository `rustfmt.toml` (defaults). Formatting is
+  never discussed in review.
+- Clippy configuration lives in `Cargo.toml` and is the single source of
+  truth:
+
+```toml
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_must_use = "deny"
+dead_code = "warn"                   # error in CI via -D warnings
+unreachable_pub = "warn"             # forces pub -> pub(crate) so dead_code sees it
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"        # the CLI module opts out explicitly
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+```
+
+- CI turns warnings into errors. Locally, treat every warning as a bug.
+- An `#[allow(...)]` is placed on the smallest possible item, carries a
+  comment saying why, and is mentioned in the change report. Crate-level
+  allows are forbidden except the test-only `unwrap_used`/`expect_used`.
+
+## Safety and errors
+
+1. `#![forbid(unsafe_code)]` at the crate root. Tirith has no reason to
+   need `unsafe`, so any appearance of it is a design error.
+2. Non-test code never calls `unwrap`, `expect`, `panic!`, `todo!`,
+   `unimplemented!`, or indexes a slice with `[]` where the index is not
+   provably in bounds. Return `Result` or use `get`.
+3. Library code defines error enums with `thiserror`, one per domain
+   module, with variants that carry the data a caller needs to react
+   (e.g. `ClaimError::Conflict { conflicts: Vec<Conflict> }`). The MCP
+   layer converts them into the `status` field of the response.
+4. Only `src/main.rs` may use `anyhow`. Errors crossing the library
+   boundary are typed.
+5. Errors implement `std::error::Error` and `Display` (thiserror does
+   this) and never lose the underlying cause: wrap with `#[source]` or
+   `#[from]`. (Effective Rust, item 4.)
+6. Functions that can fail say so in their signature. No "returns empty
+   on error" or "logs and continues" in domain code.
+
+## Types
+
+7. Identifiers are newtypes: `AgentId(String)`, `ClaimId(Uuid)`,
+   `TaskId`, `ContractId`, `NoticeId`. Never pass a bare `String` where an
+   id is meant. (Effective Rust, item 6; API Guidelines C-NEWTYPE.)
+8. Repo-relative paths are a `RepoPath` type that is normalized on
+   construction and cannot represent `..` or an absolute path.
+9. Make invalid states unrepresentable: a task's `owner` exists only when
+   its status is `in_progress`, so model status as an enum with data, not
+   two independent fields. (Effective Rust, item 1.)
+10. Derive liberally: `Debug`, `Clone`, `PartialEq`, `Eq`, and for values
+    `Serialize`, `Deserialize`. Add `Hash`, `PartialOrd`, `Ord` only when
+    needed. (API Guidelines C-COMMON-TRAITS.)
+11. Serde: `#[serde(rename_all = "snake_case")]` on every serialized type.
+    Tool inputs derive `schemars::JsonSchema` so the MCP schema comes from
+    the type. Do not use `deny_unknown_fields` on inputs; clients evolve.
+12. Prefer borrowing in arguments (`&str`, `&[T]`, `impl AsRef<Path>`) and
+    owning in return values. Take `impl Into<String>` only on constructors
+    that store the value.
+
+## Naming (Rust API Guidelines, C-CASE, C-CONV, C-GETTER, C-ITER)
+
+13. Types and traits `UpperCamelCase`, functions and fields `snake_case`,
+    constants `SCREAMING_SNAKE_CASE`, crate and module names `snake_case`.
+14. Conversions: `as_` (cheap borrow), `to_` (expensive, borrowed to
+    owned), `into_` (consumes). Never `get_` on getters; the getter for
+    `owner` is `owner()`.
+15. Iterators: `iter()`, `iter_mut()`, `into_iter()`. Iterator types are
+    named after the method (`Iter`, `IntoIter`).
+16. Booleans read as predicates: `is_expired`, `has_conflict`,
+    `overlaps`.
+17. Avoid module-name stutter (`claims::Claim`, not `claims::ClaimsClaim`)
+    but do not contort names to avoid it; the lint is allowed.
+
+## Modules and ownership of logic
+
+18. One primitive per module. Each domain module has: the value types, the
+    error enum, the pure rules as free functions or methods, and its unit
+    tests. It imports nothing from `server`, `store`, or any async crate.
+19. `State` owns all mutable data behind a single `RwLock` (or `Mutex`)
+    and exposes methods that take and return domain values. It never leaks
+    a guard.
+20. `server.rs` contains tool definitions and response formatting only.
+    One tool, one `State` call. No domain `if`.
+21. `store.rs` knows the file format. Nothing else does.
+22. Visibility: `pub(crate)` by default; `pub` only for what the binary or
+    the integration tests need, and everything `pub` is documented.
+
+## Async
+
+23. Tokio only. No `async-std`, no `futures` executor.
+24. Never hold a `std::sync` or `parking_lot` guard across an `.await`.
+    Keep critical sections synchronous and short; do the I/O afterwards.
+25. Never block the runtime. File I/O in the store goes through
+    `tokio::task::spawn_blocking` unless it is a sub-millisecond write of a
+    small file, and even then it is wrapped so it can be moved later.
+26. Every spawned task has an owner that awaits or aborts it. No fire and
+    forget except with a comment explaining why leaking is acceptable.
+27. Cancellation safety: `select!` branches must not lose data if the
+    other branch wins. When in doubt, do not use `select!`.
+
+## Time
+
+28. All time comes from a `Clock` trait (`now() -> DateTime<Utc>`). The
+    real clock is `SystemClock`; tests use `ManualClock` and advance it.
+    No `Utc::now()` or `Instant::now()` outside `clock.rs`.
+29. Durations are `std::time::Duration` or `chrono::Duration`, never bare
+    integers. Serialized TTLs are integers named `*_secs`.
+
+## Documentation
+
+30. Every module file starts with `//!` describing its job in one or two
+    paragraphs.
+31. Every `pub` item has `///` docs. The first line is a one-sentence
+    summary. Include an example for anything non-obvious; examples are
+    doctests and must compile. (API Guidelines C-EXAMPLE.)
+32. Document panics (`# Panics`) only if the function can panic, which
+    non-test code should not. Document errors with `# Errors` when the
+    conditions are not obvious from the error enum.
+33. Comments explain why, not what. Delete commented-out code.
+
+## Dependencies
+
+34. Minimal. Prefer `std`. Before adding a crate: is it maintained, is it
+    small, does it pull a tree we do not need? Add a comment in
+    `Cargo.toml` after the entry saying what it is for.
+35. Pin to a caret version (`"1"` style is fine); commit `Cargo.lock`.
+36. Current approved set: `rmcp`, `tokio`, `axum`, `serde`, `serde_json`,
+    `schemars`, `clap`, `thiserror`, `anyhow` (binary only), `chrono`,
+    `uuid`, `tracing`, `tracing-subscriber`, `tempfile` (dev). Anything
+    else is a decision to record.
+
+## Dead code
+
+Rust has no single tool like Knip. The compiler catches most dead code,
+but only when the crate is structured to let it. These rules make that
+structure mandatory.
+
+40. `pub(crate)` is the default visibility. `rustc`'s `dead_code` lint
+    ignores `pub` items because they are exported, so every needless
+    `pub` is a place dead code can hide. `unreachable_pub` is enabled to
+    flag `pub` items not reachable from the crate root; fix them by
+    demoting to `pub(crate)`, never by allowing the lint.
+41. Before keeping a `pub` item, prove it has a caller: the binary, an
+    integration test, or a documented public API. Serena's
+    `find_referencing_symbols` returning nothing means delete it.
+42. Never silence `dead_code` with `#[allow(dead_code)]` or a leading
+    underscore to "keep it for later". Delete it; git remembers.
+43. Unused dependencies are checked with `cargo machete` in CI and in the
+    checklist. A dependency that machete flags is removed in the same
+    change, or, in the rare false positive (a crate used only via a macro
+    or build script), listed under `[package.metadata.cargo-machete]
+    ignored` with a comment.
+44. Coverage is measured with `cargo llvm-cov`. A zero-coverage function
+    is either dead or untested; the change that introduces it must say
+    which and fix it.
+45. `cargo deny check` guards licenses, RustSec advisories, and duplicate
+    crate versions. Configuration lives in `deny.toml`.
+
+Tools, all stable-toolchain:
+
+```bash
+cargo install cargo-machete cargo-llvm-cov cargo-deny
+```
+
+## Performance
+
+37. Do not optimize without a measurement. State is tiny; a `Vec` scan is
+    fine until a test proves otherwise.
+38. Avoid needless allocation in hot paths, but never at the cost of
+    clarity. Clippy's `needless_*` lints are the bar.
+
+## Tests
+
+39. See [../3-tests/01-testing-strategy.md](../3-tests/01-testing-strategy.md).
+    Test code may use `unwrap`/`expect`; nothing else changes.
+
+## Checklist before reporting done
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo machete
+cargo deny check
+```
