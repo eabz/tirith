@@ -16,3 +16,8 @@
 # Serena local overrides and caches
 /.serena/cache/
 /.serena/project.local.yml
+
+
+# Added by cargo
+
+/target

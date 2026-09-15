@@ -37,6 +37,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+too_many_lines = "allow"        # length is reviewed by humans, not counted
 ```
 
 - CI turns warnings into errors. Locally, treat every warning as a bug.

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tirith</title>
+<style>
+  :root { --bg:#0f1218; --panel:#171b24; --line:#262c3a; --fg:#e6e9ef; --dim:#8b93a7; --accent:#7aa2f7; --ok:#9ece6a; --warn:#e0af68; --bad:#f7768e; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { display:flex; flex-wrap:wrap; gap:16px 28px; align-items:baseline; padding:16px 24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; letter-spacing:.04em; }
+  header .meta { color:var(--dim); }
+  header .meta b { color:var(--fg); font-weight:600; }
+  #err { color:var(--bad); }
+  main { padding:16px 24px 48px; max-width:1400px; }
+  .counts { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; margin:0 0 20px; }
+  .count { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px 14px; }
+  .count .n { font-size:24px; font-weight:600; }
+  .count .l { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  section { margin-bottom:26px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 8px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; font-size:12px; }
+  tr:last-child td { border-bottom:0; }
+  td.dim, span.dim { color:var(--dim); }
+  .empty { color:var(--dim); padding:8px 10px; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:10px; font-size:12px; border:1px solid var(--line); }
+  .tag.todo { color:var(--dim); } .tag.in_progress { color:var(--accent); border-color:var(--accent); }
+  .tag.blocked { color:var(--bad); border-color:var(--bad); } .tag.done { color:var(--ok); border-color:var(--ok); }
+  .tag.kind { color:var(--warn); border-color:var(--warn); }
+  code { color:var(--accent); }
+  pre { margin:0; white-space:pre-wrap; color:var(--dim); font-size:12px; max-height:140px; overflow:auto; }
+  .soon { color:var(--warn); } .expired { color:var(--bad); }
+  a { color:var(--accent); }
+  #paused { cursor:pointer; color:var(--dim); text-decoration:underline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TIRITH</h1>
+  <span class="meta">mcp <b id="mcp"></b></span>
+  <span class="meta">repo <b id="repo"></b></span>
+  <span class="meta">up <b id="uptime"></b></span>
+  <span class="meta">v<b id="version"></b></span>
+  <span class="meta">seq <b id="seq"></b></span>
+  <span id="err"></span>
+  <span id="paused" title="toggle auto refresh">live</span>
+</header>
+<main>
+  <div class="counts" id="counts"></div>
+  <section><h2>Agents</h2><div id="agents"></div></section>
+  <section><h2>Claims</h2><div id="claims"></div></section>
+  <section><h2>Tasks</h2><div id="tasks"></div></section>
+  <section><h2>Contracts</h2><div id="contracts"></div></section>
+  <section><h2>Change notices</h2><div id="notices"></div></section>
+  <section><h2>Decisions</h2><div id="decisions"></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let paused = false, now = Date.now();
+$('paused').onclick = () => { paused = !paused; $('paused').textContent = paused ? 'paused' : 'live'; };
+
+function ago(iso) {
+  const d = (now - Date.parse(iso)) / 1000;
+  if (d < 60) return `${Math.max(0, Math.round(d))}s ago`;
+  if (d < 3600) return `${Math.round(d/60)}m ago`;
+  return `${Math.round(d/3600)}h ago`;
+}
+function until(iso) {
+  const d = (Date.parse(iso) - now) / 1000;
+  if (d <= 0) return `<span class="expired">expired</span>`;
+  const cls = d < 60 ? 'soon' : '';
+  const txt = d < 90 ? `${Math.round(d)}s` : `${Math.round(d/60)}m`;
+  return `<span class="${cls}">in ${txt}</span>`;
+}
+function dur(s) { return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m ${s%60}s` : `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m`; }
+function paths(list) { return (list || []).map(p => `<code>${esc(p)}</code>`).join(' ') || '<span class="dim">—</span>'; }
+function table(cols, rows) {
+  if (!rows.length) return `<div class="empty">none</div>`;
+  return `<table><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+function short(id) { return `<span class="dim" title="${esc(id)}">${esc(String(id).slice(0, 8))}</span>`; }
+
+function render(d) {
+  now = Date.parse(d.server.now) || Date.now();
+  $('mcp').textContent = d.server.mcp_url; $('repo').textContent = d.server.repo_root;
+  $('uptime').textContent = dur(d.server.uptime_secs); $('version').textContent = d.server.version; $('seq').textContent = d.server.seq;
+  $('err').textContent = d.server.persist_error ? `persist error: ${d.server.persist_error}` : '';
+  const c = d.counts;
+  $('counts').innerHTML = [['claims', c.claims], ['open tasks', c.tasks_open], ['done tasks', c.tasks_done], ['contracts', c.contracts], ['notices', c.notices], ['decisions', c.decisions]]
+    .map(([l, n]) => `<div class="count"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  $('agents').innerHTML = table(['agent', 'holds', 'lease ends', 'in progress'],
+    d.agents.map(a => [esc(a.agent), paths(a.paths), a.expires_at ? until(a.expires_at) : '<span class="dim">—</span>', a.tasks_in_progress]));
+  $('claims').innerHTML = table(['owner', 'paths', 'reason', 'claimed', 'expires'],
+    d.claims.map(x => [esc(x.owner), paths(x.paths), esc(x.reason), ago(x.claimed_at), until(x.expires_at)]));
+  const order = { in_progress: 0, blocked: 1, todo: 2, done: 3 };
+  const tasks = [...d.tasks].sort((a, b) => (order[a.status] - order[b.status]) || (b.priority - a.priority));
+  $('tasks').innerHTML = table(['id', 'status', 'owner', 'pri', 'title', 'depends on', 'paths', 'last note'],
+    tasks.map(t => [short(t.id), `<span class="tag ${t.status}">${t.status}</span>`, esc(t.owner || t.by || ''), t.priority, esc(t.title),
+      (t.depends_on || []).map(short).join(' ') || '<span class="dim">—</span>', paths(t.paths),
+      t.status === 'blocked' && t.reason ? esc(t.reason) : (t.notes?.length ? esc(t.notes[t.notes.length-1].text) : '<span class="dim">—</span>')]));
+  $('contracts').innerHTML = table(['name', 'kind', 'version', 'consumers', 'by', 'published', 'shape'],
+    d.contracts.map(x => [esc(x.name), `<span class="tag kind">${x.kind}</span>`, `v${x.current.version}${x.history.length ? ` <span class="dim">(+${x.history.length})</span>` : ''}`,
+      paths(x.consumers), esc(x.current.published_by), ago(x.current.published_at), `<pre>${esc(JSON.stringify(x.current.shape, null, 1))}</pre>`]));
+  $('notices').innerHTML = table(['id', 'kind', 'summary', 'affects', 'by', 'when', 'acked by'],
+    [...d.notices].reverse().map(n => [short(n.id), `<span class="tag kind">${n.kind}</span>`, esc(n.summary) + (n.from || n.to ? ` <span class="dim">${esc(n.from || '')} → ${esc(n.to || '')}</span>` : ''),
+      paths(n.affected_paths), esc(n.published_by), ago(n.published_at), (n.acked_by || []).map(esc).join(', ') || '<span class="dim">—</span>']));
+  $('decisions').innerHTML = table(['id', 'title', 'decision', 'rationale', 'affects', 'by', 'when'],
+    [...d.decisions].reverse().map(x => [short(x.id), esc(x.title), esc(x.decision), esc(x.rationale), paths(x.affects_paths), esc(x.recorded_by), ago(x.recorded_at)]));
+}
+async function tick() {
+  if (paused) return;
+  try {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    render(await r.json());
+  } catch (e) { $('err').textContent = `dashboard: ${e.message}`; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

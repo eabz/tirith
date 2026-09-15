@@ -1,0 +1,69 @@
+[package]
+name = "tirith"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "MCP coordination server that keeps parallel coding agents from stepping on each other"
+license = "MIT"
+repository = "https://github.com/0xeabz/tirith"
+readme = "README.md"
+keywords = ["mcp", "agents", "coordination", "claims"]
+categories = ["development-tools", "command-line-utilities"]
+
+[dependencies]
+# MCP protocol: server over streamable HTTP, client with reqwest for the CLI.
+rmcp = { version = "3.4.0", features = ["server", "client", "transport-streamable-http-server", "transport-streamable-http-client-reqwest"] }
+# Async runtime for the daemon.
+tokio = { version = "1.53.1", features = ["full"] }
+# HTTP router hosting the MCP endpoint and the dashboard.
+axum = "0.8.9"
+# Serialization of state, tool inputs, and tool outputs.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# JSON Schema for MCP tool inputs, derived from the input types.
+schemars = "1.2.2"
+# Typed library errors.
+thiserror = "2.0.20"
+# Error context in the binary only.
+anyhow = "1.0.104"
+# CLI argument parsing.
+clap = { version = "4.6.7", features = ["derive", "env"] }
+# Timestamps and lease arithmetic.
+chrono = { version = "0.4.45", features = ["serde"] }
+# Identifiers.
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
+# Structured logging.
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+# Isolated .tirith directories for store and integration tests.
+tempfile = "3.27.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_must_use = "deny"
+dead_code = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+
+[package.metadata.cargo-machete]
+ignored = []
