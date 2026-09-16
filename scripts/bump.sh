@@ -56,13 +56,16 @@ if [ "$commit" -eq 1 ]; then
   git rev-parse -q --verify "refs/tags/$tag" >/dev/null && { echo "tag $tag already exists" >&2; exit 1; }
 fi
 
-sed -i.bak -E "0,/^version = \"[^\"]+\"/s//version = \"$next\"/" Cargo.toml && rm Cargo.toml.bak
+# Replace only the first `version = "..."` (the [package] one). perl is on
+# every macOS and Linux box; BSD and GNU sed disagree on this kind of edit.
+perl -pi -e 'if (!$done && s/^version = "[^"]+"/version = "'"$next"'"/) { $done = 1 }' Cargo.toml
+grep -q "^version = \"$next\"" Cargo.toml || { echo "failed to update Cargo.toml" >&2; exit 1; }
 cargo update --workspace --quiet          # refresh the crate's own entry in Cargo.lock
 cargo check --quiet                       # fail fast if the manifest is broken
 
 if [ "$commit" -eq 1 ]; then
   git add Cargo.toml Cargo.lock
-  git commit -q -m "chore(release): $tag"
+  git commit -q -m "chore(release): $tag" || { echo "commit failed; is the version already $next?" >&2; exit 1; }
   git tag -a "$tag" -m "tirith $next"
   echo "committed and tagged $tag"
   if [ "$push" -eq 1 ]; then
