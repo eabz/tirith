@@ -195,7 +195,7 @@ new version; agents do not publish it themselves.
 
 | Tool | Purpose |
 |---|---|
-| `decision_record` | `title`, `decision`, `rationale`, `alternatives[]`, `affects_paths[]`. Returns `decision` |
+| `decision_record` | `title`, `decision`, `rationale`, `alternatives[]`, `affects_paths[]`. Returns `decision`, which carries the `permalink` of its file under `.tirith/decisions/` (one committed Markdown file per decision, in the memory-note format, ADR-0022) |
 | `decision_list` | Filter by `path` or case-insensitive `query` over title, decision, and rationale; newest first, paged (`limit`, `before`). Returns `count`, `total`, `truncated`, `next_before`, and `decisions` |
 
 Decisions recorded here are agent-level project decisions, distinct from
@@ -228,7 +228,7 @@ escape `.tirith/memory/`.
 | `agent` | string | Caller identity |
 | `title` | string | Becomes the permalink the first time |
 | `body` | string | Markdown. Observations and relations are parsed out of it |
-| `kind` | string, optional | `fact`, `lesson`, `gotcha`, `handoff`, `research`, or `note` (default) |
+| `kind` | string, optional | `fact`, `lesson`, `gotcha`, `handoff`, `research`, `decision`, or `note` (default) |
 | `paths` | string[], optional | Repo-relative paths the note is about |
 | `tags` | string[], optional | Lowercased and deduplicated; a leading `#` is stripped |
 | `permalink` | string, optional | Overwrite this note instead of matching on the title |

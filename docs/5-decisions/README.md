@@ -31,7 +31,9 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0019](0019-menu-bar-tray.md) | A per-user daemon registry and a macOS menu bar tray | Accepted |
 | [0020](0020-agent-messages.md) | Agent-to-agent messages, delivered on the next call | Accepted |
 | [0021](0021-notice-acks-log.md) | Notices are seen when delivered; the seen log is runtime-only | Accepted |
+| [0022](0022-decisions-as-markdown.md) | Decisions are one Markdown file each, in the memory-note format | Accepted |
+| [0023](0023-stable-toolchain-for-release-containers.md) | A `rust-toolchain.toml` pins the stable channel so release containers meet `rust-version` | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
-using Tirith on some other project go in that project's `.tirith/decisions.jsonl`
+using Tirith on some other project go in that project's `.tirith/decisions/`
 through the `decision_record` tool.

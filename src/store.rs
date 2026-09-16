@@ -31,6 +31,7 @@ use thiserror::Error;
 use tokio::sync::{Notify, watch};
 
 use crate::contracts::Contract;
+use crate::decisions::{Decision, DecisionLog};
 use crate::memory::MemoryNote;
 use crate::state::{Delta, Log, Snapshot, State};
 use crate::types::MemoryId;
@@ -53,7 +54,10 @@ const NOTICES_FILE: &str = "notices.jsonl";
 const NOTICE_SEEN_FILE: &str = "runtime/notice_seen.jsonl";
 /// Agent-to-agent messages: runtime only, never committed (ADR-0020).
 const MESSAGES_FILE: &str = "runtime/messages.jsonl";
+/// The pre-ADR-0022 decisions log, imported and removed on first load.
 const DECISIONS_FILE: &str = "decisions.jsonl";
+/// One Markdown file per decision, in the memory-note format (ADR-0022).
+const DECISIONS_DIR: &str = "decisions";
 const GITIGNORE: &str = "# Written by tirith. Runtime state is local; everything else is meant to be committed.\nruntime/\n";
 
 /// Why a store operation failed.
@@ -193,7 +197,7 @@ impl JsonStore {
 
     /// Creates the directory layout and the `.gitignore` if missing.
     pub fn init(&self) -> Result<(), StoreError> {
-        for sub in [RUNTIME_DIR, CONTRACTS_DIR, MEMORY_DIR] {
+        for sub in [RUNTIME_DIR, CONTRACTS_DIR, MEMORY_DIR, DECISIONS_DIR] {
             let path = self.dir.join(sub);
             fs::create_dir_all(&path).map_err(io_err("create", &path))?;
         }
@@ -217,7 +221,7 @@ impl JsonStore {
             contracts: self.load_contracts(&mut errors)?,
             notices: self.read_log(NOTICES_FILE, &mut errors)?,
             notice_seen: self.read_log(NOTICE_SEEN_FILE, &mut errors)?,
-            decisions: self.read_log(DECISIONS_FILE, &mut errors)?,
+            decisions: self.load_decisions(&mut errors)?,
             memory: self.load_memory(&mut errors)?,
             messages: self.read_log(MESSAGES_FILE, &mut errors)?,
             load_errors: errors,
@@ -269,6 +273,73 @@ impl JsonStore {
     /// A missing directory is no notes. A file that does not parse, or
     /// whose permalink does not match its path, is skipped and reported
     /// in `errors`; it is never rewritten elsewhere.
+    /// Decisions from `.tirith/decisions/*.md`, plus a one-time import of
+    /// a pre-ADR-0022 `decisions.jsonl`: its rows are written as files at
+    /// once and the log is deleted only when every file was written.
+    fn load_decisions(&self, errors: &mut Vec<LoadError>) -> Result<Vec<Decision>, StoreError> {
+        let root = self.dir.join(DECISIONS_DIR);
+        let mut decisions = Vec::new();
+        for path in note_files(&root)? {
+            let text = fs::read_to_string(&path).map_err(io_err("read", &path))?;
+            let decision = MemoryNote::from_markdown(&text, modified_at(&path))
+                .map_err(|error| (error.line(), error.to_string()))
+                .and_then(|note| {
+                    Decision::from_note(&note).map_err(|error| (None, error.to_string()))
+                });
+            match decision {
+                Ok(decision) if root.join(decision.file_path()) == path => decisions.push(decision),
+                Ok(decision) => errors.push(LoadError::new(
+                    &self.dir,
+                    &path,
+                    None,
+                    &format!(
+                        "permalink does not match the file path (expected {})",
+                        decision.file_path()
+                    ),
+                )),
+                Err((line, error)) => errors.push(LoadError::new(&self.dir, &path, line, &error)),
+            }
+        }
+        let legacy = self.dir.join(DECISIONS_FILE);
+        if legacy.exists() {
+            let rows: Vec<Decision> = self.read_log(DECISIONS_FILE, errors)?;
+            let imported = DecisionLog::from_decisions(
+                decisions.iter().cloned().chain(rows).collect::<Vec<_>>(),
+            );
+            let mut migrated = imported.decisions()[decisions.len()..].to_vec();
+            let mut failed = false;
+            for decision in &migrated {
+                let file = root.join(decision.file_path());
+                let written = file
+                    .parent()
+                    .map_or(Ok(()), |parent| {
+                        fs::create_dir_all(parent).map_err(io_err("create", parent))
+                    })
+                    .and_then(|()| {
+                        write_atomic_now(&file, decision.to_note().to_markdown().as_bytes())
+                    });
+                if let Err(error) = written {
+                    errors.push(LoadError::new(&self.dir, &file, None, &error));
+                    failed = true;
+                }
+            }
+            if failed {
+                tracing::warn!(
+                    "decisions.jsonl kept: not every decision could be written as a file"
+                );
+            } else if let Err(error) = fs::remove_file(&legacy) {
+                errors.push(LoadError::new(&self.dir, &legacy, None, &error));
+            } else {
+                tracing::info!(
+                    count = migrated.len(),
+                    "decisions.jsonl imported into decisions/ and removed (ADR-0022)"
+                );
+            }
+            decisions.append(&mut migrated);
+        }
+        Ok(decisions)
+    }
+
     fn load_memory(&self, errors: &mut Vec<LoadError>) -> Result<Vec<MemoryNote>, StoreError> {
         let root = self.dir.join(MEMORY_DIR);
         let mut notes = Vec::new();
@@ -368,7 +439,18 @@ impl JsonStore {
         }
         self.write_log(NOTICES_FILE, &delta.notices, &mut dirs)?;
         self.write_log(NOTICE_SEEN_FILE, &delta.notice_seen, &mut dirs)?;
-        self.write_log(DECISIONS_FILE, &delta.decisions, &mut dirs)?;
+        for decision in &delta.decisions {
+            let file = self.dir.join(DECISIONS_DIR).join(decision.file_path());
+            if let Some(parent) = file.parent() {
+                fs::create_dir_all(parent).map_err(io_err("create", parent))?;
+            }
+            write_atomic_with(
+                &file,
+                decision.to_note().to_markdown().as_bytes(),
+                &mut dirs,
+                Durability::Lazy,
+            )?;
+        }
         self.write_log(MESSAGES_FILE, &delta.messages, &mut dirs)?;
         sync_dirs(&dirs)?;
         // The sequence number goes last, after everything above is durable,

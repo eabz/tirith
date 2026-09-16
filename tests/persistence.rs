@@ -280,3 +280,64 @@ async fn a_failed_write_is_reported_on_the_mutating_response() {
         "the full rewrite caught bob up"
     );
 }
+
+#[tokio::test]
+async fn a_legacy_decisions_jsonl_is_imported_into_one_file_per_decision() {
+    let dir = tempfile::tempdir().unwrap();
+    let tirith = dir.path().join(".tirith");
+    fs::create_dir_all(&tirith).unwrap();
+    let rows: Vec<String> = (1..=3)
+        .map(|i| {
+            json!({
+                "id": uuid_like(i),
+                "title": format!("Old decision {i}"),
+                "decision": format!("Choice {i}"),
+                "rationale": if i == 1 { "because" } else { "" },
+                "alternatives": if i == 2 { vec!["other"] } else { vec![] },
+                "affects_paths": ["src"],
+                "recorded_by": "legacy",
+                "recorded_at": "2026-09-15T10:00:00Z"
+            })
+            .to_string()
+        })
+        .collect();
+    fs::write(tirith.join("decisions.jsonl"), rows.join("\n") + "\n").unwrap();
+
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let listed = call(&handle, "decision_list", json!({ "agent": "reader" })).await;
+    assert_eq!(listed["total"], 3, "{listed}");
+    let files: Vec<_> = fs::read_dir(tirith.join("decisions"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(files.len(), 3, "{files:?}");
+    assert!(
+        files
+            .iter()
+            .all(|f| Path::new(f).extension().is_some_and(|e| e == "md")),
+        "{files:?}"
+    );
+    assert!(
+        !tirith.join("decisions.jsonl").exists(),
+        "the JSON Lines log is removed once every file is written"
+    );
+    handle.shutdown().await.unwrap();
+
+    // A restart reads the files, not the removed log, and a hand-broken
+    // file is reported rather than fatal.
+    fs::write(tirith.join("decisions").join("broken.md"), "not: [valid\n").unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let listed = call(&handle, "decision_list", json!({ "agent": "reader" })).await;
+    assert_eq!(listed["total"], 3, "{listed}");
+    let status = call(&handle, "status", json!({ "agent": "reader" })).await;
+    assert_eq!(
+        status["load_errors"].as_array().map(Vec::len),
+        Some(1),
+        "{status}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+fn uuid_like(i: u32) -> String {
+    format!("00000000-0000-4000-8000-{i:012}")
+}

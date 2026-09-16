@@ -1,7 +1,8 @@
 # ADR-0010: Incremental persistence with a coalescing background writer
 
 **Status:** Accepted, 2026-09-16. Refines ADR-0003; the file format and
-layout are unchanged.
+layout are unchanged. Refined by [ADR-0022](0022-decisions-as-markdown.md):
+decisions moved from a JSON Lines log to one Markdown file each.
 
 ## Context
 

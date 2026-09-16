@@ -114,7 +114,7 @@ JSON files under `.tirith/` in the target repository:
   memory/             committed, one Markdown file per note; a permalink
                       with `/` segments becomes a subdirectory
   notices.jsonl       committed, one notice per line
-  decisions.jsonl     committed, one decision per line
+  decisions/          committed, one Markdown file per decision (ADR-0022)
 ```
 
 Writes are incremental. `State` tracks what changed since the last write

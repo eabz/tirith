@@ -89,6 +89,9 @@ pub enum MemoryKind {
     /// Anything else worth keeping.
     #[default]
     Note,
+    /// A settled choice recorded through `decision_record`; stored under
+    /// `.tirith/decisions/` in this same format (ADR-0022).
+    Decision,
 }
 
 impl MemoryKind {
@@ -101,11 +104,12 @@ impl MemoryKind {
             Self::Handoff => "handoff",
             Self::Research => "research",
             Self::Note => "note",
+            Self::Decision => "decision",
         }
     }
 
     /// Every kind, for help text and validation messages.
-    pub fn all() -> [Self; 6] {
+    pub fn all() -> [Self; 7] {
         [
             Self::Fact,
             Self::Lesson,
@@ -113,6 +117,7 @@ impl MemoryKind {
             Self::Handoff,
             Self::Research,
             Self::Note,
+            Self::Decision,
         ]
     }
 }

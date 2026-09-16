@@ -234,8 +234,8 @@ pub struct Delta {
     pub notices: Log<Notice>,
     /// Seen log changes (runtime only, ADR-0021).
     pub notice_seen: Log<NoticeSeen>,
-    /// Decision log changes.
-    pub decisions: Log<Decision>,
+    /// Only the decisions that changed; one Markdown file each (ADR-0022).
+    pub decisions: Vec<Decision>,
     /// Only the memory notes that changed.
     pub memory: Vec<MemoryNote>,
     /// Memory notes deleted since the last persist; their files are removed.
@@ -254,7 +254,7 @@ impl Delta {
             contracts: snapshot.contracts.clone(),
             notices: Log::Rewritten(snapshot.notices.clone()),
             notice_seen: Log::Rewritten(snapshot.notice_seen.clone()),
-            decisions: Log::Rewritten(snapshot.decisions.clone()),
+            decisions: snapshot.decisions.clone(),
             memory: snapshot.memory.clone(),
             memory_removed: Vec::new(),
             messages: Log::Rewritten(snapshot.messages.clone()),
@@ -373,10 +373,10 @@ struct Inner {
     tasks_dirty: bool,
     contracts_changed: ChangedIds<ContractId>,
     memory_changed: ChangedIds<MemoryId>,
+    decisions_changed: ChangedIds<DecisionId>,
     notices_log: LogCursor,
     /// The seen log's cursor; a delivery never rewrites notices.jsonl.
     seen_log: LogCursor,
-    decisions_log: LogCursor,
     /// Agent-to-agent messages and who has received what (ADR-0020).
     messages: MessageBoard,
     messages_log: LogCursor,
@@ -405,9 +405,7 @@ impl Inner {
             || !self.contracts_changed.is_empty()
             || self.notices_log.is_dirty(self.notices.notices().len())
             || self.seen_log.is_dirty(self.notices.seen().len())
-            || self
-                .decisions_log
-                .is_dirty(self.decisions.decisions().len())
+            || !self.decisions_changed.is_empty()
             || !self.memory_changed.is_empty()
             || self.messages_log.is_dirty(self.messages.messages().len())
     }
@@ -446,7 +444,6 @@ impl State {
                 notices_log,
                 notices,
                 seen_log,
-                decisions_log: LogCursor::new(snapshot.decisions.len()),
                 decisions: DecisionLog::from_decisions(snapshot.decisions),
                 memory: Arc::new(MemoryBook::from_notes(snapshot.memory)),
                 messages,
@@ -456,6 +453,7 @@ impl State {
                 tasks_dirty: false,
                 contracts_changed: ChangedIds::default(),
                 memory_changed: ChangedIds::default(),
+                decisions_changed: ChangedIds::default(),
                 touched: false,
                 last_seen: BTreeMap::new(),
                 task_orphan: orphan_duration(DEFAULT_TASK_ORPHAN_SECS),
@@ -580,7 +578,9 @@ impl State {
                 .take(inner.contracts.contracts(), |c| c.id),
             notices: inner.notices_log.take(inner.notices.notices()),
             notice_seen: inner.seen_log.take(inner.notices.seen()),
-            decisions: inner.decisions_log.take(inner.decisions.decisions()),
+            decisions: inner
+                .decisions_changed
+                .take(inner.decisions.decisions(), |d| d.id),
             memory: inner.memory_changed.take(inner.memory.notes(), |n| n.id),
             memory_removed: inner.memory_changed.take_removed(),
             messages: inner.messages_log.take(inner.messages.messages()),
@@ -596,7 +596,7 @@ impl State {
         inner.contracts_changed.mark_all();
         inner.notices_log.mark_rewrite();
         inner.seen_log.mark_rewrite();
-        inner.decisions_log.mark_rewrite();
+        inner.decisions_changed.mark_all();
         inner.memory_changed.mark_all();
         inner.messages_log.mark_rewrite();
     }
@@ -825,7 +825,9 @@ impl State {
         new: NewDecision,
     ) -> Result<Decision, DecisionError> {
         self.access(Some(&agent.clone()), |inner, now| {
-            inner.decisions.record(agent, new, now).cloned()
+            let decision = inner.decisions.record(agent, new, now)?.clone();
+            inner.decisions_changed.mark(decision.id);
+            Ok(decision)
         })
     }
 
@@ -1486,7 +1488,11 @@ mod tests {
         assert!(delta.claims.is_some());
         assert!(delta.tasks.is_some());
         assert!(matches!(delta.notices, Log::Rewritten(_)));
-        assert!(matches!(delta.decisions, Log::Rewritten(_)));
+        assert_eq!(
+            delta.decisions.len(),
+            state.snapshot().decisions.len(),
+            "a full rewrite carries every decision file"
+        );
     }
 
     #[test]

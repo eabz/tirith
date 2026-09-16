@@ -21,7 +21,7 @@ tirith status                       # reads .tirith/runtime/daemon.json
 The dashboard is at `http://127.0.0.1:7477/`. State lives in this repo's
 `.tirith/` directory: `runtime/` (leases, task board, seen marks,
 messages, daemon record) is gitignored; `contracts/`, `memory/`,
-`notices.jsonl`, and `decisions.jsonl` are committed so the next session
+`notices.jsonl`, and `decisions/` are committed so the next session
 inherits them.
 
 After installing a new Tirith version nothing needs stopping: the next
