@@ -7,19 +7,27 @@ tirith/
 ├── README.md            Overview and quick examples.
 ├── LICENSE              MIT.
 ├── Cargo.toml           Single crate: library + binary. Lints live here.
+├── Cargo.lock           Committed.
 ├── rustfmt.toml         Formatter config (defaults, pinned edition).
+├── deny.toml            cargo-deny: licenses, advisories, duplicates.
+├── .github/workflows/   CI: fmt, clippy, test, doc, machete, deny.
 ├── src/
-│   ├── main.rs          CLI entry (clap).
-│   ├── lib.rs           Crate root: module declarations, re-exports.
-│   ├── server.rs        MCP tool surface (rmcp).
+│   ├── main.rs          Binary entry.
+│   ├── cli.rs           clap commands and human rendering (binary only).
+│   ├── lib.rs           Crate root: module declarations.
+│   ├── server.rs        MCP tool surface (rmcp) and `start`.
+│   ├── dashboard.rs     Dashboard routes.
+│   ├── dashboard.html   The dashboard page, embedded at build time.
+│   ├── client.rs        MCP client for the CLI and tests.
 │   ├── state.rs         Shared in-memory state.
-│   ├── store.rs         JSON persistence.
+│   ├── store.rs         JSON persistence and the persister.
 │   ├── clock.rs         Injectable time.
+│   ├── types.rs         Ids and repo paths.
 │   ├── claims.rs        Claims domain.
-│   ├── tasks.rs         Task board domain.          (planned)
-│   ├── contracts.rs     Contracts domain.           (planned)
-│   ├── notices.rs       Change notices domain.      (planned)
-│   └── decisions.rs     Decisions log domain.       (planned)
+│   ├── tasks.rs         Task board domain.
+│   ├── contracts.rs     Contracts domain.
+│   ├── notices.rs       Change notices domain.
+│   └── decisions.rs     Decisions log domain.
 ├── tests/               Integration tests (real server over localhost HTTP).
 ├── examples/
 │   └── demo.sh          Two agents, overlapping claims, second refused.
@@ -43,7 +51,7 @@ tirith/
 
 | You are adding | Put it in |
 |---|---|
-| A new MCP tool | A method on `State` plus a domain function, then the mapping in `server.rs`, then the schema in `docs/1-about/04-primitives.md` |
+| A new MCP tool | A method on `State` plus a domain function, then the input struct and `#[tool]` in `server.rs`, a subcommand in `cli.rs`, then the schema in `docs/1-about/04-primitives.md` |
 | A domain rule (overlap, expiry, dependency ordering) | The domain module, with a unit test in the same file |
 | A test that needs the HTTP server | `tests/` |
 | A usage example | `docs/2-examples/` and, if short, `README.md` |
@@ -54,7 +62,8 @@ tirith/
 ## Single crate, for now
 
 Tirith is one crate with a library (`src/lib.rs`) and a binary
-(`src/main.rs`). The binary is thin: argument parsing and wiring. Everything
-testable is in the library. A workspace split (`tirith-core`,
+(`src/main.rs` plus `src/cli.rs`). The binary is thin: argument parsing and
+output rendering. Everything testable is in the library; the CLI talks to
+the daemon through `tirith::client`, the same MCP path agents use. A workspace split (`tirith-core`,
 `tirith-server`, `tirith-cli`) is a small refactor if the crate ever earns
 it; do not do it pre-emptively.

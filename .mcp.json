@@ -5,6 +5,10 @@
       "command": "basic-memory",
       "args": ["mcp", "--project", "tirith"],
       "env": {}
+    },
+    "tirith": {
+      "type": "http",
+      "url": "http://127.0.0.1:7477/mcp"
     }
   }
 }

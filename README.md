@@ -19,9 +19,10 @@ Tirith is framework-agnostic: anything that speaks MCP over HTTP can use it.
 That includes Claude Code, Cursor, Codex, LangGraph, CrewAI, and a plain
 script with `curl`.
 
-> Status: pre-alpha. The claims tool and the two-agent demo are the first
-> milestone. See [docs/1-about/01-purpose.md](docs/1-about/01-purpose.md)
-> for the roadmap.
+> Status: pre-alpha (0.1.0). All five primitives, the CLI, JSON persistence,
+> and the dashboard exist and are tested. Tool schemas may still change before
+> 1.0. See [docs/1-about/01-purpose.md](docs/1-about/01-purpose.md) for the
+> roadmap.
 
 ## The problem
 
@@ -68,8 +69,12 @@ runtime state and are gitignored.
 ```bash
 cargo install --path .
 cd /path/to/your/repo
-tirith serve            # starts the daemon on http://127.0.0.1:7477/mcp
+tirith serve            # MCP at http://127.0.0.1:7477/mcp, dashboard at http://127.0.0.1:7477/
 ```
+
+The dashboard shows agents, claims with lease countdowns, the task board,
+contracts with their current shape, change notices, and decisions,
+refreshing every two seconds.
 
 Point your agents at it. For Claude Code:
 
@@ -94,13 +99,14 @@ is refused with enough information to decide what to do next.
 ```bash
 tirith serve &
 tirith claim --agent alice --reason "refactor session handling" src/auth/
-# ok: alice holds src/auth/ until 2026-09-15T18:20:00Z
+# ok       alice  src/auth  expires 18:20:00Z
 
 tirith claim --agent bob --reason "fix login redirect" src/auth/login.rs
-# conflict: src/auth/login.rs overlaps src/auth/ held by alice
-#   reason:  refactor session handling
-#   expires: 2026-09-15T18:20:00Z
+# conflict src/auth/login.rs overlaps src/auth (alice: "refactor session handling", expires 18:20:00Z)
 ```
+
+The full script is [examples/demo.sh](examples/demo.sh); run it with
+`./examples/demo.sh`.
 
 The same calls from an agent look like this (MCP `tools/call`):
 
@@ -114,7 +120,7 @@ The same calls from an agent look like this (MCP `tools/call`):
 ```json
 { "status": "conflict",
   "conflicts": [ { "path": "src/auth/login.rs",
-                   "overlaps": "src/auth/",
+                   "overlaps": "src/auth",
                    "owner": "alice",
                    "reason": "refactor session handling",
                    "expires_at": "2026-09-15T18:20:00Z" } ] }
@@ -139,8 +145,31 @@ publishes the shape first; B reads it before writing a line.
     "consumers": ["src/client/sessions.rs"] } }
 ```
 
-When A later renames `session_id` to `token`, A publishes a change notice and
-B sees it on the next `notice_list` call for `src/client/`.
+When A later republishes the contract with `token` instead of `session_id`,
+Tirith emits a `contract` notice to the consumers automatically. A can also
+publish an explicit notice, and B sees both on the next `notice_list` call
+for `src/client/`:
+
+```bash
+tirith notice list --agent bob --path src/client/ --unread
+# 20c12b66 contract  contract POST /api/sessions updated to v2 (was v1)  affects src/client/sessions.rs  by alice
+# 60ece2ec rename    renamed session_id to token                          affects src/client/sessions.rs  by alice
+```
+
+## Every tool, from the CLI
+
+```bash
+tirith status
+tirith claim | release | renew | claims
+tirith task create | pull | update | list
+tirith contract publish | get | list
+tirith notice publish | list | ack
+tirith decision record | list
+tirith tools                    # list tools with descriptions
+tirith call <tool> '<json>'     # call any tool directly
+```
+
+Add `--json` for the raw tool result. Non-`ok` outcomes exit with status 1.
 
 ## Documentation
 
@@ -153,7 +182,10 @@ Everything lives in [docs/](docs/README.md):
 - `5-decisions/` architecture decision records
 - `6-agent-workflow/` how agents work on this repo (Serena, memory, Tirith itself)
 
-Contributing agents must read [AGENTS.md](AGENTS.md).
+Contributing agents must read [AGENTS.md](AGENTS.md). This repository is
+coordinated with Tirith itself: a daemon runs for the repo, and agents claim
+files through it before editing. See
+[docs/6-agent-workflow/03-tirith-dogfooding.md](docs/6-agent-workflow/03-tirith-dogfooding.md).
 
 ## License
 

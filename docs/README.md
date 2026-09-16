@@ -13,6 +13,15 @@ order is obvious. Files inside a section are also numbered.
 | [6-agent-workflow/](6-agent-workflow/) | How agents work on this repo: Serena, memory layer, using Tirith on itself |
 | [_static/images/](_static/images/) | Diagrams and screenshots referenced from the docs |
 
+## Requirements for working on this repo
+
+- Read [AGENTS.md](../AGENTS.md) before editing.
+- A Tirith daemon must be running for this repository, and every agent
+  must claim files through it before editing them. See
+  [6-agent-workflow/03-tirith-dogfooding.md](6-agent-workflow/03-tirith-dogfooding.md).
+- Serena is the code-intelligence layer; Basic Memory notes live in
+  `.memory/`.
+
 ## Conventions for writing docs
 
 - One H1 per file, matching the file's subject. Filenames are

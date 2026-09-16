@@ -11,7 +11,7 @@ are tested as such. The transport is tested once, end to end.
 | Unit | `#[cfg(test)] mod tests` in each domain module | Overlap rules, lease expiry with a manual clock, path normalization, task dependency resolution, contract versioning | None |
 | State | `src/state.rs` tests | Atomicity of multi-path claims, lazy reaping, renew-on-activity | None |
 | Store | `src/store.rs` tests | Round-trip to a temp dir, atomic write survives a simulated crash, loading a corrupt file is an error, not a panic | tokio (for `spawn_blocking`) |
-| Integration | `tests/*.rs` | Start the real server on an ephemeral localhost port, drive it with the rmcp client, assert on tool responses | tokio + localhost network |
+| Integration | `tests/http_roundtrip.rs` | Start the real server on an ephemeral localhost port, drive it with `tirith::client`, assert on tool responses, restart it and check persistence, fetch the dashboard | tokio + localhost network |
 | Demo | `examples/demo.sh` | Human-readable acceptance for each milestone | Built binary |
 
 ## Rules

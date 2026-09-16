@@ -1,33 +1,36 @@
 # Example: two agents claim overlapping files
 
 This is milestone 1's acceptance test. It lives in `examples/demo.sh` and is
-short enough to read in one glance.
-
-**Status: In progress.** The commands below are the target; run
-`examples/demo.sh` for the version that matches the current build.
+short enough to read in one glance. Run it with:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-tirith serve --bind 127.0.0.1:7477 &
-trap 'kill $!' EXIT
-sleep 0.3
+./examples/demo.sh
+```
+
+It builds the binary, starts a daemon on a free port inside a temporary
+directory, waits for `.tirith/runtime/daemon.json` (which is how the CLI
+finds the daemon), and runs:
+
+```bash
 tirith claim --agent alice --reason "refactor session handling" src/auth/
 tirith claim --agent bob   --reason "fix login redirect"        src/auth/login.rs || true
-tirith claims list
+tirith claims
 tirith release --agent alice
 tirith claim --agent bob   --reason "fix login redirect"        src/auth/login.rs
 ```
 
-Expected output:
+Output from a real run:
 
 ```
-ok       alice  src/auth/            expires 18:20:00Z
-conflict src/auth/login.rs overlaps src/auth/ (alice: "refactor session handling", expires 18:20:00Z)
-alice    src/auth/            refactor session handling   expires 18:20:00Z
-released alice  src/auth/
-ok       bob    src/auth/login.rs    expires 18:20:05Z
+ok       alice  src/auth  expires 00:16:23Z
+conflict src/auth/login.rs overlaps src/auth (alice: "refactor session handling", expires 00:16:23Z)
+alice    src/auth                     refactor session handling        expires 00:16:23Z
+released alice  src/auth
+ok       bob  src/auth/login.rs  expires 00:16:23Z
 ```
+
+The trailing slash on `src/auth/` is accepted and normalized away; a
+claimed path always covers everything beneath it.
 
 ## What each line proves
 

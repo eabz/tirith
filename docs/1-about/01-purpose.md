@@ -39,7 +39,8 @@ machine, many-agent setup over multi-tenant deployment.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | `tirith serve`, the `claim` / `release` / `renew` / `claims_list` tools, a CLI, and a demo where two agents claim overlapping files and the second is refused | In progress |
-| 2 | Task board, `tirith stdio` shim for stdio-only clients, Tirith used on its own repo | Planned |
-| 3 | Contracts and change notices, with notices linked to contracts and claims | Planned |
-| 4 | Decisions log, MCP resources for read-only views, optional glob claims | Planned |
+| 1 | `tirith serve`, the claims tools, a CLI, JSON persistence, and a demo where two agents claim overlapping files and the second is refused | Done (0.1.0) |
+| 1b | Initial versions of the task board, contracts, change notices, decisions log, and a web dashboard at `/` | Done (0.1.0) |
+| 2 | `tirith stdio` shim for stdio-only clients, Tirith used on its own repo, agent-facing hardening from real use | Planned |
+| 3 | Contract shape validation (JSON Schema), notices linked to claims, richer dashboard filters | Planned |
+| 4 | MCP resources for read-only views, optional glob claims | Planned |

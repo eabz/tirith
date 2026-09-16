@@ -1379,6 +1379,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "reqwest",
  "rmcp",
  "schemars",
  "serde",

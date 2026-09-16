@@ -34,6 +34,9 @@ A change is done only when all of these hold:
   tool names, tool schemas, or the project layout changed.
 - A new ADR exists in `docs/5-decisions/` if you made a design decision
   that a future agent could otherwise re-decide.
+- You claimed every file you edited through Tirith before editing it,
+  published notices for renames or signature changes, and released your
+  claims at the end. Your report names the claims you held.
 - You reported honestly: what passed, what failed, what you skipped.
 
 Never claim a step passed without running it in this session.
@@ -72,10 +75,12 @@ Two layers, with different jobs:
 Do not store anything in memory that belongs in `docs/` or in an ADR.
 Memory is for what the repo does not already say.
 
-### Tirith (coordination between agents on this repo)
+### Tirith (coordination between agents on this repo) — REQUIRED
 
-Once milestone 1 ships, Tirith coordinates work on itself. When a Tirith
-server is reachable for this repo:
+Tirith coordinates work on itself. A Tirith daemon for this repository is
+expected to be running at `http://127.0.0.1:7477/mcp` (registered in
+`.mcp.json` and `.cursor/mcp.json`; dashboard at `http://127.0.0.1:7477/`).
+Using it is not optional:
 
 1. `claim` the files or directories you intend to edit before editing.
    If refused, do not edit; pick other work or coordinate with the owner.
@@ -88,8 +93,15 @@ server is reachable for this repo:
 5. `release` your claims when done. Record settled choices with
    `decision_record`.
 
-If no server is reachable, say so in your report and proceed carefully.
-Details: `docs/6-agent-workflow/03-tirith-dogfooding.md`.
+If the server is not reachable, start it before editing anything:
+
+```bash
+cargo run --quiet -- serve    # or: tirith serve, from the repo root
+```
+
+If you cannot start it, stop and say so in your report; do not edit files
+without a claim. Details and the full protocol:
+`docs/6-agent-workflow/03-tirith-dogfooding.md`.
 
 ## 4. Rust rules (summary; the full list is binding)
 

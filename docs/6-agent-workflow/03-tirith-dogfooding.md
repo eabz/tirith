@@ -1,16 +1,35 @@
 # Using Tirith on Tirith
 
-From milestone 2 onward, agents working on this repository coordinate
-through a Tirith daemon running in this repository. Until then this page
-describes the intended protocol; agents should follow the spirit of it by
-stating in their report which files they touched.
+**Requirement.** Every agent that edits this repository coordinates
+through a Tirith daemon running for this repository. Claim before editing,
+publish notices for breaking changes, release when done. An agent that
+cannot reach the daemon and cannot start it must stop and say so; editing
+without a claim is a rule violation, not a fallback.
+
+The daemon is registered for Claude Code in `.mcp.json` and for Cursor in
+`.cursor/mcp.json` as an HTTP MCP server at `http://127.0.0.1:7477/mcp`.
+Its state lives in this repo's `.tirith/` directory: runtime files are
+gitignored, while `contracts/`, `notices.jsonl`, and `decisions.jsonl` are
+committed so the next session inherits them.
 
 ## Setup
 
 ```bash
-cargo run -- serve          # from the repo root; binds 127.0.0.1:7477
-claude mcp add --transport http tirith http://127.0.0.1:7477/mcp
+cargo run --quiet -- serve          # from the repo root; binds 127.0.0.1:7477
 ```
+
+To keep it running across terminal sessions:
+
+```bash
+nohup cargo run --quiet -- serve > .tirith/runtime/serve.log 2>&1 &
+```
+
+Check it with `tirith status` (or `cargo run --quiet -- status`), which
+reads the daemon address from `.tirith/runtime/daemon.json`. Stop it with
+`kill $(python3 -c "import json; print(json.load(open('.tirith/runtime/daemon.json'))['pid'])")`.
+
+The MCP registration is already in `.mcp.json` (Claude Code) and
+`.cursor/mcp.json` (Cursor). The dashboard is at `http://127.0.0.1:7477/`.
 
 Runtime state lands in `.tirith/runtime/` (gitignored). Contracts, notices,
 and decisions land in `.tirith/` and are committed.

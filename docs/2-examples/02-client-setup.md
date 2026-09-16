@@ -8,8 +8,39 @@ cd /path/to/repo
 tirith serve
 ```
 
+That prints the MCP URL and the dashboard URL, and records them in
+`.tirith/runtime/daemon.json` so the `tirith` CLI run from the same
+repository finds the daemon without flags. Open the dashboard at
+`http://127.0.0.1:7477/` to watch agents, claims, tasks, contracts,
+notices, and decisions update live.
+
 Then connect each client. Every agent must pass a stable `agent` name in
 its tool calls; the setups below suggest where to put that instruction.
+
+## The CLI
+
+Every tool has a subcommand. `--agent` (or `TIRITH_AGENT`) sets your name,
+`--url` (or `TIRITH_URL`) overrides the daemon address, and `--json` prints
+the raw tool result.
+
+```bash
+tirith status
+tirith claim --agent alice --reason "refactor sessions" src/auth/
+tirith claims --path src/auth/login.rs
+tirith release --agent alice
+tirith task create --agent planner "Build sessions handler" -p 5 --path src/api/sessions.rs
+tirith task pull --agent alice
+tirith task update --agent alice <task-id> done -n "merged"
+tirith contract publish --agent alice "POST /api/sessions" -k http -s '{"response":{"token":"string"}}' --consumer src/client/
+tirith notice publish --agent alice -k rename "renamed session_id to token" --from session_id --to token --path src/client/
+tirith notice list --agent bob --unread
+tirith decision record --agent alice "Tokens are opaque" -d "Clients never parse tokens" --path src/client/
+tirith tools                       # list every tool with its description
+tirith call claims_list '{}'       # call any tool with raw JSON
+```
+
+Non-`ok` outcomes (`conflict`, `not_found`, `invalid`) exit with status 1,
+so the CLI composes with `&&` and `||` in scripts.
 
 ## Claude Code
 
@@ -76,6 +107,7 @@ with MCPServerAdapter({"url": "http://127.0.0.1:7477/mcp",
 
 Streamable HTTP is JSON-RPC over POST. Initialize once, then call tools.
 The `Mcp-Session-Id` header returned by `initialize` must be echoed back.
+Tirith answers with plain JSON (not SSE) so `curl` output is readable.
 
 ```bash
 curl -s http://127.0.0.1:7477/mcp \
