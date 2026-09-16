@@ -274,7 +274,7 @@ for (const key of SECTIONS) {
   card.classList.toggle('collapsed', !!collapsed[key]);
   card.querySelector('.card-h').onclick = e => {
     if (e.target.closest('.filters')) return;
-    collapsed[key] = !card.classList.toggle('collapsed') ? false : true;
+    collapsed[key] = card.classList.toggle('collapsed');
     store.set('collapsed', collapsed);
   };
 }
@@ -325,7 +325,7 @@ function table(cols, rows) {
 }
 function fill(key, cols, rows, total = rows.length) {
   const card = $('s-' + key);
-  card.querySelector('.n').textContent = total;
+  const n = card.querySelector('.n'); n.textContent = total; n.dataset.total = total;
   card.querySelector('.card-b').innerHTML = rows.length ? table(cols, rows) : `<div class="empty">${EMPTY[key]}</div>`;
 }
 function taskState(t) { return t.state && t.state.status ? t.state : t; }
@@ -418,7 +418,8 @@ function applyFilter() {
       tr.classList.toggle('hidden', hide);
       if (!hide) shown++;
     }
-    if (total) card.querySelector('.n').textContent = query ? `${shown} / ${total}` : card.querySelector('.n').textContent.split(' / ').pop();
+    const n = card.querySelector('.n');
+    if (total) n.textContent = query ? `${shown} / ${n.dataset.total}` : n.dataset.total;
   }
 }
 
