@@ -1,5 +1,37 @@
 # Client setup
 
+There are two ways to connect, and the first needs no setup step at all.
+
+## Recommended: let the client spawn `tirith stdio`
+
+`tirith stdio` is a stdio MCP server, like Serena or any other server a
+client launches per session. When it starts it looks for the repository's
+daemon and starts one if none is running, then proxies every call to it.
+The daemon keeps running after the session so other agents share it.
+
+Claude Code:
+
+```bash
+claude mcp add tirith -- tirith stdio
+```
+
+Cursor, in `.cursor/mcp.json`:
+
+```json
+{ "mcpServers": { "tirith": { "command": "tirith", "args": ["stdio"] } } }
+```
+
+Codex:
+
+```bash
+codex mcp add tirith -- tirith stdio
+```
+
+The repository root is the client's working directory; pass `--root` to
+override it. The daemon's log is `.tirith/runtime/serve.log`.
+
+## Alternative: connect to the daemon over HTTP
+
 Tirith serves MCP over streamable HTTP at `http://127.0.0.1:7477/mcp` by
 default. Start it once per repository:
 
@@ -42,7 +74,7 @@ tirith call claims_list '{}'       # call any tool with raw JSON
 Non-`ok` outcomes (`conflict`, `not_found`, `invalid`) exit with status 1,
 so the CLI composes with `&&` and `||` in scripts.
 
-## Claude Code
+### Claude Code
 
 ```bash
 claude mcp add --transport http tirith http://127.0.0.1:7477/mcp
@@ -55,10 +87,7 @@ Before editing files, call the tirith `claim` tool with agent="<your session nam
 If the result is a conflict, do not edit those files.
 ```
 
-**Planned:** `claude mcp add tirith -- tirith stdio` once the stdio shim
-ships, for setups that cannot keep a daemon running.
-
-## Cursor
+### Cursor
 
 `.cursor/mcp.json` in the repository:
 
@@ -72,13 +101,13 @@ ships, for setups that cannot keep a daemon running.
 
 Add the same claim instruction to `.cursor/rules/` or `AGENTS.md`.
 
-## Codex CLI
+### Codex CLI
 
 ```bash
 codex mcp add tirith --url http://127.0.0.1:7477/mcp
 ```
 
-## Python: LangGraph
+### Python: LangGraph
 
 Using `langchain-mcp-adapters`:
 
@@ -93,7 +122,7 @@ tools = await client.get_tools()   # claim, release, renew, claims_list, ...
 
 Give each graph node a fixed `agent` name and pass it in every call.
 
-## Python: CrewAI
+### Python: CrewAI
 
 ```python
 from crewai_tools import MCPServerAdapter
@@ -103,7 +132,7 @@ with MCPServerAdapter({"url": "http://127.0.0.1:7477/mcp",
     agent = Agent(role="backend", tools=tools, ...)
 ```
 
-## Plain script (curl)
+### Plain script (curl)
 
 Streamable HTTP is JSON-RPC over POST. Initialize once, then call tools.
 The `Mcp-Session-Id` header returned by `initialize` must be echoed back.
@@ -125,7 +154,7 @@ curl -s http://127.0.0.1:7477/mcp \
 For anything beyond a demo, use the `tirith` CLI instead; it handles the
 session and prints structured output.
 
-## Verifying the connection
+### Verifying the connection
 
 ```bash
 tirith status          # daemon address, uptime, live claims

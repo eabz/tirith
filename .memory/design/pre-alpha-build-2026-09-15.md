@@ -1,7 +1,12 @@
 ---
 title: Pre-alpha build 2026-09-15
 type: note
-tags: [tirith, build, architecture, lessons]
+tags:
+- tirith
+- build
+- architecture
+- lessons
+permalink: tirith/design/pre-alpha-build-2026-09-15
 ---
 
 # Pre-alpha build 2026-09-15

@@ -14,6 +14,7 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
 use tirith::client;
 use tirith::server::{self, DEFAULT_BIND, ServeOptions};
+use tirith::stdio;
 use tirith::store::JsonStore;
 
 const DEFAULT_URL: &str = "http://127.0.0.1:7477/mcp";
@@ -56,6 +57,13 @@ enum Command {
         /// Address to bind.
         #[arg(long, default_value = DEFAULT_BIND)]
         bind: SocketAddr,
+    },
+    /// Serve MCP over stdin/stdout for clients that spawn servers themselves,
+    /// starting the repository's daemon if none is running.
+    Stdio {
+        /// Address to bind if the daemon has to be started.
+        #[arg(long, default_value = DEFAULT_BIND)]
+        bind: String,
     },
     /// Show daemon status and who holds what.
     Status,
@@ -252,6 +260,9 @@ pub(crate) async fn run() -> Result<ExitCode> {
     if let Command::Serve { bind } = cli.command {
         return serve(bind, cli.root).await;
     }
+    if let Command::Stdio { bind } = cli.command {
+        return stdio_shim(bind, cli.root).await;
+    }
     let url = match cli.url {
         Some(url) => url,
         None => JsonStore::new(&cli.root)
@@ -266,7 +277,7 @@ pub(crate) async fn run() -> Result<ExitCode> {
         json: cli.json,
     };
     let (tool, arguments) = match cli.command {
-        Command::Serve { .. } => unreachable!("handled above"),
+        Command::Serve { .. } | Command::Stdio { .. } => unreachable!("handled above"),
         Command::Tools => return tools(&remote).await,
         Command::Call { tool, arguments } => {
             let mut value: Value =
@@ -418,6 +429,22 @@ async fn serve(bind: SocketAddr, root: PathBuf) -> Result<ExitCode> {
         .context("waiting for ctrl-c")?;
     eprintln!("shutting down");
     handle.shutdown().await?;
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn stdio_shim(bind: String, root: PathBuf) -> Result<ExitCode> {
+    // Logs go to stderr; the MCP client owns stdout.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("repository root {}", root.display()))?;
+    stdio::run(root, bind).await?;
     Ok(ExitCode::SUCCESS)
 }
 

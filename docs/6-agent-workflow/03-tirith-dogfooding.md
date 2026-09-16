@@ -6,30 +6,29 @@ publish notices for breaking changes, release when done. An agent that
 cannot reach the daemon and cannot start it must stop and say so; editing
 without a claim is a rule violation, not a fallback.
 
-The daemon is registered for Claude Code in `.mcp.json` and for Cursor in
-`.cursor/mcp.json` as an HTTP MCP server at `http://127.0.0.1:7477/mcp`.
+Tirith is registered for Claude Code in `.mcp.json` and for Cursor in
+`.cursor/mcp.json` as the stdio server `tirith stdio`, which starts the
+daemon at `http://127.0.0.1:7477` if it is not already running. Nothing
+has to be started by hand.
 Its state lives in this repo's `.tirith/` directory: runtime files are
 gitignored, while `contracts/`, `notices.jsonl`, and `decisions.jsonl` are
 committed so the next session inherits them.
 
 ## Setup
 
-```bash
-cargo run --quiet -- serve          # from the repo root; binds 127.0.0.1:7477
-```
-
-To keep it running across terminal sessions:
+Nothing, normally: the shim starts the daemon on the first session. To
+start it by hand anyway:
 
 ```bash
-nohup cargo run --quiet -- serve > .tirith/runtime/serve.log 2>&1 &
+tirith serve                        # or: cargo run --quiet -- serve
 ```
 
 Check it with `tirith status` (or `cargo run --quiet -- status`), which
 reads the daemon address from `.tirith/runtime/daemon.json`. Stop it with
 `kill $(python3 -c "import json; print(json.load(open('.tirith/runtime/daemon.json'))['pid'])")`.
 
-The MCP registration is already in `.mcp.json` (Claude Code) and
-`.cursor/mcp.json` (Cursor). The dashboard is at `http://127.0.0.1:7477/`.
+The dashboard is at `http://127.0.0.1:7477/`. After installing a new
+Tirith version, stop the old daemon so the next session starts the new one.
 
 Runtime state lands in `.tirith/runtime/` (gitignored). Contracts, notices,
 and decisions land in `.tirith/` and are committed.

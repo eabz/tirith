@@ -5,7 +5,8 @@
       "args": ["mcp", "--project", "tirith"]
     },
     "tirith": {
-      "url": "http://127.0.0.1:7477/mcp"
+      "command": "tirith",
+      "args": ["stdio"]
     }
   }
 }

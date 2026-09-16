@@ -13,6 +13,9 @@
 //! - [`contracts`]: interface shapes published before implementation.
 //! - [`notices`]: change notices dependents read before acting.
 //! - [`decisions`]: settled choices so nothing is decided twice.
+//!
+//! [`stdio`] is the shim MCP clients spawn per session; it starts the
+//! daemon when needed and proxies to it.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -26,6 +29,7 @@ pub mod decisions;
 pub mod notices;
 pub mod server;
 pub mod state;
+pub mod stdio;
 pub mod store;
 pub mod tasks;
 pub mod types;

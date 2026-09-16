@@ -14,6 +14,8 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0003](0003-json-file-storage.md) | In-memory state written through to JSON files | Accepted |
 | [0004](0004-caller-supplied-agent-identity.md) | Agent identity is a caller-supplied string with TTL leases | Accepted |
 | [0005](0005-prefix-paths-no-globs.md) | Claims are files or directory prefixes; no globs in v1 | Accepted |
+| [0006](0006-stdio-shim-starts-daemon.md) | The stdio shim starts the daemon on demand | Accepted |
+| [0007](0007-github-pages-landing-page.md) | A static landing page in `docs/`, served by GitHub Pages | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions.jsonl`

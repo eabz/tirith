@@ -77,10 +77,10 @@ Memory is for what the repo does not already say.
 
 ### Tirith (coordination between agents on this repo) — REQUIRED
 
-Tirith coordinates work on itself. A Tirith daemon for this repository is
-expected to be running at `http://127.0.0.1:7477/mcp` (registered in
-`.mcp.json` and `.cursor/mcp.json`; dashboard at `http://127.0.0.1:7477/`).
-Using it is not optional:
+Tirith coordinates work on itself. It is registered in `.mcp.json` and
+`.cursor/mcp.json` as `tirith stdio`, which starts the repository's daemon
+at `http://127.0.0.1:7477` if none is running (dashboard at
+`http://127.0.0.1:7477/`). Using it is not optional:
 
 1. `claim` the files or directories you intend to edit before editing.
    If refused, do not edit; pick other work or coordinate with the owner.
@@ -93,14 +93,10 @@ Using it is not optional:
 5. `release` your claims when done. Record settled choices with
    `decision_record`.
 
-If the server is not reachable, start it before editing anything:
-
-```bash
-cargo run --quiet -- serve    # or: tirith serve, from the repo root
-```
-
-If you cannot start it, stop and say so in your report; do not edit files
-without a claim. Details and the full protocol:
+If the `tirith` MCP server is unavailable in your session, the `tirith`
+binary is probably not installed or not on PATH; `cargo install --path .`
+fixes that. If you still cannot reach it, stop and say so in your report;
+do not edit files without a claim. Details and the full protocol:
 `docs/6-agent-workflow/03-tirith-dogfooding.md`.
 
 ## 4. Rust rules (summary; the full list is binding)

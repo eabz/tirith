@@ -7,8 +7,10 @@
       "env": {}
     },
     "tirith": {
-      "type": "http",
-      "url": "http://127.0.0.1:7477/mcp"
+      "type": "stdio",
+      "command": "tirith",
+      "args": ["stdio"],
+      "env": {}
     }
   }
 }

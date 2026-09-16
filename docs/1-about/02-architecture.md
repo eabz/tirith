@@ -17,14 +17,16 @@ connects to it over **streamable HTTP** on localhost.
                      └──────────────────────────┘
 ```
 
-**Planned:** a `tirith stdio` subcommand that speaks stdio to the client and
-proxies to the daemon, starting it if needed, for clients that cannot use
-HTTP. The daemon remains the only place state lives.
+`tirith stdio` speaks stdio to the client and proxies to the daemon,
+starting it if none is healthy, so clients that spawn servers per session
+need no setup step. The daemon remains the only place state lives. See
+[../5-decisions/0006-stdio-shim-starts-daemon.md](../5-decisions/0006-stdio-shim-starts-daemon.md).
 
 ## Layers
 
 ```
 src/main.rs        Binary entry: runs cli::run.
+src/stdio.rs       `tirith stdio`: finds or starts the daemon, proxies stdio to it.
 src/cli.rs         CLI (clap): serve, plus one subcommand per tool. Binary only.
 src/server.rs      MCP surface (rmcp): tool inputs, outcome formatting,
                    and `start`, which wires everything into one HTTP server.

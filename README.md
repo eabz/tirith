@@ -48,26 +48,25 @@ cargo install tirith-mcp
 
 Prebuilt binaries for macOS, Linux, and Windows on x86_64 and ARM64 are on
 the [releases page](https://github.com/eabz/tirith/releases). More options
-in [docs/1-about/05-installation.md](docs/1-about/05-installation.md).
+in [docs/1-about/05-installation.md](docs/1-about/05-installation.md), or
+on the install page at [eabz.github.io/tirith](https://eabz.github.io/tirith/).
 
 ## Quick start
 
-Start one daemon per repository:
-
-```bash
-cd /path/to/your/repo
-tirith serve
-```
-
-That serves MCP at `http://127.0.0.1:7477/mcp` and a live dashboard at
-`http://127.0.0.1:7477/`. Then point your agents at it:
+Register `tirith stdio` with your client, the same way as any other stdio
+MCP server. It starts the repository's daemon the first time a session
+needs it and proxies to it after that; nothing has to be started by hand.
 
 | Client | Setup |
 |---|---|
-| Claude Code | `claude mcp add --transport http tirith http://127.0.0.1:7477/mcp` |
-| Cursor | `.cursor/mcp.json`: `{ "mcpServers": { "tirith": { "url": "http://127.0.0.1:7477/mcp" } } }` |
-| Codex | `codex mcp add tirith --url http://127.0.0.1:7477/mcp` |
-| LangGraph, CrewAI, curl | [docs/2-examples/02-client-setup.md](docs/2-examples/02-client-setup.md) |
+| Claude Code | `claude mcp add tirith -- tirith stdio` |
+| Cursor | `.cursor/mcp.json`: `{ "mcpServers": { "tirith": { "command": "tirith", "args": ["stdio"] } } }` |
+| Codex | `codex mcp add tirith -- tirith stdio` |
+| LangGraph, CrewAI, curl | connect over HTTP, see [docs/2-examples/02-client-setup.md](docs/2-examples/02-client-setup.md) |
+
+The daemon serves MCP at `http://127.0.0.1:7477/mcp` and a live dashboard
+at `http://127.0.0.1:7477/`. You can also run it yourself with
+`tirith serve` from the repository root.
 
 Every agent passes a stable `agent` name with each call. That is the only
 convention it has to follow.
@@ -165,6 +164,7 @@ and the decision records in [docs/5-decisions/](docs/5-decisions/README.md).
 | [5-decisions](docs/5-decisions/) | Architecture decision records |
 | [6-agent-workflow](docs/6-agent-workflow/) | How agents work on this repo: Serena, memory, Tirith on itself |
 | [7-release](docs/7-release/) | Release process and version bumping |
+| [index.html](docs/index.html) | The landing page served at [eabz.github.io/tirith](https://eabz.github.io/tirith/) |
 
 ## Contributing
 

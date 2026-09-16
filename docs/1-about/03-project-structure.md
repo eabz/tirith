@@ -23,6 +23,7 @@ tirith/
 │   ├── dashboard.rs     Dashboard routes.
 │   ├── dashboard.html   The dashboard page, embedded at build time.
 │   ├── client.rs        MCP client for the CLI and tests.
+│   ├── stdio.rs         The per-session stdio shim.
 │   ├── state.rs         Shared in-memory state.
 │   ├── store.rs         JSON persistence and the persister.
 │   ├── clock.rs         Injectable time.
