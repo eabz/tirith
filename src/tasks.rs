@@ -148,7 +148,9 @@ pub struct Task {
     pub notes: Vec<TaskNote>,
 }
 
-/// Input for creating a task.
+/// Input for creating a task. Build it with [`NewTask::new`] and the
+/// `with_*` setters outside this module, so a new optional field never
+/// breaks a caller (decision 19c6595c).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NewTask {
     /// See [`Task::title`].
@@ -161,6 +163,53 @@ pub struct NewTask {
     pub depends_on: Vec<TaskId>,
     /// See [`Task::paths`].
     pub paths: Vec<RepoPath>,
+}
+
+impl NewTask {
+    /// A task titled `title` with no description, priority 0, no
+    /// dependencies, and no path hints.
+    ///
+    /// ```
+    /// use tirith::tasks::NewTask;
+    ///
+    /// let task = NewTask::new("Write the summary").with_priority(5);
+    /// assert_eq!(task.priority, 5);
+    /// assert!(task.depends_on.is_empty());
+    /// ```
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Sets the longer description.
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Sets the priority; higher pulls first.
+    #[must_use]
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// Sets the tasks that must be done before this one can be pulled.
+    #[must_use]
+    pub fn with_depends_on(mut self, depends_on: Vec<TaskId>) -> Self {
+        self.depends_on = depends_on;
+        self
+    }
+
+    /// Sets the paths the task is expected to touch.
+    #[must_use]
+    pub fn with_paths(mut self, paths: Vec<RepoPath>) -> Self {
+        self.paths = paths;
+        self
+    }
 }
 
 /// Why a task operation was refused.
@@ -325,21 +374,21 @@ impl TaskBoard {
             .find(|t| t.id == id)
             .ok_or(TaskError::NotFound(id))?;
         let mut note = note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
-        if let TaskState::InProgress { owner } = &task.state {
-            if *owner != agent {
-                if !force {
-                    return Err(TaskError::OwnedByOther {
-                        id,
-                        owner: owner.clone(),
-                        since: task.updated_at,
-                    });
-                }
-                let forced = format!("forced by {agent}: was in progress under {owner}");
-                note = Some(match note {
-                    Some(text) => format!("{forced}. {text}"),
-                    None => forced,
+        if let TaskState::InProgress { owner } = &task.state
+            && *owner != agent
+        {
+            if !force {
+                return Err(TaskError::OwnedByOther {
+                    id,
+                    owner: owner.clone(),
+                    since: task.updated_at,
                 });
             }
+            let forced = format!("forced by {agent}: was in progress under {owner}");
+            note = Some(match note {
+                Some(text) => format!("{forced}. {text}"),
+                None => forced,
+            });
         }
         task.state = match status {
             TaskStatus::Todo => TaskState::Todo,
@@ -410,12 +459,9 @@ mod tests {
     }
 
     fn task(title: &str, priority: i32, deps: Vec<TaskId>) -> NewTask {
-        NewTask {
-            title: title.into(),
-            priority,
-            depends_on: deps,
-            ..NewTask::default()
-        }
+        NewTask::new(title)
+            .with_priority(priority)
+            .with_depends_on(deps)
     }
 
     #[test]

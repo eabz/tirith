@@ -25,12 +25,17 @@ need no setup step. The daemon remains the only place state lives. See
 
 ```
 src/main.rs        Binary entry: runs cli::run.
-src/stdio.rs       `tirith stdio`: finds or starts the daemon, proxies stdio to it.
-src/cli.rs         CLI (clap): serve, plus one subcommand per tool. Binary only.
+src/stdio.rs       `tirith stdio`: finds, replaces, or starts the daemon,
+                   proxies stdio to it.
+src/cli.rs         CLI (clap): serve, stdio, tray, update, plus one
+                   subcommand per tool. Binary only.
+src/update.rs      `tirith update`: re-runs the release installer in place.
 src/server.rs      MCP surface (rmcp): tool inputs, outcome formatting,
                    and `start`, which wires everything into one HTTP server.
 src/dashboard.rs   `/` (embedded dashboard.html), `/logo.png`, `/api/state`,
                    `/api/health`.
+src/registry.rs    Per-user registry of running daemons (every platform).
+src/tray.rs        `tirith tray`, the macOS menu bar icon (feature `tray`).
 src/client.rs      MCP client used by the CLI and integration tests.
 src/state.rs       In-memory State behind a lock. All mutation goes through
                    its methods. Reaps expired leases and renews the caller's
@@ -43,6 +48,7 @@ src/notices.rs     Change notices and the per-agent seen log.
 src/decisions.rs   Decisions log.
 src/memory.rs      Memory notes and the Markdown file format they are
                    stored in. Pure: no rmcp, axum, tokio, or I/O.
+src/messages.rs    Agent-to-agent messages and their delivery marks.
 src/store.rs       Persistence: JSON files under .tirith/, atomic writes
                    and appends, and the background Persister that writes
                    deltas in sequence order.
@@ -65,10 +71,14 @@ call. MCP sessions reconnect, and HTTP gives no reliable signal when a
 client dies, so identity cannot hang off the transport.
 
 Claims are leases with a TTL (default 10 minutes). Any call from the owning
-agent renews the lease. Expired leases are removed lazily when state is
-read, so a dead agent's claims disappear without a background thread.
-Renewals are not written on the request path; the persister's one-second
-tick picks them up (see Persistence below).
+agent renews the lease, but a lease cannot live longer than four TTLs (at
+most four hours) unless the agent calls `claim` or `renew` again, so
+activity alone cannot hold a path forever. Expired leases are removed
+lazily when state is read, so a dead agent's claims disappear without a
+background thread, and the former owner is told in its next response
+([ADR-0015](../5-decisions/0015-lease-loss-and-max-age.md)). Renewals are
+not written on the request path; the persister's one-second tick picks
+them up (see Storage below).
 
 ## Path model
 
@@ -98,6 +108,8 @@ JSON files under `.tirith/` in the target repository:
     meta.json         persist sequence number
     claims.json
     tasks.json
+    notice_seen.jsonl which notice reached which agent, one line each
+    messages.jsonl    agent messages, pruned to 24 hours on load
   contracts/          committed, one file per contract (<slug>-<id>.json)
   memory/             committed, one Markdown file per note; a permalink
                       with `/` segments becomes a subdirectory
@@ -107,12 +119,14 @@ JSON files under `.tirith/` in the target repository:
 
 Writes are incremental. `State` tracks what changed since the last write
 and produces a `Delta`: claims and tasks whole when they changed, only the
-contracts that changed, and for the two logs either the new lines to
-append or, after a persist failure, a full rewrite; notice rows are never
-edited in place, deliveries go to their own runtime log. A single background `Persister` task drains deltas in sequence
-order. A tool call that mutated state waits until its change is on disk;
-concurrent callers wait on the same write, so a burst of claims from a
-swarm becomes one write of `claims.json`. Read-only calls never wait, and
+contracts that changed, and for each append-only log either the new lines
+to append or, after a persist failure, a full rewrite. Notice rows are
+never edited in place: a delivery goes to the runtime seen log
+([ADR-0021](../5-decisions/0021-notice-acks-log.md)). A single background
+`Persister` task drains deltas in sequence order. A tool call that
+mutated state waits until its change is on disk; concurrent callers wait
+on the same write, so a burst of claims from a swarm becomes one write of
+`claims.json`. Read-only calls never wait, and
 lease renewals are folded into the next claims write or picked up by a
 one-second tick. A failed write is logged, surfaced as `persist_error` in
 `status` and on the dashboard, and followed by a full rewrite on the next
@@ -133,9 +147,9 @@ The same HTTP server serves a read-only dashboard at `/` and its data at
 `/api/state`. The page is a single embedded HTML file with no external
 assets: it polls every two seconds and shows the Tirith logo, count tiles,
 agents, claims with lease progress bars, the task board with status
-filters, contracts with their current shape, change notices with who has seen
-them, and decisions. A text filter narrows every table, and
-the page follows the system light or dark theme with a manual toggle. The
+filters, contracts, change notices, decisions, and memory notes. A text
+filter narrows every table, and the page follows the system light or dark
+theme with a manual toggle. The
 logo is served from `/logo.png`, embedded from `src/dashboard-logo.png`
 (a 192px cut of `docs/_static/images/logo.jpeg`), and doubles as the
 favicon.
@@ -186,17 +200,25 @@ clients feed text blocks to the model, so a copy would double the token
 cost of every call. `tirith::client` reads the structured content and
 falls back to the text only when a server sends none.
 
-A successful `claim` is the one response that carries data from another
-primitive: a `memory` array of at most five excerpt rows for notes about
-the claimed paths, so an agent learns what it needs before editing.
+Two things ride on results without being asked for, because the next
+result is the one delivery path that reaches every agent without polling.
+A successful `claim` carries a brief: the unread notices, contracts,
+decisions, and memory notes for the claimed paths, five newest each, as
+compact rows ([ADR-0014](../5-decisions/0014-brief-on-claim.md)). Any
+result may carry `lost`, the leases the caller held that ended since its
+last call, and `inbox`, the messages waiting for it
+([ADR-0015](../5-decisions/0015-lease-loss-and-max-age.md),
+[ADR-0020](../5-decisions/0020-agent-messages.md)). Both are omitted when
+empty, so the common call costs nothing extra. Field shapes are in
+[04-primitives.md](04-primitives.md).
 
 Every tool's input schema is post-processed in `tools/list`: the
 `$schema` URL, `default: null`, integer `format` and `minimum`, the
 nullable type unions on optional fields, and per-parameter descriptions
 are dropped. Each tool keeps a one-sentence description that carries the
 semantics a parameter name does not, such as the allowed `kind` values.
-Agents download every schema once per session, so
-`tests/http_roundtrip.rs` pins the whole listing under 6 KB and each tool
-under 500 characters. Parameter semantics live in
-[04-primitives.md](04-primitives.md) and in the input structs' doc
-comments, not on the wire.
+Agents download every schema once per session, so `tests/budgets.rs` and
+`tests/http_roundtrip.rs` pin the whole listing under 7,800 characters
+and each tool under 500 ([ADR-0017](../5-decisions/0017-tool-result-and-schema-budget.md)).
+Parameter semantics live in [04-primitives.md](04-primitives.md) and in
+the input structs' doc comments, not on the wire.

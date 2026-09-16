@@ -11,8 +11,10 @@
 //!   whoever claims it instead of waiting to be searched for.
 //! - **Notes are Markdown files with YAML frontmatter**, one file per
 //!   note, committed to the repository. They are readable in a pull
-//!   request, editable by hand, and interchangeable with the Basic Memory
-//!   notes already in `.memory/`. See ADR-0011.
+//!   request, editable by hand, and use the line formats of Basic Memory,
+//!   which is where this repository's own notes came from (ADR-0012), so
+//!   notes written by other Markdown memory tools import without
+//!   translation. See ADR-0011.
 //!
 //! This module is pure: it owns the note type, the file format, and the
 //! in-memory index with its search. It performs no I/O and knows nothing
@@ -267,13 +269,6 @@ impl Permalink {
     pub fn file_path(&self) -> String {
         format!("{}.md", self.0)
     }
-
-    /// The folder segments, empty for a note at the top level.
-    pub fn folders(&self) -> Vec<&str> {
-        let mut segments: Vec<&str> = self.0.split('/').collect();
-        segments.pop();
-        segments
-    }
 }
 
 impl fmt::Display for Permalink {
@@ -385,19 +380,6 @@ impl MemoryNote {
         format!("{cut}...")
     }
 
-    /// How well this note matches `query`, scoring title and tag hits
-    /// above observations, and observations above body prose.
-    ///
-    /// Returns zero when no term matches, which callers treat as a miss.
-    ///
-    /// This lowercases the note's text on every call. [`MemoryBook`] keeps
-    /// the lowercased form alongside each note and does not pay that cost,
-    /// so prefer [`MemoryBook::search`] for anything but a one-off.
-    pub fn score(&self, query: &str) -> u32 {
-        let terms = tokenize(query);
-        score_with(&Haystacks::of(self), &terms)
-    }
-
     /// Renders the note as the Markdown file that is written to disk.
     ///
     /// The inverse of [`MemoryNote::from_markdown`].
@@ -424,8 +406,11 @@ impl MemoryNote {
     ///
     /// Hand-edited files are accepted as long as the frontmatter carries
     /// a title; missing optional fields fall back to defaults so a human
-    /// can drop a Markdown file into the directory and have it indexed.
-    pub fn from_markdown(text: &str) -> Result<Self, MemoryError> {
+    /// can drop a Markdown file into the directory and have it indexed. A
+    /// missing `created_at` becomes `written_at`, which the caller takes
+    /// from the file (its modification time) or its clock; this module
+    /// never reads the system clock itself.
+    pub fn from_markdown(text: &str, written_at: DateTime<Utc>) -> Result<Self, MemoryError> {
         let (front, body) = split_frontmatter(text)?;
         let fields = parse_frontmatter(&front)?;
 
@@ -459,7 +444,7 @@ impl MemoryNote {
         };
         let created_at = match fields.get("created_at") {
             Some(raw) => parse_time(raw)?,
-            None => Utc::now(),
+            None => written_at.trunc_subsecs(0),
         };
         let updated_at = match fields.get("updated_at") {
             Some(raw) => parse_time(raw)?,
@@ -611,7 +596,7 @@ impl NewMemory {
 /// because scoring runs under the daemon's single lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySearch {
-    /// Free text, scored by [`MemoryNote::score`].
+    /// Free text; see [`MemoryBook::search`] for how it is scored.
     pub query: Option<String>,
     /// Only notes scoped to a path overlapping this one.
     pub path: Option<RepoPath>,
@@ -1058,9 +1043,11 @@ impl MemoryBook {
 
     /// Notes matching every filter, best first.
     ///
-    /// With a query, results are ranked by [`MemoryNote::score`] and
-    /// non-matching notes are dropped. Without one, results are the
-    /// filtered notes, newest first.
+    /// With a query, notes are scored on title, permalink, tags,
+    /// observations, and body, in that order of weight; a note matching
+    /// every term outranks one matching some, and non-matching notes are
+    /// dropped. Matching is on substrings, so `lease` finds `leases`.
+    /// Without a query, results are the filtered notes, newest first.
     pub fn search(&self, filter: &MemorySearch) -> Vec<MemoryHit<'_>> {
         let query = filter
             .query
@@ -1523,12 +1510,15 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 9, 16, 1, minute, 0).unwrap()
     }
 
-    fn new_memory(title: &str, body: &str) -> NewMemory {
-        NewMemory {
-            title: title.to_owned(),
-            body: body.to_owned(),
-            ..NewMemory::default()
-        }
+    fn note(title: &str, body: &str) -> NewMemory {
+        NewMemory::new(title, body)
+    }
+
+    /// Writes a plain note by `tester` at minute 0 and returns it.
+    fn write(book: &mut MemoryBook, title: &str, body: &str) -> MemoryNote {
+        book.write(agent("tester"), note(title, body), at(0))
+            .unwrap()
+            .note
     }
 
     fn book_with(entries: &[(&str, &str)]) -> MemoryBook {
@@ -1536,7 +1526,7 @@ mod tests {
         for (index, (title, body)) in entries.iter().enumerate() {
             book.write(
                 agent("tester"),
-                new_memory(title, body),
+                note(title, body),
                 at(u32::try_from(index).unwrap()),
             )
             .unwrap();
@@ -1558,6 +1548,17 @@ mod tests {
                 .as_str(),
             "lease-renewal-ttl"
         );
+        // A slash in a title is punctuation, not a folder.
+        assert_eq!(
+            Permalink::from_title("A note / with a slash")
+                .unwrap()
+                .as_str(),
+            "a-note-with-a-slash"
+        );
+        assert_eq!(
+            Permalink::from_title("Lease renewal").unwrap().file_path(),
+            "lease-renewal.md"
+        );
         assert_eq!(
             Permalink::from_title("***").unwrap_err(),
             MemoryError::EmptyPermalink
@@ -1565,15 +1566,32 @@ mod tests {
     }
 
     #[test]
-    fn permalink_parse_refuses_anything_not_a_slug() {
+    fn permalinks_may_carry_folder_segments() {
+        let link = Permalink::parse("tirith/design/pre-alpha-build").unwrap();
+        assert_eq!(link.file_path(), "tirith/design/pre-alpha-build.md");
         assert!(Permalink::parse("valid-slug-1").is_ok());
-        for bad in ["../escape", "has space", "Upper", "trailing-", "-leading"] {
+    }
+
+    /// `.` is outside the allowed character set, so `..` cannot be
+    /// spelled and a permalink can never escape the memory directory.
+    #[test]
+    fn permalinks_cannot_escape_the_directory() {
+        for bad in [
+            "../escape",
+            "..",
+            "/absolute",
+            "trailing/",
+            "double//slash",
+            "has space",
+            "has space/x",
+            "Upper",
+            "Upper/case",
+            "trailing-",
+            "-leading",
+            "a/b/c/d/e/f/g/h/i",
+        ] {
             assert!(Permalink::parse(bad).is_err(), "{bad} should be refused");
         }
-        assert_eq!(
-            Permalink::from_title("Lease renewal").unwrap().file_path(),
-            "lease-renewal.md"
-        );
     }
 
     #[test]
@@ -1582,20 +1600,19 @@ mod tests {
         let written = book
             .write(
                 agent("storage-claude"),
-                NewMemory {
-                    title: "Persister: writes are sequence-ordered".to_owned(),
-                    kind: MemoryKind::Lesson,
-                    body: "Stale snapshots are skipped.\n\n- [design] Writes go through spawn_blocking #storage\n- follows [[pre-alpha-build]]".to_owned(),
-                    paths: vec![path("src/store.rs"), path("src/state.rs")],
-                    tags: vec!["Storage".to_owned(), "#rmcp".to_owned()],
-                    ..NewMemory::default()
-                },
+                note(
+                    "Persister: writes are sequence-ordered",
+                    "Stale snapshots are skipped.\n\n- [design] Writes go through spawn_blocking #storage\n- follows [[pre-alpha-build]]",
+                )
+                .with_kind(MemoryKind::Lesson)
+                .with_paths(vec![path("src/store.rs"), path("src/state.rs")])
+                .with_tags(vec!["Storage".to_owned(), "#rmcp".to_owned()]),
                 at(5),
             )
             .unwrap();
 
         let text = written.note.to_markdown();
-        let parsed = MemoryNote::from_markdown(&text).unwrap();
+        let parsed = MemoryNote::from_markdown(&text, at(0)).unwrap();
         assert_eq!(parsed, written.note);
         // The title carries a colon, which must survive quoting.
         assert_eq!(parsed.title, "Persister: writes are sequence-ordered");
@@ -1612,69 +1629,131 @@ mod tests {
     #[test]
     fn empty_lists_round_trip() {
         let mut book = MemoryBook::default();
-        let note = book
-            .write(agent("a"), new_memory("Bare note", "Body."), at(0))
-            .unwrap()
-            .note;
-        let parsed = MemoryNote::from_markdown(&note.to_markdown()).unwrap();
+        let bare = write(&mut book, "Bare note", "Body.");
+        let parsed = MemoryNote::from_markdown(&bare.to_markdown(), at(0)).unwrap();
         assert!(parsed.tags.is_empty());
         assert!(parsed.paths.is_empty());
-        assert_eq!(parsed, note);
+        assert_eq!(parsed, bare);
+    }
+
+    /// The store relies on this: whatever `write` returns is exactly what
+    /// `from_markdown` gives back after `to_markdown`, sub-second
+    /// timestamps included.
+    #[test]
+    fn a_note_written_now_round_trips_exactly() {
+        let mut book = MemoryBook::default();
+        let written = book
+            .write(
+                agent("a"),
+                note("Written at an awkward instant", "Body."),
+                // A timestamp with nanoseconds, as the system clock produces.
+                at(0) + chrono::Duration::nanoseconds(123_456_789),
+            )
+            .unwrap()
+            .note;
+        assert_eq!(written.created_at.timestamp_subsec_nanos(), 0);
+        let parsed = MemoryNote::from_markdown(&written.to_markdown(), at(0)).unwrap();
+        assert_eq!(parsed, written);
+    }
+
+    /// Anything that survives `write` must survive the file round trip.
+    #[test]
+    fn awkward_titles_and_paths_round_trip_through_frontmatter() {
+        let mut book = MemoryBook::default();
+        for title in [
+            "- leading dash",
+            "? leading question",
+            "% leading percent",
+            "@ leading at",
+            "| leading pipe",
+            "> leading angle",
+            "key: value pairs",
+            "trailing colon:",
+            "quotes \"inside\" it",
+            "# leading hash",
+            ", leading comma",
+        ] {
+            let written = book
+                .write(
+                    agent("a"),
+                    note(title, "Body.")
+                        .with_tags(vec!["plain".to_owned()])
+                        .with_paths(vec![path("src/store.rs")]),
+                    at(0),
+                )
+                .unwrap()
+                .note;
+            let parsed = MemoryNote::from_markdown(&written.to_markdown(), at(0))
+                .unwrap_or_else(|e| panic!("{title:?} did not round trip: {e}"));
+            assert_eq!(parsed, written, "{title:?} changed across a round trip");
+        }
     }
 
     #[test]
     fn basic_memory_frontmatter_is_accepted() {
         // Inline lists and unknown extra keys, as Basic Memory writes them.
         let text = "---\ntitle: Project kickoff 2026-09-15\ntype: note\ntags: [tirith, kickoff]\npermalink: project-kickoff\n---\n\nTirith is an MCP coordination server.\n\n- [decision] Rust edition 2024 #architecture\n- documented_in [[Tirith docs]]\n";
-        let note = MemoryNote::from_markdown(text).unwrap();
-        assert_eq!(note.title, "Project kickoff 2026-09-15");
-        assert_eq!(note.permalink.as_str(), "project-kickoff");
-        assert_eq!(note.tags, vec!["tirith", "kickoff"]);
-        assert_eq!(note.kind, MemoryKind::Note);
-        assert_eq!(note.observations[0].category, "decision");
-        assert_eq!(note.observations[0].tags, vec!["architecture"]);
-        assert_eq!(note.relations[0].kind, "documented_in");
-        assert_eq!(note.relations[0].target, "Tirith docs");
+        let parsed = MemoryNote::from_markdown(text, at(0)).unwrap();
+        assert_eq!(parsed.title, "Project kickoff 2026-09-15");
+        assert_eq!(parsed.permalink.as_str(), "project-kickoff");
+        assert_eq!(parsed.tags, vec!["tirith", "kickoff"]);
+        assert_eq!(parsed.kind, MemoryKind::Note);
+        assert_eq!(parsed.observations[0].category, "decision");
+        assert_eq!(parsed.observations[0].tags, vec!["architecture"]);
+        assert_eq!(parsed.relations[0].kind, "documented_in");
+        assert_eq!(parsed.relations[0].target, "Tirith docs");
     }
 
     #[test]
     fn a_hand_written_file_needs_only_a_title() {
-        let note =
-            MemoryNote::from_markdown("---\ntitle: Quick thought\n---\n\nSomething.\n").unwrap();
-        assert_eq!(note.permalink.as_str(), "quick-thought");
-        assert_eq!(note.body, "Something.");
-        assert_eq!(note.author.as_str(), "unknown");
-        assert_eq!(note.updated_at, note.created_at);
+        let parsed =
+            MemoryNote::from_markdown("---\ntitle: Quick thought\n---\n\nSomething.\n", at(0))
+                .unwrap();
+        assert_eq!(parsed.permalink.as_str(), "quick-thought");
+        assert_eq!(parsed.body, "Something.");
+        assert_eq!(parsed.author.as_str(), "unknown");
+        assert_eq!(parsed.updated_at, parsed.created_at);
     }
 
     #[test]
     fn malformed_files_are_errors_never_panics() {
         assert_eq!(
-            MemoryNote::from_markdown("no frontmatter here").unwrap_err(),
+            MemoryNote::from_markdown("no frontmatter here", at(0)).unwrap_err(),
             MemoryError::MissingFrontmatter
         );
         assert_eq!(
-            MemoryNote::from_markdown("---\ntitle: Unterminated\n").unwrap_err(),
+            MemoryNote::from_markdown("---\ntitle: Unterminated\n", at(0)).unwrap_err(),
             MemoryError::MissingFrontmatter
         );
         assert_eq!(
-            MemoryNote::from_markdown("---\nkind: lesson\n---\nbody").unwrap_err(),
+            MemoryNote::from_markdown("---\nkind: lesson\n---\nbody", at(0)).unwrap_err(),
             MemoryError::MissingField("title")
         );
         assert_eq!(
-            MemoryNote::from_markdown("---\ntitle: T\nkind: wat\n---\nbody").unwrap_err(),
+            MemoryNote::from_markdown("---\ntitle: T\nkind: wat\n---\nbody", at(0)).unwrap_err(),
             MemoryError::UnknownKind("wat".to_owned())
         );
         assert_eq!(
-            MemoryNote::from_markdown("---\ntitle: T\ncreated_at: yesterday\n---\nbody")
+            MemoryNote::from_markdown("---\ntitle: T\ncreated_at: yesterday\n---\nbody", at(0))
                 .unwrap_err(),
             MemoryError::BadTimestamp("yesterday".to_owned())
         );
-        let err = MemoryNote::from_markdown("---\ntitle: T\nthis line has no colon\n---\nbody")
-            .unwrap_err();
+        // Frontmatter errors carry their one-based line so the store can
+        // point a human at it.
+        let err =
+            MemoryNote::from_markdown("---\ntitle: T\nthis line has no colon\n---\nbody", at(0))
+                .unwrap_err();
         assert!(
             matches!(err, MemoryError::Frontmatter { line: 2, .. }),
             "got {err:?}"
+        );
+        assert_eq!(err.line(), Some(2));
+        assert_eq!(MemoryError::EmptyTitle.line(), None);
+        let err =
+            MemoryNote::from_markdown("---\n- orphan\ntitle: T\n---\nbody", at(0)).unwrap_err();
+        assert!(
+            matches!(err, MemoryError::Frontmatter { line: 1, .. }),
+            "a list item before any key: {err:?}"
         );
     }
 
@@ -1682,19 +1761,14 @@ mod tests {
     fn writing_the_same_title_updates_in_place() {
         let mut book = MemoryBook::default();
         let first = book
-            .write(agent("a"), new_memory("Lease renewal", "First."), at(0))
+            .write(agent("a"), note("Lease renewal", "First."), at(0))
             .unwrap();
         assert!(first.created);
 
         let second = book
             .write(
                 agent("b"),
-                NewMemory {
-                    title: "Lease renewal".to_owned(),
-                    body: "Second.".to_owned(),
-                    kind: MemoryKind::Gotcha,
-                    ..NewMemory::default()
-                },
+                note("Lease renewal", "Second.").with_kind(MemoryKind::Gotcha),
                 at(1),
             )
             .unwrap();
@@ -1708,25 +1782,17 @@ mod tests {
         assert_eq!(second.note.author.as_str(), "a");
         assert_eq!(second.note.updated_by.as_str(), "b");
         assert_eq!(second.note.body, "Second.");
+        assert_eq!(second.note.kind, MemoryKind::Gotcha);
     }
 
     #[test]
     fn editing_by_permalink_keeps_the_address_when_the_title_changes() {
         let mut book = MemoryBook::default();
-        let link = book
-            .write(agent("a"), new_memory("Old title", "Body."), at(0))
-            .unwrap()
-            .note
-            .permalink;
+        let link = write(&mut book, "Old title", "Body.").permalink;
         let updated = book
             .write(
                 agent("a"),
-                NewMemory {
-                    title: "A completely different title".to_owned(),
-                    body: "Body.".to_owned(),
-                    permalink: Some(link.clone()),
-                    ..NewMemory::default()
-                },
+                note("A completely different title", "Body.").with_permalink(link.clone()),
                 at(1),
             )
             .unwrap();
@@ -1740,30 +1806,128 @@ mod tests {
     fn writes_are_validated() {
         let mut book = MemoryBook::default();
         assert_eq!(
-            book.write(agent("a"), new_memory("  ", "body"), at(0))
+            book.write(agent("a"), note("  ", "body"), at(0))
                 .unwrap_err(),
             MemoryError::EmptyTitle
         );
         assert_eq!(
-            book.write(agent("a"), new_memory("Title", "  \n "), at(0))
+            book.write(
+                agent("a"),
+                note(&"x".repeat(MAX_TITLE_LEN + 1), "body"),
+                at(0)
+            )
+            .unwrap_err(),
+            MemoryError::TitleTooLong
+        );
+        assert_eq!(
+            book.write(agent("a"), note("Title", "  \n "), at(0))
                 .unwrap_err(),
             MemoryError::EmptyBody
         );
         assert_eq!(
             book.write(
                 agent("a"),
-                NewMemory {
-                    title: "T".to_owned(),
-                    body: "b".to_owned(),
-                    permalink: Some(Permalink::parse("does-not-exist").unwrap()),
-                    ..NewMemory::default()
-                },
+                note("T", "b").with_permalink(Permalink::parse("does-not-exist").unwrap()),
                 at(0),
             )
             .unwrap_err(),
             MemoryError::NotFound("does-not-exist".to_owned())
         );
         assert!(book.is_empty());
+    }
+
+    #[test]
+    fn tags_that_cannot_be_written_back_are_refused() {
+        let mut book = MemoryBook::default();
+        for bad in ["has\nnewline", "has:colon", "has[bracket", "has]bracket"] {
+            let result = book.write(
+                agent("a"),
+                note("Tagged", "Body.").with_tags(vec![bad.to_owned()]),
+                at(0),
+            );
+            assert!(
+                matches!(result, Err(MemoryError::InvalidTag(_))),
+                "{bad} should be refused, got {result:?}"
+            );
+        }
+        assert!(book.is_empty());
+    }
+
+    /// Two agents editing one note: the write that carries a stale
+    /// `updated_at` is refused with the real one, so nothing is clobbered.
+    #[test]
+    fn a_stale_if_updated_at_is_refused_and_the_current_one_writes() {
+        let mut book = MemoryBook::default();
+        let mine = write(&mut book, "Shared note", "Mine.");
+        book.write(agent("other"), note("Shared note", "Theirs."), at(1))
+            .unwrap();
+
+        let stale = book
+            .write(
+                agent("tester"),
+                note("Shared note", "Merged?").with_if_updated_at(mine.updated_at),
+                at(2),
+            )
+            .unwrap_err();
+        assert_eq!(
+            stale,
+            MemoryError::Conflict {
+                permalink: "shared-note".to_owned(),
+                updated_at: at(1),
+            }
+        );
+        assert_eq!(book.get("shared-note").unwrap().body, "Theirs.");
+
+        let fresh = book
+            .write(
+                agent("tester"),
+                note("Shared note", "Merged.").with_if_updated_at(at(1)),
+                at(2),
+            )
+            .unwrap();
+        assert!(!fresh.created);
+        assert_eq!(fresh.note.body, "Merged.");
+        assert_eq!(book.len(), 1);
+    }
+
+    /// A title in a script with no ASCII letters must still be storable.
+    #[test]
+    fn a_title_that_slugifies_to_nothing_still_gets_a_permalink() {
+        let mut book = MemoryBook::default();
+        let stored = write(&mut book, "Заметка о хранилище", "Body.");
+        assert!(
+            stored.permalink.as_str().starts_with("note-"),
+            "{}",
+            stored.permalink
+        );
+        // And it round-trips, so the loader can read it back.
+        let parsed = MemoryNote::from_markdown(&stored.to_markdown(), at(0)).unwrap();
+        assert_eq!(parsed, stored);
+        assert_eq!(parsed.title, "Заметка о хранилище");
+    }
+
+    /// Two different titles that slugify the same must not overwrite.
+    #[test]
+    fn titles_that_slugify_alike_get_separate_notes() {
+        let mut book = MemoryBook::default();
+        let first = book
+            .write(agent("a"), note("Storage design", "First note."), at(0))
+            .unwrap();
+        let second = book
+            .write(agent("a"), note("Storage  design!", "Second note."), at(0))
+            .unwrap();
+        assert!(first.created);
+        assert!(second.created, "the second title must not update the first");
+        assert_eq!(book.len(), 2);
+        assert_ne!(first.note.permalink, second.note.permalink);
+        assert_eq!(
+            book.get(first.note.permalink.as_str()).unwrap().body,
+            "First note."
+        );
+        assert_eq!(
+            book.get(second.note.permalink.as_str()).unwrap().body,
+            "Second note."
+        );
     }
 
     #[test]
@@ -1804,27 +1968,19 @@ mod tests {
         let mut book = MemoryBook::default();
         book.write(
             agent("a"),
-            NewMemory {
-                title: "Store gotcha".to_owned(),
-                body: "Body.".to_owned(),
-                kind: MemoryKind::Gotcha,
-                paths: vec![path("src/store.rs")],
-                tags: vec!["storage".to_owned()],
-                ..NewMemory::default()
-            },
+            note("Store gotcha", "Body.")
+                .with_kind(MemoryKind::Gotcha)
+                .with_paths(vec![path("src/store.rs")])
+                .with_tags(vec!["storage".to_owned()]),
             at(0),
         )
         .unwrap();
         book.write(
             agent("a"),
-            NewMemory {
-                title: "Server fact".to_owned(),
-                body: "Body.".to_owned(),
-                kind: MemoryKind::Fact,
-                paths: vec![path("src/server.rs")],
-                tags: vec!["mcp".to_owned()],
-                ..NewMemory::default()
-            },
+            note("Server fact", "Body.")
+                .with_kind(MemoryKind::Fact)
+                .with_paths(vec![path("src/server.rs")])
+                .with_tags(vec!["mcp".to_owned()]),
             at(1),
         )
         .unwrap();
@@ -1858,374 +2014,11 @@ mod tests {
     }
 
     #[test]
-    fn for_path_uses_directory_overlap() {
-        let mut book = MemoryBook::default();
-        book.write(
-            agent("a"),
-            NewMemory {
-                title: "About the store".to_owned(),
-                body: "Body.".to_owned(),
-                paths: vec![path("src/store.rs")],
-                ..NewMemory::default()
-            },
-            at(0),
-        )
-        .unwrap();
-
-        // A claim on the directory picks up notes about files beneath it.
-        assert_eq!(book.for_path(&path("src"), None).len(), 1);
-        assert_eq!(book.for_path(&path("src/store.rs"), None).len(), 1);
-        // But not a sibling that merely shares a prefix.
-        assert!(book.for_path(&path("srcs"), None).is_empty());
-        assert!(book.for_path(&path("docs"), None).is_empty());
-    }
-
-    #[test]
-    fn context_walks_relations_in_both_directions() {
-        let mut book = MemoryBook::default();
-        book.write(agent("a"), new_memory("Root note", "The root."), at(0))
-            .unwrap();
-        book.write(
-            agent("a"),
-            new_memory("Child note", "Follows.\n\n- follows [[root-note]]"),
-            at(1),
-        )
-        .unwrap();
-        book.write(agent("a"), new_memory("Island", "Unconnected."), at(2))
-            .unwrap();
-
-        // From the root, the backlink from the child is found.
-        let from_root = book.context("root-note", 1);
-        assert_eq!(from_root.len(), 2);
-        assert_eq!(from_root[0].title, "Root note");
-        assert!(from_root.iter().any(|n| n.title == "Child note"));
-        assert!(from_root.iter().all(|n| n.title != "Island"));
-
-        // From the child, the forward link is followed.
-        let from_child = book.context("child-note", 1);
-        assert!(from_child.iter().any(|n| n.title == "Root note"));
-
-        assert!(book.context("no-such-note", 2).is_empty());
-    }
-
-    #[test]
-    fn notes_are_found_by_permalink_id_or_title() {
-        let mut book = MemoryBook::default();
-        let note = book
-            .write(agent("a"), new_memory("Findable note", "Body."), at(0))
-            .unwrap()
-            .note;
-        assert!(book.get("findable-note").is_some());
-        assert!(book.get(&note.id.to_string()).is_some());
-        assert!(book.get("Findable Note").is_some());
-        assert!(book.get("absent").is_none());
-    }
-
-    #[test]
-    fn tags_are_lowercased_deduped_and_stripped() {
-        let mut book = MemoryBook::default();
-        let note = book
-            .write(
-                agent("a"),
-                NewMemory {
-                    title: "Tagged".to_owned(),
-                    body: "Body.".to_owned(),
-                    tags: vec![
-                        "#Storage".to_owned(),
-                        "storage".to_owned(),
-                        "  ".to_owned(),
-                        "RMCP".to_owned(),
-                    ],
-                    ..NewMemory::default()
-                },
-                at(0),
-            )
-            .unwrap()
-            .note;
-        assert_eq!(note.tags, vec!["storage", "rmcp"]);
-        assert!(note.has_tag("STORAGE"));
-        assert!(note.has_tag("#rmcp"));
-        assert!(!note.has_tag("absent"));
-    }
-
-    #[test]
-    fn observation_tags_count_as_tags() {
-        let mut book = MemoryBook::default();
-        let note = book
-            .write(
-                agent("a"),
-                new_memory("Observed", "- [lesson] Something happened #claims"),
-                at(0),
-            )
-            .unwrap()
-            .note;
-        assert!(note.tags.is_empty());
-        assert!(note.has_tag("claims"));
-    }
-
-    #[test]
-    fn excerpts_skip_headings_and_truncate() {
-        let mut book = MemoryBook::default();
-        let note = book
-            .write(
-                agent("a"),
-                new_memory(
-                    "Long",
-                    "# Heading\n\nThe quick brown fox jumps over the lazy dog.",
-                ),
-                at(0),
-            )
-            .unwrap()
-            .note;
-        assert_eq!(
-            note.excerpt(200),
-            "The quick brown fox jumps over the lazy dog."
-        );
-        assert_eq!(note.excerpt(9), "The quick...");
-    }
-
-    #[test]
-    fn kinds_round_trip_through_strings() {
-        for kind in MemoryKind::all() {
-            assert_eq!(kind.as_str().parse::<MemoryKind>().unwrap(), kind);
-        }
-        assert!("nonsense".parse::<MemoryKind>().is_err());
-    }
-
-    #[test]
-    fn relations_without_a_kind_default_to_relates_to() {
-        let mut book = MemoryBook::default();
-        let note = book
-            .write(agent("a"), new_memory("Linker", "- [[other-note]]"), at(0))
-            .unwrap()
-            .note;
-        assert_eq!(note.relations.len(), 1);
-        assert_eq!(note.relations[0].kind, "relates_to");
-        assert_eq!(note.relations[0].target, "other-note");
-    }
-
-    #[test]
-    fn a_list_item_before_any_key_is_refused() {
-        let err = MemoryNote::from_markdown("---\n- orphan\ntitle: T\n---\nbody").unwrap_err();
-        assert!(
-            matches!(err, MemoryError::Frontmatter { line: 1, .. }),
-            "got {err:?}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod round_trip_tests {
-    use super::*;
-
-    /// The store relies on this: whatever `write` returns is exactly what
-    /// `from_markdown` gives back after `to_markdown`, sub-second
-    /// timestamps included.
-    #[test]
-    fn a_note_written_now_round_trips_exactly() {
-        let mut book = MemoryBook::default();
-        let written = book
-            .write(
-                AgentId::new("a").unwrap(),
-                NewMemory {
-                    title: "Written at an awkward instant".to_owned(),
-                    body: "Body.".to_owned(),
-                    ..NewMemory::default()
-                },
-                // A timestamp with nanoseconds, as Utc::now() produces.
-                Utc::now() + chrono::Duration::nanoseconds(123_456_789),
-            )
-            .unwrap()
-            .note;
-        assert_eq!(written.created_at.timestamp_subsec_nanos(), 0);
-        let parsed = MemoryNote::from_markdown(&written.to_markdown()).unwrap();
-        assert_eq!(parsed, written);
-    }
-}
-
-#[cfg(test)]
-mod folder_tests {
-    use super::*;
-
-    #[test]
-    fn permalinks_may_carry_folder_segments() {
-        let link = Permalink::parse("tirith/design/pre-alpha-build").unwrap();
-        assert_eq!(link.folders(), vec!["tirith", "design"]);
-        assert_eq!(link.file_path(), "tirith/design/pre-alpha-build.md");
-
-        let flat = Permalink::parse("just-a-note").unwrap();
-        assert!(flat.folders().is_empty());
-    }
-
-    /// `.` is outside the allowed character set, so `..` cannot be
-    /// spelled and a permalink can never escape the memory directory.
-    #[test]
-    fn permalinks_cannot_escape_the_directory() {
-        for bad in [
-            "../escape",
-            "..",
-            "/absolute",
-            "trailing/",
-            "double//slash",
-            "has space/x",
-            "Upper/case",
-            "a/b/c/d/e/f/g/h/i",
-        ] {
-            assert!(Permalink::parse(bad).is_err(), "{bad} should be refused");
-        }
-    }
-
-    #[test]
-    fn titles_still_slugify_flat() {
-        assert_eq!(
-            Permalink::from_title("A note / with a slash")
-                .unwrap()
-                .as_str(),
-            "a-note-with-a-slash"
-        );
-    }
-}
-
-#[cfg(test)]
-mod audit_tests {
-    use super::*;
-
-    fn agent() -> AgentId {
-        AgentId::new("auditor").unwrap()
-    }
-
-    fn at(minute: u32) -> DateTime<Utc> {
-        use chrono::TimeZone;
-        Utc.with_ymd_and_hms(2026, 9, 16, 2, minute, 0).unwrap()
-    }
-
-    fn write(book: &mut MemoryBook, title: &str, body: &str) -> Result<MemoryWritten, MemoryError> {
-        book.write(
-            agent(),
-            NewMemory {
-                title: title.to_owned(),
-                body: body.to_owned(),
-                ..NewMemory::default()
-            },
-            at(0),
-        )
-    }
-
-    /// A title in a script with no ASCII letters must still be storable.
-    #[test]
-    fn a_title_that_slugifies_to_nothing_still_gets_a_permalink() {
-        let mut book = MemoryBook::default();
-        let note = write(&mut book, "Заметка о хранилище", "Body.")
-            .unwrap()
-            .note;
-        assert!(
-            note.permalink.as_str().starts_with("note-"),
-            "{}",
-            note.permalink
-        );
-        // And it round-trips, so the loader can read it back.
-        let parsed = MemoryNote::from_markdown(&note.to_markdown()).unwrap();
-        assert_eq!(parsed, note);
-        assert_eq!(parsed.title, "Заметка о хранилище");
-    }
-
-    /// Two different titles that slugify the same must not overwrite.
-    #[test]
-    fn titles_that_slugify_alike_get_separate_notes() {
-        let mut book = MemoryBook::default();
-        let first = write(&mut book, "Storage design", "First note.").unwrap();
-        let second = write(&mut book, "Storage  design!", "Second note.").unwrap();
-
-        assert!(first.created);
-        assert!(second.created, "the second title must not update the first");
-        assert_eq!(book.len(), 2);
-        assert_ne!(first.note.permalink, second.note.permalink);
-        assert_eq!(
-            book.get(first.note.permalink.as_str()).unwrap().body,
-            "First note."
-        );
-        assert_eq!(
-            book.get(second.note.permalink.as_str()).unwrap().body,
-            "Second note."
-        );
-    }
-
-    /// The same title is still an update, not a second note.
-    #[test]
-    fn the_same_title_still_updates_in_place() {
-        let mut book = MemoryBook::default();
-        let first = write(&mut book, "Storage design", "First.").unwrap();
-        let second = write(&mut book, "Storage design", "Second.").unwrap();
-        assert!(!second.created);
-        assert_eq!(first.note.id, second.note.id);
-        assert_eq!(book.len(), 1);
-    }
-
-    #[test]
-    fn tags_that_cannot_be_written_back_are_refused() {
-        let mut book = MemoryBook::default();
-        for bad in ["has\nnewline", "has:colon", "has[bracket", "has]bracket"] {
-            let result = book.write(
-                agent(),
-                NewMemory {
-                    title: "Tagged".to_owned(),
-                    body: "Body.".to_owned(),
-                    tags: vec![bad.to_owned()],
-                    ..NewMemory::default()
-                },
-                at(0),
-            );
-            assert!(
-                matches!(result, Err(MemoryError::InvalidTag(_))),
-                "{bad} should be refused, got {result:?}"
-            );
-        }
-        assert!(book.is_empty());
-    }
-
-    /// Anything that survives `write` must survive the file round trip.
-    #[test]
-    fn awkward_titles_and_paths_round_trip_through_frontmatter() {
-        let mut book = MemoryBook::default();
-        for title in [
-            "- leading dash",
-            "? leading question",
-            "% leading percent",
-            "@ leading at",
-            "| leading pipe",
-            "> leading angle",
-            "key: value pairs",
-            "trailing colon:",
-            "quotes \"inside\" it",
-            "# leading hash",
-            ", leading comma",
-        ] {
-            let note = book
-                .write(
-                    agent(),
-                    NewMemory {
-                        title: title.to_owned(),
-                        body: "Body.".to_owned(),
-                        tags: vec!["plain".to_owned()],
-                        paths: vec![RepoPath::new("src/store.rs").unwrap()],
-                        ..NewMemory::default()
-                    },
-                    at(0),
-                )
-                .unwrap()
-                .note;
-            let parsed = MemoryNote::from_markdown(&note.to_markdown())
-                .unwrap_or_else(|e| panic!("{title:?} did not round trip: {e}"));
-            assert_eq!(parsed, note, "{title:?} changed across a round trip");
-        }
-    }
-
-    #[test]
     fn a_repeated_common_word_does_not_beat_a_matching_title() {
         let mut book = MemoryBook::default();
         let padding = "the store is the thing that the store does. ".repeat(40);
-        write(&mut book, "Unrelated rambling", &padding).unwrap();
-        write(&mut book, "Store", "Short and on topic.").unwrap();
+        write(&mut book, "Unrelated rambling", &padding);
+        write(&mut book, "Store", "Short and on topic.");
 
         let hits = book.search(&MemorySearch {
             query: Some("the store".to_owned()),
@@ -2238,8 +2031,8 @@ mod audit_tests {
     fn short_terms_are_dropped_unless_the_query_is_all_short() {
         // "of" matches everything, so it must not drag in every note.
         let mut book = MemoryBook::default();
-        write(&mut book, "Persistence of state", "A note.").unwrap();
-        write(&mut book, "Something else", "Nothing of interest here.").unwrap();
+        write(&mut book, "Persistence of state", "A note.");
+        write(&mut book, "Something else", "Nothing of interest here.");
 
         let hits = book.search(&MemorySearch {
             query: Some("of persistence".to_owned()),
@@ -2259,7 +2052,7 @@ mod audit_tests {
     #[test]
     fn substring_matching_still_finds_word_variants() {
         let mut book = MemoryBook::default();
-        write(&mut book, "Claim leases renew on any call", "Body.").unwrap();
+        write(&mut book, "Claim leases renew on any call", "Body.");
         for query in ["lease", "renew", "leases renewal"] {
             let hits = book.search(&MemorySearch {
                 query: Some(query.to_owned()),
@@ -2273,7 +2066,7 @@ mod audit_tests {
     fn a_default_search_is_bounded() {
         let mut book = MemoryBook::default();
         for index in 0..(DEFAULT_SEARCH_LIMIT + 5) {
-            write(&mut book, &format!("Note {index}"), "Body.").unwrap();
+            write(&mut book, &format!("Note {index}"), "Body.");
         }
         assert_eq!(
             book.search(&MemorySearch::default()).len(),
@@ -2291,48 +2084,157 @@ mod audit_tests {
     }
 
     #[test]
-    fn frontmatter_errors_carry_their_line() {
-        let err = MemoryNote::from_markdown("---\ntitle: T\nbroken line\n---\nbody").unwrap_err();
-        assert_eq!(err.line(), Some(2));
-        assert_eq!(MemoryError::EmptyTitle.line(), None);
+    fn for_path_uses_directory_overlap() {
+        let mut book = MemoryBook::default();
+        book.write(
+            agent("a"),
+            note("About the store", "Body.").with_paths(vec![path("src/store.rs")]),
+            at(0),
+        )
+        .unwrap();
+
+        // A claim on the directory picks up notes about files beneath it.
+        assert_eq!(book.for_path(&path("src"), None).len(), 1);
+        assert_eq!(book.for_path(&path("src/store.rs"), None).len(), 1);
+        // But not a sibling that merely shares a prefix.
+        assert!(book.for_path(&path("srcs"), None).is_empty());
+        assert!(book.for_path(&path("docs"), None).is_empty());
     }
 
     #[test]
-    fn titles_are_capped_at_the_permalink_length() {
+    fn context_walks_relations_in_both_directions() {
+        let book = book_with(&[
+            ("Root note", "The root."),
+            ("Child note", "Follows.\n\n- follows [[root-note]]"),
+            ("Island", "Unconnected."),
+        ]);
+
+        // From the root, the backlink from the child is found.
+        let from_root = book.context("root-note", 1);
+        assert_eq!(from_root.len(), 2);
+        assert_eq!(from_root[0].title, "Root note");
+        assert!(from_root.iter().any(|n| n.title == "Child note"));
+        assert!(from_root.iter().all(|n| n.title != "Island"));
+
+        // From the child, the forward link is followed.
+        let from_child = book.context("child-note", 1);
+        assert!(from_child.iter().any(|n| n.title == "Root note"));
+
+        assert!(book.context("no-such-note", 2).is_empty());
+    }
+
+    #[test]
+    fn related_notes_are_capped() {
         let mut book = MemoryBook::default();
-        let long = "x".repeat(MAX_TITLE_LEN + 1);
-        assert_eq!(
-            write(&mut book, &long, "Body.").unwrap_err(),
-            MemoryError::TitleTooLong
+        write(&mut book, "Hub", "Everything points here.");
+        for index in 0..(MAX_RELATED + 10) {
+            write(&mut book, &format!("Spoke {index}"), "- follows [[hub]]");
+        }
+        let context = book.context("hub", 2);
+        assert_eq!(context[0].title, "Hub");
+        assert!(
+            context.len() <= MAX_RELATED + 1,
+            "context returned {} notes",
+            context.len()
         );
     }
-}
 
-#[cfg(test)]
-mod retraction_tests {
-    use super::*;
-
-    fn agent() -> AgentId {
-        AgentId::new("keeper").unwrap()
+    #[test]
+    fn notes_are_found_by_permalink_id_or_title() {
+        let mut book = MemoryBook::default();
+        let stored = write(&mut book, "Findable note", "Body.");
+        assert!(book.get("findable-note").is_some());
+        assert!(book.get(&stored.id.to_string()).is_some());
+        assert!(book.get("Findable Note").is_some());
+        assert!(book.get("absent").is_none());
     }
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        use chrono::TimeZone;
-        Utc.with_ymd_and_hms(2026, 9, 16, 2, minute, 0).unwrap()
+    #[test]
+    fn tags_are_lowercased_deduped_and_stripped() {
+        let mut book = MemoryBook::default();
+        let tagged = book
+            .write(
+                agent("a"),
+                note("Tagged", "Body.").with_tags(vec![
+                    "#Storage".to_owned(),
+                    "storage".to_owned(),
+                    "  ".to_owned(),
+                    "RMCP".to_owned(),
+                ]),
+                at(0),
+            )
+            .unwrap()
+            .note;
+        assert_eq!(tagged.tags, vec!["storage", "rmcp"]);
+        assert!(tagged.has_tag("STORAGE"));
+        assert!(tagged.has_tag("#rmcp"));
+        assert!(!tagged.has_tag("absent"));
     }
 
-    fn write(book: &mut MemoryBook, title: &str, body: &str) -> MemoryNote {
-        book.write(
-            agent(),
-            NewMemory {
-                title: title.to_owned(),
-                body: body.to_owned(),
-                ..NewMemory::default()
-            },
-            at(0),
-        )
-        .unwrap()
-        .note
+    #[test]
+    fn observation_tags_count_as_tags() {
+        let mut book = MemoryBook::default();
+        let observed = write(
+            &mut book,
+            "Observed",
+            "- [lesson] Something happened #claims",
+        );
+        assert!(observed.tags.is_empty());
+        assert!(observed.has_tag("claims"));
+    }
+
+    #[test]
+    fn excerpts_skip_headings_and_truncate() {
+        let mut book = MemoryBook::default();
+        let long = write(
+            &mut book,
+            "Long",
+            "# Heading\n\nThe quick brown fox jumps over the lazy dog.",
+        );
+        assert_eq!(
+            long.excerpt(200),
+            "The quick brown fox jumps over the lazy dog."
+        );
+        assert_eq!(long.excerpt(9), "The quick...");
+    }
+
+    #[test]
+    fn a_digest_carries_no_body() {
+        let mut book = MemoryBook::default();
+        let long = write(
+            &mut book,
+            "Long note",
+            "# Heading\n\nThis body is far longer than the excerpt allowance, which is exactly why a listing must not carry it around for every row it returns to a caller that only wanted to know what exists.",
+        );
+        let digest = long.digest();
+        assert_eq!(digest.title, "Long note");
+        assert_eq!(digest.permalink, long.permalink);
+        assert_eq!(digest.updated_at, long.updated_at);
+        assert!(digest.excerpt.chars().count() <= CLAIM_MEMORY_EXCERPT + 3);
+        assert!(!digest.excerpt.contains('#'), "heading leaked into excerpt");
+
+        // And it serializes without a body field at all.
+        let json = serde_json::to_value(&digest).unwrap();
+        assert!(json.get("body").is_none());
+        assert!(json.get("observations").is_none());
+        assert!(json.get("excerpt").is_some());
+    }
+
+    #[test]
+    fn kinds_round_trip_through_strings() {
+        for kind in MemoryKind::all() {
+            assert_eq!(kind.as_str().parse::<MemoryKind>().unwrap(), kind);
+        }
+        assert!("nonsense".parse::<MemoryKind>().is_err());
+    }
+
+    #[test]
+    fn relations_without_a_kind_default_to_relates_to() {
+        let mut book = MemoryBook::default();
+        let linker = write(&mut book, "Linker", "- [[other-note]]");
+        assert_eq!(linker.relations.len(), 1);
+        assert_eq!(linker.relations[0].kind, "relates_to");
+        assert_eq!(linker.relations[0].target, "other-note");
     }
 
     #[test]
@@ -2370,12 +2272,8 @@ mod retraction_tests {
         // Writing after a removal must land on the right note.
         let again = book
             .write(
-                agent(),
-                NewMemory {
-                    title: "Second storage note".to_owned(),
-                    body: "Edited.".to_owned(),
-                    ..NewMemory::default()
-                },
+                agent("tester"),
+                note("Second storage note", "Edited."),
                 at(1),
             )
             .unwrap();
@@ -2406,53 +2304,11 @@ mod retraction_tests {
 
         // Rewriting the follower without the relation must drop the link.
         book.write(
-            agent(),
-            NewMemory {
-                title: "Follower".to_owned(),
-                body: "No longer follows anything.".to_owned(),
-                ..NewMemory::default()
-            },
+            agent("tester"),
+            note("Follower", "No longer follows anything."),
             at(1),
         )
         .unwrap();
         assert_eq!(book.context("root", 1).len(), 1);
-    }
-
-    #[test]
-    fn related_notes_are_capped() {
-        let mut book = MemoryBook::default();
-        write(&mut book, "Hub", "Everything points here.");
-        for index in 0..(MAX_RELATED + 10) {
-            write(&mut book, &format!("Spoke {index}"), "- follows [[hub]]");
-        }
-        let context = book.context("hub", 2);
-        assert_eq!(context[0].title, "Hub");
-        assert!(
-            context.len() <= MAX_RELATED + 1,
-            "context returned {} notes",
-            context.len()
-        );
-    }
-
-    #[test]
-    fn a_digest_carries_no_body() {
-        let mut book = MemoryBook::default();
-        let note = write(
-            &mut book,
-            "Long note",
-            "# Heading\n\nThis body is far longer than the excerpt allowance, which is exactly why a listing must not carry it around for every row it returns to a caller that only wanted to know what exists.",
-        );
-        let digest = note.digest();
-        assert_eq!(digest.title, "Long note");
-        assert_eq!(digest.permalink, note.permalink);
-        assert_eq!(digest.updated_at, note.updated_at);
-        assert!(digest.excerpt.chars().count() <= CLAIM_MEMORY_EXCERPT + 3);
-        assert!(!digest.excerpt.contains('#'), "heading leaked into excerpt");
-
-        // And it serializes without a body field at all.
-        let json = serde_json::to_value(&digest).unwrap();
-        assert!(json.get("body").is_none());
-        assert!(json.get("observations").is_none());
-        assert!(json.get("excerpt").is_some());
     }
 }

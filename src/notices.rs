@@ -1,13 +1,12 @@
 //! Change notices: "something changed and these paths care".
 //!
-//! Dependents list notices for the paths they are about to touch before
-//! acting, then acknowledge the ones they have handled so `unread_by`
-//! acting. A notice counts as seen by an agent once Tirith has delivered
-//! it to that agent, in a brief or an unread listing; there is no manual
-//! acknowledgement (ADR-0021). Seen marks are their own append-only log
-//! ([`NoticeSeen`]): a notice row is never rewritten after it is
-//! published, and the in-memory `acked_by` set is rebuilt from the log on
-//! load.
+//! Dependents list the notices for the paths they are about to touch
+//! before acting. A notice counts as seen by an agent once Tirith has
+//! delivered it to that agent, in a brief or an unread listing; there is
+//! no manual acknowledgement (ADR-0021). Seen marks are their own
+//! append-only log ([`NoticeSeen`]): a notice row is never rewritten after
+//! it is published, and the in-memory `acked_by` set is rebuilt from the
+//! log on load.
 
 use std::fmt;
 use std::str::FromStr;
@@ -125,7 +124,9 @@ pub struct NoticeSeen {
     pub at: DateTime<Utc>,
 }
 
-/// Input for publishing a notice.
+/// Input for publishing a notice. Build it with [`NewNotice::new`] and
+/// the `with_*` setters outside this module, so a new optional field
+/// never breaks a caller (decision 19c6595c).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewNotice {
     /// See [`Notice::kind`].
@@ -142,6 +143,59 @@ pub struct NewNotice {
     pub contract_id: Option<ContractId>,
 }
 
+impl NewNotice {
+    /// A notice of `kind` summarized by `summary`, affecting no path yet.
+    ///
+    /// ```
+    /// use tirith::notices::{NewNotice, NoticeKind};
+    /// use tirith::types::RepoPath;
+    ///
+    /// let notice = NewNotice::new(NoticeKind::Rename, "session_id is now token")
+    ///     .with_from("session_id")
+    ///     .with_to("token")
+    ///     .with_affected_paths(vec![RepoPath::new("src/auth").unwrap()]);
+    /// assert_eq!(notice.affected_paths.len(), 1);
+    /// ```
+    pub fn new(kind: NoticeKind, summary: impl Into<String>) -> Self {
+        Self {
+            kind,
+            summary: summary.into(),
+            from: None,
+            to: None,
+            affected_paths: Vec::new(),
+            contract_id: None,
+        }
+    }
+
+    /// Sets the old name, location, or shape.
+    #[must_use]
+    pub fn with_from(mut self, from: impl Into<String>) -> Self {
+        self.from = Some(from.into());
+        self
+    }
+
+    /// Sets the new name, location, or shape.
+    #[must_use]
+    pub fn with_to(mut self, to: impl Into<String>) -> Self {
+        self.to = Some(to.into());
+        self
+    }
+
+    /// Sets the paths whose code is affected.
+    #[must_use]
+    pub fn with_affected_paths(mut self, paths: Vec<RepoPath>) -> Self {
+        self.affected_paths = paths;
+        self
+    }
+
+    /// Links the notice to a contract.
+    #[must_use]
+    pub fn with_contract_id(mut self, id: ContractId) -> Self {
+        self.contract_id = Some(id);
+        self
+    }
+}
+
 /// Filters for listing notices. All are optional and combine with AND.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NoticeFilter {
@@ -149,7 +203,7 @@ pub struct NoticeFilter {
     pub path: Option<RepoPath>,
     /// Only notices published at or after this instant.
     pub since: Option<DateTime<Utc>>,
-    /// Only notices this agent has not published or acknowledged.
+    /// Only notices this agent neither published nor has been shown.
     pub unread_by: Option<AgentId>,
 }
 
@@ -179,12 +233,23 @@ pub struct NoticeBoard {
 }
 
 impl NoticeBoard {
-    /// Rebuilds a board from persisted notices.
-    pub fn from_notices(notices: Vec<Notice>) -> Self {
-        Self {
+    /// Rebuilds a board from persisted notices and the seen log, replaying
+    /// each delivery into the notice's `acked_by`. Entries for notices
+    /// that no longer exist are dropped.
+    pub fn from_parts(notices: Vec<Notice>, seen: Vec<NoticeSeen>) -> Self {
+        let mut board = Self {
             notices,
-            seen: Vec::new(),
+            seen: Vec::with_capacity(seen.len()),
+        };
+        for entry in seen {
+            if let Some(notice) = board.notices.iter_mut().find(|n| n.id == entry.notice_id) {
+                if !notice.acked_by.contains(&entry.agent) {
+                    notice.acked_by.push(entry.agent.clone());
+                }
+                board.seen.push(entry);
+            }
         }
+        board
     }
 
     /// All notices in publish order.
@@ -247,25 +312,6 @@ impl NoticeBoard {
         resolve_prefix("notice", self.notices.iter().map(|n| n.id), raw)
     }
 
-    /// Rebuilds a board from persisted notices and the seen log, replaying
-    /// each delivery into the notice's `acked_by`. Entries for notices
-    /// that no longer exist are dropped.
-    pub fn from_parts(notices: Vec<Notice>, seen: Vec<NoticeSeen>) -> Self {
-        let mut board = Self {
-            notices,
-            seen: Vec::with_capacity(seen.len()),
-        };
-        for entry in seen {
-            if let Some(notice) = board.notices.iter_mut().find(|n| n.id == entry.notice_id) {
-                if !notice.acked_by.contains(&entry.agent) {
-                    notice.acked_by.push(entry.agent.clone());
-                }
-                board.seen.push(entry);
-            }
-        }
-        board
-    }
-
     /// The seen log, oldest first. The persister appends new entries from
     /// here through a `LogCursor`.
     pub fn seen(&self) -> &[NoticeSeen] {
@@ -313,14 +359,10 @@ mod tests {
     }
 
     fn rename(paths: &[&str]) -> NewNotice {
-        NewNotice {
-            kind: NoticeKind::Rename,
-            summary: "renamed session_id to token".into(),
-            from: Some("session_id".into()),
-            to: Some("token".into()),
-            affected_paths: paths.iter().map(|p| RepoPath::new(p).unwrap()).collect(),
-            contract_id: None,
-        }
+        NewNotice::new(NoticeKind::Rename, "renamed session_id to token")
+            .with_from("session_id")
+            .with_to("token")
+            .with_affected_paths(paths.iter().map(|p| RepoPath::new(p).unwrap()).collect())
     }
 
     #[test]

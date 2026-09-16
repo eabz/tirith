@@ -4,28 +4,20 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::fs;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use chrono::{Duration, TimeZone, Utc};
+use common::{call, options};
 use serde_json::json;
 use tirith::client::call_tool;
-use tirith::clock::{Clock, ManualClock};
-use tirith::server::{ServeOptions, start};
+use tirith::clock::ManualClock;
+use tirith::server::start;
 use tirith::store::JsonStore;
-
-fn options(root: &Path, clock: Option<Arc<ManualClock>>) -> ServeOptions {
-    ServeOptions {
-        bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        repo_root: root.to_path_buf(),
-        clock: clock.map(|c| c as Arc<dyn Clock>),
-
-        registry: None,
-    }
-}
 
 fn modified(path: &Path) -> SystemTime {
     fs::metadata(path).unwrap().modified().unwrap()
@@ -38,13 +30,12 @@ async fn fifty_agents_at_once_survive_a_restart_and_reads_do_not_write() {
     let url = handle.mcp_url();
     // Files are only created once their primitive changes, so make sure
     // the task board exists before checking that reads leave it alone.
-    call_tool(
-        &url,
+    call(
+        &handle,
         "task_create",
         json!({ "agent": "lead", "title": "t" }),
     )
-    .await
-    .unwrap();
+    .await;
 
     let mut agents = Vec::new();
     for i in 0..50 {
@@ -73,7 +64,7 @@ async fn fifty_agents_at_once_survive_a_restart_and_reads_do_not_write() {
         agent.await.unwrap();
     }
 
-    let status = call_tool(&url, "status", json!({})).await.unwrap();
+    let status = call(&handle, "status", json!({})).await;
     assert_eq!(status["claims"], 50, "{status}");
     assert_eq!(status["notices"], 50);
     let tirith = dir.path().join(".tirith");
@@ -85,30 +76,26 @@ async fn fifty_agents_at_once_survive_a_restart_and_reads_do_not_write() {
     let notices_before = modified(&tirith.join("notices.jsonl"));
     let tasks_before = modified(&tirith.join("runtime/tasks.json"));
     for _ in 0..3 {
-        let listed = call_tool(
-            &url,
+        let listed = call(
+            &handle,
             "claims_list",
             json!({ "agent": "a1", "all": true, "limit": 100 }),
         )
-        .await
-        .unwrap();
+        .await;
         assert_eq!(listed["count"], 50);
-        call_tool(
-            &url,
+        call(
+            &handle,
             "notice_list",
             json!({ "agent": "a1", "unread": true }),
         )
-        .await
-        .unwrap();
+        .await;
     }
     assert_eq!(modified(&tirith.join("notices.jsonl")), notices_before);
     assert_eq!(modified(&tirith.join("runtime/tasks.json")), tasks_before);
 
     handle.shutdown().await.unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
-    let status = call_tool(&handle.mcp_url(), "status", json!({}))
-        .await
-        .unwrap();
+    let status = call(&handle, "status", json!({})).await;
     assert_eq!(status["claims"], 50, "{status}");
     assert_eq!(status["notices"], 50);
     handle.shutdown().await.unwrap();
@@ -123,55 +110,47 @@ async fn lease_renewals_reach_disk_by_shutdown() {
     let handle = start(options(dir.path(), Some(clock.clone())))
         .await
         .unwrap();
-    let url = handle.mcp_url();
-    call_tool(
-        &url,
+    call(
+        &handle,
         "claim",
         json!({ "agent": "alice", "paths": ["src/a"], "reason": "r", "ttl_secs": 600 }),
     )
-    .await
-    .unwrap();
+    .await;
     let store = JsonStore::new(dir.path());
     let first = store.load().unwrap().claims[0].expires_at;
 
     clock.advance(Duration::seconds(120));
-    call_tool(&url, "claims_list", json!({ "agent": "alice" }))
-        .await
-        .unwrap();
+    call(&handle, "claims_list", json!({ "agent": "alice" })).await;
     handle.shutdown().await.unwrap();
 
     let renewed = store.load().unwrap().claims[0].expires_at;
     assert_eq!(renewed, first + Duration::seconds(120));
 }
 
-/// ADR-0021: acknowledging a notice appends to a runtime log and leaves
-/// the committed notice log byte-identical; the ack survives a restart.
+/// ADR-0021: delivering a notice appends to a runtime log and leaves the
+/// committed notice log byte-identical; the seen mark survives a restart.
 #[tokio::test]
-async fn an_ack_never_rewrites_the_notice_log_and_survives_a_restart() {
+async fn a_delivery_never_rewrites_the_notice_log_and_survives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
-    let url = handle.mcp_url();
-    let published = call_tool(
-        &url,
+    let published = call(
+        &handle,
         "notice_publish",
         json!({ "agent": "alice", "kind": "rename", "summary": "x to y", "affected_paths": ["src/x.rs"] }),
     )
-    .await
-    .unwrap();
+    .await;
     let id = published["notice"]["id"].as_str().unwrap().to_owned();
     handle.shutdown().await.unwrap();
     let notices_path = dir.path().join(".tirith/notices.jsonl");
     let before = fs::read(&notices_path).unwrap();
 
     let handle = start(options(dir.path(), None)).await.unwrap();
-    let url = handle.mcp_url();
-    let unread = call_tool(
-        &url,
+    let unread = call(
+        &handle,
         "notice_list",
         json!({ "agent": "bob", "path": "src/x.rs", "unread": true }),
     )
-    .await
-    .unwrap();
+    .await;
     assert_eq!(unread["count"], 1, "{unread}");
     assert_eq!(unread["notices"][0]["id"], id[..8], "{unread}");
     // Listing it delivered it; delivery is the acknowledgement (ADR-0021).
@@ -181,28 +160,28 @@ async fn an_ack_never_rewrites_the_notice_log_and_survives_a_restart() {
         before,
         "notices.jsonl is byte-identical"
     );
-    let acks = fs::read_to_string(dir.path().join(".tirith/runtime/notice_seen.jsonl")).unwrap();
-    assert_eq!(acks.lines().count(), 1, "{acks}");
-    assert!(acks.contains("\"bob\""));
+    let seen = fs::read_to_string(dir.path().join(".tirith/runtime/notice_seen.jsonl")).unwrap();
+    assert_eq!(seen.lines().count(), 1, "{seen}");
+    assert!(seen.contains("\"bob\""));
 
     let handle = start(options(dir.path(), None)).await.unwrap();
-    let url = handle.mcp_url();
-    let after = call_tool(
-        &url,
+    let after = call(
+        &handle,
         "notice_list",
         json!({ "agent": "bob", "path": "src/x.rs", "unread": true }),
     )
-    .await
-    .unwrap();
-    assert_eq!(after["count"], 0, "the ack was replayed on load: {after}");
-    let carol = call_tool(
-        &url,
+    .await;
+    assert_eq!(
+        after["count"], 0,
+        "the seen mark was replayed on load: {after}"
+    );
+    let carol = call(
+        &handle,
         "notice_list",
         json!({ "agent": "carol", "path": "src/x.rs", "unread": true }),
     )
-    .await
-    .unwrap();
-    assert_eq!(carol["count"], 1, "only bob acked: {carol}");
+    .await;
+    assert_eq!(carol["count"], 1, "only bob was shown it: {carol}");
     handle.shutdown().await.unwrap();
 }
 
@@ -244,13 +223,12 @@ async fn a_bad_line_does_not_stop_the_daemon_and_is_reported() {
     );
 
     // The daemon keeps working and a later append leaves the bad line in place.
-    call_tool(
-        &handle.mcp_url(),
+    call(
+        &handle,
         "notice_publish",
         json!({ "agent": "alice", "kind": "rename", "summary": "still works", "affected_paths": ["src"] }),
     )
-    .await
-    .unwrap();
+    .await;
     handle.shutdown().await.unwrap();
     let text = fs::read_to_string(tirith.join("notices.jsonl")).unwrap();
     assert!(text.starts_with("<<<<<<< HEAD\n"), "{text}");
@@ -264,39 +242,35 @@ async fn a_failed_write_is_reported_on_the_mutating_response() {
 
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
-    let url = handle.mcp_url();
-    let first = call_tool(
-        &url,
+    let first = call(
+        &handle,
         "claim",
         json!({ "agent": "alice", "paths": ["src/a"], "reason": "r" }),
     )
-    .await
-    .unwrap();
+    .await;
     assert_eq!(first["status"], "ok");
     assert!(first["persist_error"].is_null());
 
     let runtime = dir.path().join(".tirith/runtime");
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o555)).unwrap();
-    let second = call_tool(
-        &url,
+    let second = call(
+        &handle,
         "claim",
         json!({ "agent": "bob", "paths": ["src/b"], "reason": "r" }),
     )
-    .await
-    .unwrap();
+    .await;
     assert_eq!(second["status"], "ok", "the in-memory decision stands");
     assert!(second["persist_error"].is_string(), "{second}");
-    let status = call_tool(&url, "status", json!({})).await.unwrap();
+    let status = call(&handle, "status", json!({})).await;
     assert!(status["persist_error"].is_string());
 
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
-    let third = call_tool(
-        &url,
+    let third = call(
+        &handle,
         "claim",
         json!({ "agent": "carol", "paths": ["src/c"], "reason": "r" }),
     )
-    .await
-    .unwrap();
+    .await;
     assert!(third["persist_error"].is_null(), "recovered: {third}");
     handle.shutdown().await.unwrap();
     let store = JsonStore::new(dir.path());

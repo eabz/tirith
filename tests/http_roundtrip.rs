@@ -3,29 +3,19 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::net::SocketAddr;
-use std::path::Path;
+mod common;
+#[path = "common/raw_client.rs"]
+mod raw_client;
+
 use std::sync::Arc;
 
 use chrono::{Duration, TimeZone, Utc};
+use common::{call, options};
+use raw_client::raw_client;
 use serde_json::{Value, json};
-use tirith::client::{call_tool, list_tools};
+use tirith::client::list_tools;
 use tirith::clock::ManualClock;
-use tirith::server::{ServeOptions, ServerHandle, start};
-
-fn options(root: &Path, clock: Option<Arc<ManualClock>>) -> ServeOptions {
-    ServeOptions {
-        bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-        repo_root: root.to_path_buf(),
-        clock: clock.map(|c| c as Arc<dyn tirith::clock::Clock>),
-
-        registry: None,
-    }
-}
-
-async fn call(handle: &ServerHandle, tool: &str, args: Value) -> Value {
-    call_tool(&handle.mcp_url(), tool, args).await.unwrap()
-}
+use tirith::server::{ServeOptions, start};
 
 #[tokio::test]
 async fn second_agent_is_refused_and_succeeds_after_release() {
@@ -253,7 +243,8 @@ async fn dashboard_and_tool_list_are_served() {
     let handle = start(options(dir.path(), None)).await.unwrap();
     let tools = list_tools(&handle.mcp_url()).await.unwrap();
     let names: Vec<&str> = tools.iter().map(|(n, _)| n.as_str()).collect();
-    for expected in [
+    // The 22 tools docs/1-about/04-primitives.md documents, and no other.
+    let documented = [
         "claim",
         "release",
         "renew",
@@ -269,10 +260,22 @@ async fn dashboard_and_tool_list_are_served() {
         "notice_list",
         "decision_record",
         "decision_list",
+        "memory_write",
+        "memory_read",
+        "memory_search",
+        "memory_delete",
+        "message_send",
+        "message_list",
         "status",
-    ] {
+    ];
+    for expected in documented {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
+    assert_eq!(
+        names.len(),
+        documented.len(),
+        "undocumented tool: {names:?}"
+    );
     let state: Value = reqwest_get(&format!("{}api/state", handle.dashboard_url())).await;
     assert_eq!(state["server"]["mcp_url"], handle.mcp_url());
     assert!(state["claims"].is_array());
@@ -333,132 +336,6 @@ async fn raw_get(mut stream: tokio::net::TcpStream, url: &str) -> String {
     stream.read_to_end(&mut response).await.unwrap();
     String::from_utf8_lossy(&response).into_owned()
 }
-
-/// A bare rmcp client, for tests that need the raw `CallToolResult` or the
-/// raw `tools/list` rather than the structured value `tirith::client` picks.
-async fn raw_client(url: &str) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    use rmcp::ServiceExt;
-    use rmcp::transport::common::client_side_sse::NeverRetry;
-    use rmcp::transport::streamable_http_client::{
-        StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
-    };
-    let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_owned());
-    config.retry_config = Arc::new(NeverRetry::default());
-    let transport = StreamableHttpClientTransport::with_client(reqwest::Client::default(), config);
-    ().serve(transport).await.unwrap()
-}
-
-/// Every agent downloads `tools/list` once per session, so its size is a
-/// per-session token cost. This pins it so it cannot creep back up; the
-/// bound is the measured size plus a small margin, and goes down, not up.
-#[tokio::test]
-async fn tool_list_stays_small() {
-    let dir = tempfile::tempdir().unwrap();
-    let handle = start(options(dir.path(), None)).await.unwrap();
-    let client = raw_client(&handle.mcp_url()).await;
-    let tools = client.list_all_tools().await.unwrap();
-    let _ = client.cancel().await;
-    let total = serde_json::to_string(&tools).unwrap().len();
-    eprintln!("tools/list: {total} chars for {} tools", tools.len());
-    let mut largest = (String::new(), 0);
-    for tool in &tools {
-        let size = serde_json::to_string(tool).unwrap().len();
-        assert!(
-            size <= TOOL_LIMIT,
-            "tool {} is {size} chars, limit {TOOL_LIMIT}",
-            tool.name
-        );
-        if size > largest.1 {
-            largest = (tool.name.to_string(), size);
-        }
-    }
-    assert!(
-        total <= TOOL_LIST_LIMIT,
-        "tools/list is {total} chars for {} tools (largest {} at {}), limit {TOOL_LIST_LIMIT}",
-        tools.len(),
-        largest.0,
-        largest.1
-    );
-    handle.shutdown().await.unwrap();
-}
-
-/// Every tool result travels once, as structured content. The text block
-/// is a one-line summary for text-only clients, never the JSON again:
-/// clients feed the text block to the model, so a copy doubles the cost
-/// of every call.
-#[tokio::test]
-async fn tool_results_carry_a_short_text_line_not_the_json() {
-    use rmcp::model::CallToolRequestParams;
-
-    let dir = tempfile::tempdir().unwrap();
-    let handle = start(options(dir.path(), None)).await.unwrap();
-    let client = raw_client(&handle.mcp_url()).await;
-    let calls = [
-        (
-            "claim",
-            json!({ "agent": "alice", "paths": ["src/a.rs", "src/b.rs"], "reason": "r" }),
-        ),
-        (
-            "claim",
-            json!({ "agent": "bob", "paths": ["src/a.rs"], "reason": "r" }),
-        ),
-        ("claims_list", json!({ "agent": "bob" })),
-        (
-            "task_create",
-            json!({ "agent": "alice", "title": "Write the summary" }),
-        ),
-        (
-            "release",
-            json!({ "agent": "nobody", "paths": ["src/zzz.rs"] }),
-        ),
-        ("status", json!({})),
-    ];
-    for (tool, args) in calls {
-        let arguments = args.as_object().cloned().unwrap();
-        let result = client
-            .call_tool(CallToolRequestParams::new(tool).with_arguments(arguments))
-            .await
-            .unwrap();
-        let structured = result.structured_content.as_ref().unwrap();
-        assert!(structured["status"].is_string(), "{tool}: {structured}");
-        let texts: Vec<&str> = result
-            .content
-            .iter()
-            .filter_map(|block| block.as_text().map(|t| t.text.as_str()))
-            .collect();
-        assert_eq!(texts.len(), 1, "{tool} should carry exactly one text block");
-        let text = texts[0];
-        assert!(
-            text.len() < 200,
-            "{tool} text is {} bytes: {text}",
-            text.len()
-        );
-        assert!(
-            !text.trim_start().starts_with('{'),
-            "{tool} text is JSON: {text}"
-        );
-        assert!(
-            text.starts_with(structured["status"].as_str().unwrap()),
-            "{tool} text should start with the status: {text}"
-        );
-    }
-    let _ = client.cancel().await;
-    handle.shutdown().await.unwrap();
-}
-
-/// Bounds for `tool_list_stays_small`, in serialized JSON chars.
-/// 7,800 covers 23 tools after `message_send` and `message_list` (ADR-0020).
-/// Measured 2026-09-16: 10,445 for 17 tools before slimming (largest
-/// 1,040); about 6,100 for 20 tools after, with a floor of 4,170 if every
-/// description were removed. Lower them when the schemas shrink. Raised
-/// once, 2026-09-16, from 6,144 to 6,656 for the paging parameters:
-/// `limit` and `before` on five list tools, `all` on two, `verbose` on
-/// `status` (13 properties, about 450 chars). Do not raise for prose.
-// Raised from 6_656 for two real additions in the memory primitive: the
-// `memory_delete` tool and the `if_updated_at` input on `memory_write`.
-// Per ADR-0017, every raise names what it pays for.
-const TOOL_LIST_LIMIT: usize = 7_800;
-const TOOL_LIMIT: usize = 500;
 
 #[tokio::test]
 async fn lists_are_bounded_and_page_without_gaps() {

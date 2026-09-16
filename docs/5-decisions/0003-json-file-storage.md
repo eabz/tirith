@@ -1,6 +1,11 @@
 # ADR-0003: In-memory state written through to JSON files
 
-**Status:** Accepted, 2026-09-15
+**Status:** Accepted, 2026-09-15. Refined by
+[ADR-0010](0010-incremental-persistence.md): writes are per-primitive
+deltas through one background writer, only runtime state is fsynced, and
+a corrupt line or file is reported in `status` instead of failing the
+load. Refined by [ADR-0021](0021-notice-acks-log.md): notice rows are
+immutable once written, and the seen log lives in `.tirith/runtime/`.
 
 ## Context
 

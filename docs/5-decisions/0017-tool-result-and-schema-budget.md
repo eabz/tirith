@@ -1,6 +1,11 @@
 # ADR-0017: Tool results travel once, and tool schemas have a byte budget
 
-**Status:** Accepted, 2026-09-16
+**Status:** Accepted, 2026-09-16. Refined by
+[ADR-0013](0013-v1-definition.md), whose table is the current budget
+(`tests/budgets.rs`; `tools/list` under 7,800 characters for 22 tools
+after [ADR-0020](0020-agent-messages.md) added two tools and
+[ADR-0021](0021-notice-acks-log.md) removed one). The 6,144 bound below
+is the value at the time.
 
 ## Context
 

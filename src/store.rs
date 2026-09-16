@@ -1,11 +1,14 @@
 //! JSON persistence under `.tirith/` in the target repository.
 //!
-//! Runtime state (claims, tasks, sequence, daemon address) goes in
-//! `.tirith/runtime/`, which is gitignored by a `.gitignore` this module
-//! writes. Contracts, notices, and decisions are written as readable JSON
+//! Runtime state (claims, tasks, sequence, daemon address, the notice
+//! seen log, agent messages) goes in `.tirith/runtime/`, which is
+//! gitignored by a `.gitignore` this module writes. Contracts, memory
+//! notes, notices, and decisions are written as readable JSON, Markdown,
 //! and JSON Lines so they can be committed and diffed. Every rewrite is
-//! atomic: write a temp file, then rename. Logs are appended to. See
-//! ADR-0003 and ADR-0010.
+//! atomic: write a temp file, then rename. Logs are appended to. Runtime
+//! files are fsynced and committed files are not; the private
+//! `Durability` type says why. See ADR-0003, ADR-0010, ADR-0020 and
+//! ADR-0021.
 //!
 //! Writes are incremental: [`JsonStore::apply`] takes a [`Delta`] and
 //! touches only the files it names. The [`Persister`] is a background task
@@ -28,7 +31,7 @@ use thiserror::Error;
 use tokio::sync::{Notify, watch};
 
 use crate::contracts::Contract;
-use crate::memory::{MemoryError, MemoryNote};
+use crate::memory::MemoryNote;
 use crate::state::{Delta, Log, Snapshot, State};
 use crate::types::MemoryId;
 
@@ -45,8 +48,8 @@ const TASKS_FILE: &str = "runtime/tasks.json";
 const META_FILE: &str = "runtime/meta.json";
 const DAEMON_FILE: &str = "runtime/daemon.json";
 const NOTICES_FILE: &str = "notices.jsonl";
-/// Who acknowledged which notice: runtime only, so acking never rewrites
-/// the committed notice log (ADR-0021).
+/// Which agents each notice has reached: runtime only, so a delivery
+/// never rewrites the committed notice log (ADR-0021).
 const NOTICE_SEEN_FILE: &str = "runtime/notice_seen.jsonl";
 /// Agent-to-agent messages: runtime only, never committed (ADR-0020).
 const MESSAGES_FILE: &str = "runtime/messages.jsonl";
@@ -77,15 +80,6 @@ pub enum StoreError {
         /// The underlying error.
         #[source]
         source: serde_json::Error,
-    },
-    /// A memory note file could not be parsed. Never a panic.
-    #[error("parse {path}: {source}")]
-    Memory {
-        /// The note file involved.
-        path: PathBuf,
-        /// What was wrong with it.
-        #[source]
-        source: MemoryError,
     },
     /// The blocking write task was cancelled or panicked.
     #[error("persistence task failed: {0}")]
@@ -165,6 +159,15 @@ pub struct JsonStore {
 /// `(1-based line, text)`.
 type DamagedLines = HashMap<PathBuf, Vec<(usize, String)>>;
 
+/// When `path` was last written, for a hand-written note whose
+/// frontmatter carries no `created_at`; the epoch when the filesystem
+/// cannot say. The domain never reads the clock itself (rule 28).
+fn modified_at(path: &Path) -> DateTime<Utc> {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .map_or(DateTime::<Utc>::UNIX_EPOCH, DateTime::<Utc>::from)
+}
+
 impl JsonStore {
     /// A store for the repository at `repo_root`.
     pub fn new(repo_root: impl AsRef<Path>) -> Self {
@@ -192,11 +195,7 @@ impl JsonStore {
     pub fn init(&self) -> Result<(), StoreError> {
         for sub in [RUNTIME_DIR, CONTRACTS_DIR, MEMORY_DIR] {
             let path = self.dir.join(sub);
-            fs::create_dir_all(&path).map_err(|source| StoreError::Io {
-                action: "create",
-                path,
-                source,
-            })?;
+            fs::create_dir_all(&path).map_err(io_err("create", &path))?;
         }
         let gitignore = self.dir.join(".gitignore");
         if !gitignore.exists() {
@@ -271,90 +270,42 @@ impl JsonStore {
     /// whose permalink does not match its path, is skipped and reported
     /// in `errors`; it is never rewritten elsewhere.
     fn load_memory(&self, errors: &mut Vec<LoadError>) -> Result<Vec<MemoryNote>, StoreError> {
-        let mut notes = Vec::new();
         let root = self.dir.join(MEMORY_DIR);
-        let mut stack = vec![root.clone()];
-        while let Some(current) = stack.pop() {
-            let entries = match fs::read_dir(&current) {
-                Ok(entries) => entries,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(source) => {
-                    return Err(StoreError::Io {
-                        action: "list",
-                        path: current,
-                        source,
-                    });
+        let mut notes = Vec::new();
+        for path in note_files(&root)? {
+            let text = fs::read_to_string(&path).map_err(io_err("read", &path))?;
+            let note = match MemoryNote::from_markdown(&text, modified_at(&path)) {
+                Ok(note) => note,
+                Err(error) => {
+                    errors.push(LoadError::new(&self.dir, &path, error.line(), &error));
+                    continue;
                 }
             };
-            for entry in entries {
-                let path = entry
-                    .map_err(|source| StoreError::Io {
-                        action: "list",
-                        path: current.clone(),
-                        source,
-                    })?
-                    .path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "md") {
-                    let text = fs::read_to_string(&path).map_err(|source| StoreError::Io {
-                        action: "read",
-                        path: path.clone(),
-                        source,
-                    })?;
-                    let note = match MemoryNote::from_markdown(&text) {
-                        Ok(note) => note,
-                        Err(error) => {
-                            errors.push(LoadError::new(&self.dir, &path, error.line(), &error));
-                            continue;
-                        }
-                    };
-                    let expected = root.join(note.permalink.file_path());
-                    if expected != path {
-                        errors.push(LoadError::new(
-                            &self.dir,
-                            &path,
-                            None,
-                            &format!(
-                                "permalink {} does not match the file path (expected {})",
-                                note.permalink.as_str(),
-                                expected
-                                    .strip_prefix(&self.dir)
-                                    .unwrap_or(&expected)
-                                    .display()
-                            ),
-                        ));
-                        continue;
-                    }
-                    notes.push(note);
-                }
+            let expected = root.join(note.permalink.file_path());
+            if expected != path {
+                errors.push(LoadError::new(
+                    &self.dir,
+                    &path,
+                    None,
+                    &format!(
+                        "permalink {} does not match the file path (expected {})",
+                        note.permalink.as_str(),
+                        expected
+                            .strip_prefix(&self.dir)
+                            .unwrap_or(&expected)
+                            .display()
+                    ),
+                ));
+                continue;
             }
+            notes.push(note);
         }
         Ok(notes)
     }
 
     fn load_contracts(&self, errors: &mut Vec<LoadError>) -> Result<Vec<Contract>, StoreError> {
-        let dir = self.dir.join(CONTRACTS_DIR);
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(source) => {
-                return Err(StoreError::Io {
-                    action: "list",
-                    path: dir,
-                    source,
-                });
-            }
-        };
         let mut contracts = Vec::new();
-        for entry in entries {
-            let path = entry
-                .map_err(|source| StoreError::Io {
-                    action: "list",
-                    path: dir.clone(),
-                    source,
-                })?
-                .path();
+        for path in dir_entries(&self.dir.join(CONTRACTS_DIR))? {
             if path.extension().is_some_and(|e| e == "json") {
                 match read_json::<Contract>(&path) {
                     Ok(contract) => contracts.push(contract),
@@ -403,11 +354,7 @@ impl JsonStore {
             // A permalink may carry folder segments, so the parent may not
             // exist yet. It can never escape MEMORY_DIR: see Permalink::parse.
             if let Some(parent) = file.parent() {
-                fs::create_dir_all(parent).map_err(|source| StoreError::Io {
-                    action: "create",
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
+                fs::create_dir_all(parent).map_err(io_err("create", parent))?;
             }
             write_atomic_with(
                 &file,
@@ -435,8 +382,9 @@ impl JsonStore {
         sync_dirs(&meta_dir)
     }
 
-    /// Appends or rewrites a JSON Lines log. A rewrite puts back any lines
-    /// that failed to parse at load time, at their original positions.
+    /// Appends or rewrites a JSON Lines log at the durability tier its
+    /// location calls for. A rewrite puts back any lines that failed to
+    /// parse at load time, at their original positions.
     fn write_log<T: Serialize>(
         &self,
         file: &str,
@@ -444,10 +392,13 @@ impl JsonStore {
         dirs: &mut Dirs,
     ) -> Result<(), StoreError> {
         let path = self.dir.join(file);
+        let durability = Durability::for_file(file);
         match log {
             Log::Unchanged => Ok(()),
-            Log::Appended(values) => append_jsonl(&path, values, dirs),
-            Log::Rewritten(values) => write_jsonl(&path, values, &self.damaged_lines(&path), dirs),
+            Log::Appended(values) => append_jsonl(&path, values, dirs, durability),
+            Log::Rewritten(values) => {
+                write_jsonl(&path, values, &self.damaged_lines(&path), dirs, durability)
+            }
         }
     }
 
@@ -455,40 +406,17 @@ impl JsonStore {
     /// is gone from the state, so its permalink is unknown here; the file
     /// is found by id under `memory/`. A missing file is fine.
     fn remove_note_file(&self, id: MemoryId, dirs: &mut Dirs) -> Result<(), StoreError> {
-        let root = self.dir.join(MEMORY_DIR);
-        let mut stack = vec![root];
-        while let Some(current) = stack.pop() {
-            let entries = match fs::read_dir(&current) {
-                Ok(entries) => entries,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(source) => {
-                    return Err(StoreError::Io {
-                        action: "list",
-                        path: current,
-                        source,
-                    });
+        for path in note_files(&self.dir.join(MEMORY_DIR))? {
+            let is_note = fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| MemoryNote::from_markdown(&text, modified_at(&path)).ok())
+                .is_some_and(|note| note.id == id);
+            if is_note {
+                fs::remove_file(&path).map_err(io_err("remove", &path))?;
+                if let Some(parent) = path.parent() {
+                    dirs.insert(parent.to_path_buf());
                 }
-            };
-            for entry in entries {
-                let path = entry
-                    .map_err(|source| StoreError::Io {
-                        action: "list",
-                        path: current.clone(),
-                        source,
-                    })?
-                    .path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "md")
-                    && fs::read_to_string(&path)
-                        .ok()
-                        .and_then(|text| MemoryNote::from_markdown(&text).ok())
-                        .is_some_and(|note| note.id == id)
-                {
-                    fs::remove_file(&path).map_err(io_err("remove", &path))?;
-                    dirs.insert(current);
-                    return Ok(());
-                }
+                return Ok(());
             }
         }
         Ok(())
@@ -504,11 +432,7 @@ impl JsonStore {
 
     /// The daemon address recorded by the last `serve`, if any.
     pub fn read_daemon_info(&self) -> Result<Option<DaemonInfo>, StoreError> {
-        let path = self.dir.join(DAEMON_FILE);
-        if !path.exists() {
-            return Ok(None);
-        }
-        read_json(&path).map(Some)
+        read_json_opt(&self.dir.join(DAEMON_FILE))
     }
 
     /// Removes the daemon address on clean shutdown.
@@ -712,23 +636,36 @@ fn write_atomic(path: &Path, bytes: &[u8], dirs: &mut Dirs) -> Result<(), StoreE
     write_atomic_with(path, bytes, dirs, Durability::Synced)
 }
 
-/// How hard a file write tries to survive a power loss.
-#[derive(Debug, Clone, Copy)]
+/// How hard a file write tries to survive a power loss. Decision
+/// "Durability tiers: fsync runtime state, not committed files"
+/// (d9f6673a, 2026-09-16), recorded in ADR-0010.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Durability {
-    /// fsync the file before the rename: the file is complete or absent
-    /// after a crash. For runtime state (`claims.json`, `tasks.json`,
-    /// `meta.json`), which nothing else holds a copy of.
+    /// fsync the file before the rename, or after the append: the file is
+    /// complete after a crash. For everything under `runtime/`
+    /// (`claims.json`, `tasks.json`, `meta.json`, the seen and message
+    /// logs), which nothing else holds a copy of.
     Synced,
-    /// Write and rename only; the directory sync at the end of the apply
-    /// still makes the rename durable, but a power loss in between can
-    /// leave the file empty or a log's last line torn. For every committed
-    /// file (contracts, memory notes, the notices and decisions logs):
-    /// git holds the content, and load reports a torn file instead of
-    /// failing, so one full device flush per file (which is what
-    /// `sync_all` is on macOS) is not worth paying N times per batch.
-    /// Decision "Durability tiers: fsync runtime state, not committed
-    /// files", 2026-09-16.
+    /// Write and rename, or append, only; the directory sync at the end
+    /// of the apply still makes the rename durable, but a power loss in
+    /// between can leave the file empty or a log's last line torn. For
+    /// every committed file (contracts, memory notes, the notices and
+    /// decisions logs): git holds the content, and load reports a torn
+    /// file instead of failing, so one full device flush per file (which
+    /// is what `sync_all` is on macOS) is not worth paying N times per
+    /// batch.
     Lazy,
+}
+
+impl Durability {
+    /// The tier for a file named relative to `.tirith/`.
+    fn for_file(file: &str) -> Self {
+        if Path::new(file).starts_with(RUNTIME_DIR) {
+            Self::Synced
+        } else {
+            Self::Lazy
+        }
+    }
 }
 
 fn write_atomic_with(
@@ -742,7 +679,7 @@ fn write_atomic_with(
     let tmp = PathBuf::from(tmp);
     let mut file = fs::File::create(&tmp).map_err(io_err("create", &tmp))?;
     file.write_all(bytes).map_err(io_err("write", &tmp))?;
-    if matches!(durability, Durability::Synced) {
+    if durability == Durability::Synced {
         file.sync_all().map_err(io_err("sync", &tmp))?;
     }
     drop(file);
@@ -802,9 +739,8 @@ fn write_jsonl<T: Serialize>(
     values: &[T],
     keep: &[(usize, String)],
     dirs: &mut Dirs,
+    durability: Durability,
 ) -> Result<(), StoreError> {
-    // The logs are committed files, so they take the lazy path like
-    // contracts and notes: see `Durability`.
     let mut lines: Vec<Vec<u8>> = Vec::with_capacity(values.len() + keep.len());
     for value in values {
         let mut line = Vec::new();
@@ -824,7 +760,7 @@ fn write_jsonl<T: Serialize>(
         bytes.extend_from_slice(&line);
         bytes.push(b'\n');
     }
-    write_atomic_with(path, &bytes, dirs, Durability::Lazy)
+    write_atomic_with(path, &bytes, dirs, durability)
 }
 
 /// Appends `values` as lines. If the file was hand-edited and lost its
@@ -833,6 +769,7 @@ fn append_jsonl<T: Serialize>(
     path: &Path,
     values: &[T],
     dirs: &mut Dirs,
+    durability: Durability,
 ) -> Result<(), StoreError> {
     let io_err = |action: &'static str| io_err(action, path);
     let mut file = fs::OpenOptions::new()
@@ -860,8 +797,11 @@ fn append_jsonl<T: Serialize>(
         bytes.push(b'\n');
     }
     file.write_all(&bytes).map_err(io_err("append"))?;
-    // No per-call fsync: the log is a committed file (see `Durability`),
-    // and a torn last line is reported at load rather than fatal.
+    // A committed log skips the fsync: a torn last line is reported at
+    // load rather than fatal, and git holds the content. See `Durability`.
+    if durability == Durability::Synced {
+        file.sync_all().map_err(io_err("sync"))?;
+    }
     if let Some(parent) = path.parent() {
         dirs.insert(parent.to_path_buf());
     }
@@ -881,12 +821,57 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, StoreError> {
     })
 }
 
-fn read_json_or_default<T: DeserializeOwned + Default>(path: &Path) -> Result<T, StoreError> {
-    if path.exists() {
-        read_json(path)
-    } else {
-        Ok(T::default())
+/// Reads a whole-file JSON value, or `None` when the file is missing.
+fn read_json_opt<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, StoreError> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|source| StoreError::Parse {
+                path: path.to_path_buf(),
+                line: None,
+                source,
+            }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(StoreError::Io {
+            action: "read",
+            path: path.to_path_buf(),
+            source,
+        }),
     }
+}
+
+fn read_json_or_default<T: DeserializeOwned + Default>(path: &Path) -> Result<T, StoreError> {
+    read_json_opt(path).map(Option::unwrap_or_default)
+}
+
+/// The entries of `dir`, or none when it does not exist.
+fn dir_entries(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(io_err("list", dir)(source)),
+    };
+    entries
+        .map(|entry| entry.map(|e| e.path()).map_err(io_err("list", dir)))
+        .collect()
+}
+
+/// Every `.md` file under `root`, in walk order. The walk recurses
+/// because a permalink may carry folder segments; a missing `root` is no
+/// files.
+fn note_files(root: &Path) -> Result<Vec<PathBuf>, StoreError> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for path in dir_entries(&current)? {
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                files.push(path);
+            }
+        }
+    }
+    Ok(files)
 }
 
 /// Reads a JSON Lines file into the values that parsed and the lines that
@@ -965,26 +950,17 @@ mod tests {
         memory
             .write(
                 AgentId::new("alice").unwrap(),
-                crate::memory::NewMemory {
-                    title: "Store layout".to_owned(),
-                    body: "One file per note, committed.".to_owned(),
-                    paths: vec![RepoPath::new("src/store.rs").unwrap()],
-                    ..crate::memory::NewMemory::default()
-                },
+                crate::memory::NewMemory::new("Store layout", "One file per note, committed.")
+                    .with_paths(vec![RepoPath::new("src/store.rs").unwrap()]),
                 t0(),
             )
             .unwrap();
         Snapshot {
-            messages: Vec::new(),
-            notice_seen: Vec::new(),
             seq: 7,
             claims: claims.claims().to_vec(),
-            tasks: vec![],
             contracts: contracts.contracts().to_vec(),
-            notices: vec![],
-            decisions: vec![],
             memory: memory.notes().to_vec(),
-            load_errors: Vec::new(),
+            ..Snapshot::default()
         }
     }
 
@@ -1073,8 +1049,6 @@ mod tests {
         // A rewrite of the damaged log keeps the bad lines where they were.
         store
             .apply(&Delta {
-                messages: Log::Unchanged,
-                notice_seen: Log::Unchanged,
                 seq: 9,
                 notices: Log::Rewritten(loaded.notices.clone()),
                 ..Delta::default()
@@ -1103,8 +1077,6 @@ mod tests {
         fs::write(store.dir().join("contracts"), "in the way").unwrap();
         let err = store
             .apply(&Delta {
-                messages: Log::Unchanged,
-                notice_seen: Log::Unchanged,
                 seq: 8,
                 contracts: snapshot.contracts.clone(),
                 ..Delta::default()
@@ -1168,8 +1140,6 @@ mod tests {
             .unwrap();
         store
             .apply(&Delta {
-                messages: Log::Unchanged,
-                notice_seen: Log::Unchanged,
                 seq: 8,
                 notices: Log::Appended(notices[..2].to_vec()),
                 ..Delta::default()
@@ -1180,8 +1150,6 @@ mod tests {
         fs::write(&notices_path, text.trim_end()).unwrap();
         store
             .apply(&Delta {
-                messages: Log::Unchanged,
-                notice_seen: Log::Unchanged,
                 seq: 9,
                 notices: Log::Appended(notices[2..].to_vec()),
                 ..Delta::default()
@@ -1201,8 +1169,6 @@ mod tests {
 
         store
             .apply(&Delta {
-                messages: Log::Unchanged,
-                notice_seen: Log::Unchanged,
                 seq: 10,
                 notices: Log::Rewritten(notices[..1].to_vec()),
                 ..Delta::default()

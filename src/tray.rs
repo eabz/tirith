@@ -1,8 +1,8 @@
 //! `tirith tray`: a macOS menu bar icon listing every Tirith daemon on
-//! this machine, read from the per-user registry (`registry.rs`). One
-//! menu row per daemon with its agent and claim counts; clicking a row
-//! opens that daemon's dashboard, `Stop` sends it SIGINT, `Quit tray`
-//! exits. See ADR-0019.
+//! this machine, read from the per-user registry (`registry.rs`). Clicking
+//! the icon always shows the menu: one row per daemon with its agent and
+//! claim counts. Clicking a row opens that daemon's dashboard, `Stop`
+//! sends it SIGINT, `Quit tray` exits. See ADR-0019.
 //!
 //! `AppKit` needs its event loop on the main thread. Rather than pull in
 //! `winit`, this module pumps the loop by hand: wait for an event or a
@@ -18,7 +18,7 @@ use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{MainThreadMarker, NSDate, NSString};
 use serde_json::Value;
 use thiserror::Error;
-use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 
 use crate::registry::{DaemonEntry, Registry, RegistryError};
 
@@ -89,7 +89,6 @@ enum Action {
 struct Rows {
     items: Vec<Box<dyn IsMenuItem>>,
     actions: Vec<(MenuId, Action)>,
-    dashboards: Vec<String>,
 }
 
 impl Rows {
@@ -165,7 +164,9 @@ fn run_loop() -> Result<(), TrayError> {
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
     let menu = Menu::new();
-    let tray = TrayIconBuilder::new()
+    // Kept for the loop's lifetime: dropping the icon removes it from the
+    // menu bar.
+    let _tray_icon = TrayIconBuilder::new()
         .with_icon(icon(2)?)
         .with_icon_as_template(true)
         .with_tooltip("Tirith daemons")
@@ -183,7 +184,7 @@ fn run_loop() -> Result<(), TrayError> {
 
     loop {
         if last_poll.is_none_or(|t| t.elapsed() >= POLL) {
-            rows = refresh(&menu, &tray, &rows, &runtime)?;
+            rows = refresh(&menu, &rows, &runtime)?;
             last_poll = Some(Instant::now());
         }
         let until = NSDate::dateWithTimeIntervalSinceNow(POLL.as_secs_f64());
@@ -203,29 +204,14 @@ fn run_loop() -> Result<(), TrayError> {
                 None => {}
             }
         }
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            // With one daemon the icon itself is the shortcut; the menu is
-            // then only on the right button.
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-                && let [only] = rows.dashboards.as_slice()
-            {
-                open(only);
-            }
-        }
+        // Clicks on the icon only open the menu; drain the channel so the
+        // events do not pile up for as long as the tray runs.
+        while TrayIconEvent::receiver().try_recv().is_ok() {}
     }
 }
 
 /// Re-reads the registry, drops dead daemons, and rebuilds the menu.
-fn refresh(
-    menu: &Menu,
-    tray: &TrayIcon,
-    old: &Rows,
-    runtime: &tokio::runtime::Runtime,
-) -> Result<Rows, TrayError> {
+fn refresh(menu: &Menu, old: &Rows, runtime: &tokio::runtime::Runtime) -> Result<Rows, TrayError> {
     let mut registry = Registry::load(Registry::default_path()?)?;
     let counts: Vec<(DaemonEntry, Option<Counts>)> = registry
         .entries()
@@ -241,15 +227,16 @@ fn refresh(
         let _ = menu.remove(item.as_ref());
     }
     let mut rows = Rows::default();
-    let live: Vec<&(DaemonEntry, Option<Counts>)> =
-        counts.iter().filter(|(_, c)| c.is_some()).collect();
+    let live: Vec<(&DaemonEntry, Counts)> = counts
+        .iter()
+        .filter_map(|(entry, counts)| counts.map(|c| (entry, c)))
+        .collect();
     if live.is_empty() {
         let none = MenuItem::new("No Tirith daemons running", false, None);
         rows.actions.push((none.id().clone(), Action::Quit));
         append(menu, &mut rows, none)?;
     }
     for (entry, counts) in &live {
-        let Some(counts) = counts else { continue };
         let label = format!(
             "{}  {} agents, {} claims",
             entry.folder_name(),
@@ -266,7 +253,6 @@ fn refresh(
         rows.actions
             .push((stop_row.id().clone(), Action::Stop(entry.pid)));
         append(menu, &mut rows, stop_row)?;
-        rows.dashboards.push(entry.dashboard_url.clone());
     }
     let separator = PredefinedMenuItem::separator();
     menu.append(&separator)
@@ -275,8 +261,6 @@ fn refresh(
     let quit = MenuItem::new("Quit tray", true, None);
     rows.actions.push((quit.id().clone(), Action::Quit));
     append(menu, &mut rows, quit)?;
-    // One daemon: a left click opens it; otherwise the menu opens.
-    tray.set_show_menu_on_left_click(rows.dashboards.len() != 1);
     Ok(rows)
 }
 

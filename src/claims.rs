@@ -179,11 +179,6 @@ impl Reaped {
             .map(|(lost, _)| lost)
             .find(|lost| lost.path.overlaps(path))
     }
-
-    /// Whether nothing is recorded.
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
 }
 
 /// Why a claim operation was refused.
@@ -723,6 +718,6 @@ mod tests {
         // Entries older than the longest TTL are forgotten.
         let much_later = later + Duration::seconds(i64::try_from(MAX_TTL_SECS).unwrap() + 1);
         reaped.record(&[], much_later);
-        assert!(reaped.is_empty());
+        assert!(reaped.previous_owner(&path("src")).is_none());
     }
 }

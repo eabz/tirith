@@ -7,7 +7,7 @@
   <meta name="description" content="Install Tirith, the MCP coordination server that keeps parallel coding agents from stepping on each other in one repository.">
   <link rel="icon" href="docs/_static/images/logo.jpeg">
   <meta property="og:title" content="Tirith">
-  <meta property="og:description" content="Coordination server for parallel coding agents. Claims, a task board, interface contracts, change notices, and a decisions log, over MCP.">
+  <meta property="og:description" content="Coordination server for parallel coding agents. Claims, a task board, interface contracts, change notices, a decisions log, path-scoped memory notes, and agent messages, over MCP.">
   <meta property="og:image" content="https://raw.githubusercontent.com/eabz/tirith/main/docs/_static/images/logo-512.jpeg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -246,7 +246,7 @@
     <img src="docs/_static/images/logo-512.jpeg" alt="Tirith logo">
     <h1>Tirith</h1>
     <p class="tagline"><strong>Coordination server for parallel coding agents.</strong></p>
-    <p class="sub">File claims with leases, a task board, interface contracts, change notices, and a decisions log, over MCP. One small daemon per repository. Works with Claude Code, Cursor, Codex, LangGraph, CrewAI, or a plain script.</p>
+    <p class="sub">File claims with leases, a task board, interface contracts, change notices, a decisions log, memory notes scoped to paths, and messages between agents, over MCP. One small daemon per repository. Works with Claude Code, Cursor, Codex, LangGraph, CrewAI, or a plain script.</p>
 
     <div class="badges">
       <a href="https://github.com/eabz/tirith/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/eabz/tirith/actions/workflows/ci.yml/badge.svg"></a>
@@ -266,7 +266,7 @@ curl -LsSf https://eabz.github.io/tirith/install.sh | sh</pre>
       <a class="btn" href="https://github.com/eabz/tirith/releases/latest">Download binaries</a>
       <a class="btn" href="https://github.com/eabz/tirith/tree/main/docs">Read the docs</a>
     </div>
-    <span class="status">Pre-alpha. Everything works and is tested; tool schemas may change before 1.0.</span>
+    <span class="status">0.1.x. Every primitive is built and tested; tool schemas may still change until v1 ships.</span>
   </div>
 
   <section id="install">
@@ -314,7 +314,7 @@ curl -LsSf https://eabz.github.io/tirith/install.sh | sh</pre>
           <pre>cargo install tirith-mcp</pre>
           <button class="copy" type="button" data-copy="cargo install tirith-mcp">Copy</button>
         </div>
-        <p>Compiles from crates.io and installs the <code>tirith</code> binary. Works on any platform with a stable Rust toolchain (1.85 or newer), including ones without prebuilt archives.</p>
+        <p>Compiles from crates.io and installs the <code>tirith</code> binary. Works on any platform with a stable Rust toolchain (1.90 or newer), including ones without prebuilt archives.</p>
         <div class="note"><p><strong>Mind the crate name.</strong> The crate <code>tirith</code> on crates.io belongs to an unrelated project, so <code>cargo install tirith</code> installs something else. Tirith's package is <code>tirith-mcp</code>; only the binary is named <code>tirith</code>.</p></div>
       </div>
 
@@ -335,7 +335,7 @@ cargo install --path .</pre>
 cd tirith
 cargo install --path .">Copy</button>
         </div>
-        <p>Needs a stable Rust toolchain (1.85 or newer). There are no C dependencies: Tirith speaks plain HTTP on localhost, so no TLS library is compiled in.</p>
+        <p>Needs a stable Rust toolchain (1.90 or newer). There are no C dependencies: Tirith speaks plain HTTP on localhost, so no TLS library is compiled in.</p>
       </div>
 
       <div class="panel" data-panel="archives">
@@ -372,7 +372,7 @@ cargo install --path .">Copy</button>
   <section id="connect">
     <div class="wrap">
       <h2>Connect your agents</h2>
-      <p class="lead">Register <code>tirith stdio</code> with your client the same way as any other stdio MCP server. It starts the repository's daemon the first time a session needs it and proxies to it after that, so nothing has to be started by hand. The daemon keeps running so every agent on the repo shares it.</p>
+      <p class="lead">Register <code>tirith stdio</code> with your client the same way as any other stdio MCP server. It starts the repository's daemon the first time a session needs it, replaces a daemon left by an older version, and proxies to it after that, so nothing has to be started by hand. The daemon keeps running so every agent on the repo shares it.</p>
 
       <div class="grid">
         <div class="card">
@@ -457,39 +457,38 @@ codex mcp add tirith --url http://127.0.0.1:7477/mcp
       <p class="lead">The CLI goes through the same MCP path agents use, so it doubles as a way to watch or nudge a running swarm.</p>
       <div class="code">
         <pre>tirith status
-<span class="cm"># tirith 0.1.2 up 42s  seq 0  claims 0  tasks 0 open / 0 done  contracts 0  notices 0  decisions 0</span></pre>
+<span class="cm"># tirith 0.1.3 up 42s  seq 0  claims 0  tasks 0 open / 0 done  contracts 0  notices 0  decisions 0
+# no active agents</span></pre>
         <button class="copy" type="button" data-copy="tirith status">Copy</button>
       </div>
-      <p class="muted">Open <a href="http://127.0.0.1:7477/">http://127.0.0.1:7477/</a> for the live dashboard: agents, claims, tasks, contracts, notices, and decisions, updating as they change.</p>
+      <p class="muted">Open <a href="http://127.0.0.1:7477/">http://127.0.0.1:7477/</a> for the live dashboard: agents, claims, tasks, contracts, notices, decisions, and memory notes, updating as they change.</p>
 
       <h3 style="margin-top:24px">Commit the right files</h3>
-      <p class="muted">Add <code>.tirith/runtime/</code> to <code>.gitignore</code>. Contracts, notices, and decisions elsewhere under <code>.tirith/</code> are meant to be committed so the next session inherits them; claims and tasks are runtime state.</p>
-      <div class="code">
-        <pre>echo '/.tirith/runtime/' &gt;&gt; .gitignore</pre>
-        <button class="copy" type="button" data-copy="echo '/.tirith/runtime/' >> .gitignore">Copy</button>
-      </div>
+      <p class="muted">Tirith writes <code>.tirith/.gitignore</code> itself, ignoring <code>.tirith/runtime/</code>: claims, tasks, notice deliveries, and messages are runtime state. Everything else under <code>.tirith/</code>, the contracts, notices, decisions, and memory notes, is meant to be committed so the next session inherits it.</p>
     </div>
   </section>
 
   <section id="primitives">
     <div class="wrap">
       <h2>What it does</h2>
-      <p class="lead">Claims and the task board are table stakes. Contracts and change notices are the reason Tirith exists.</p>
+      <p class="lead">Claims and the task board are table stakes. Contracts and change notices are the reason Tirith exists. Memory notes are what makes the rest worth keeping after the session ends.</p>
       <div class="grid">
         <div class="card"><h3>Claims</h3><p>Lease files or directories before editing. Overlaps are refused with the owner, reason, and expiry. Leases expire if the agent dies.</p></div>
         <div class="card"><h3>Task board</h3><p>Tasks with priority, owner, and dependencies. Agents pull the next unblocked task.</p></div>
         <div class="card"><h3>Contracts</h3><p>Interface shapes published and versioned before implementation. A new version notifies its consumers automatically.</p></div>
-        <div class="card"><h3>Change notices</h3><p>"Renamed X to Y, these paths are affected." Dependents read them before acting and acknowledge when handled.</p></div>
+        <div class="card"><h3>Change notices</h3><p>"Renamed X to Y, these paths are affected." Dependents get them in the brief that comes back with a claim, once each.</p></div>
         <div class="card"><h3>Decisions log</h3><p>Settled choices with rationale, so nothing is decided twice.</p></div>
+        <div class="card"><h3>Memory notes</h3><p>Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and delivered to whoever claims the paths a note is about.</p></div>
+        <div class="card"><h3>Messages</h3><p>Short notes between agents, delivered on the recipient's next call, so any MCP client can take part. Runtime only, never committed.</p></div>
       </div>
 
       <h3 style="margin-top:32px">Two agents, one directory</h3>
       <div class="code" style="margin-top:8px">
         <pre>tirith claim --agent alice --reason "refactor session handling" src/auth/
-<span class="cm"># ok       alice  src/auth  expires 18:20:00Z</span>
+<span class="cm"># ok       alice  src/auth  expires 04:14:34Z</span>
 
 tirith claim --agent bob --reason "fix login redirect" src/auth/login.rs
-<span class="cm"># conflict src/auth/login.rs overlaps src/auth (alice: "refactor session handling", expires 18:20:00Z)</span></pre>
+<span class="cm"># conflict src/auth/login.rs overlaps src/auth (alice: "refactor session handling", expires 04:14:34Z)</span></pre>
       </div>
       <p class="muted">Over MCP the same refusal is structured JSON, so agents branch on <code>status</code> instead of parsing text. The full two-agent walkthrough is in <a href="https://github.com/eabz/tirith/blob/main/examples/demo.sh">examples/demo.sh</a>.</p>
     </div>
@@ -503,7 +502,7 @@ tirith claim --agent bob --reason "fix login redirect" src/auth/login.rs
           <tbody>
             <tr><td><a href="https://github.com/eabz/tirith/blob/main/docs/1-about/05-installation.md">Installation</a></td><td class="muted">Every install path in detail, including pinning and offline archives</td></tr>
             <tr><td><a href="https://github.com/eabz/tirith/blob/main/docs/2-examples/02-client-setup.md">Client setup</a></td><td class="muted">Claude Code, Cursor, Codex, LangGraph, CrewAI, and raw JSON-RPC</td></tr>
-            <tr><td><a href="https://github.com/eabz/tirith/blob/main/docs/1-about/04-primitives.md">Tool reference</a></td><td class="muted">Every MCP tool, its inputs, and its response shape</td></tr>
+            <tr><td><a href="https://github.com/eabz/tirith/blob/main/docs/1-about/04-primitives.md">Tool reference</a></td><td class="muted">All 22 MCP tools, their inputs, and their response shapes</td></tr>
             <tr><td><a href="https://github.com/eabz/tirith/blob/main/docs/1-about/02-architecture.md">Architecture</a></td><td class="muted">How the daemon, state, and persistence fit together</td></tr>
             <tr><td><a href="https://github.com/eabz/tirith/blob/main/docs/5-decisions/README.md">Decision records</a></td><td class="muted">Why Rust, why one daemon over HTTP, why JSON files</td></tr>
             <tr><td><a href="https://github.com/eabz/tirith/blob/main/docs/README.md">All docs</a></td><td class="muted">The full index</td></tr>

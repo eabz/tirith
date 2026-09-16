@@ -15,14 +15,9 @@ order is obvious. Files inside a section are also numbered.
 | [_static/images/](_static/images/) | Diagrams and screenshots referenced from the docs |
 | [../index.html](../index.html) | The public landing page at [eabz.github.io/tirith](https://eabz.github.io/tirith/): install, connect, verify. It lives at the repository root, which GitHub Pages serves; `docs/index.html` is only a redirect to it, and the root `.nojekyll` keeps Jekyll off |
 
-## Requirements for working on this repo
-
-- Read [AGENTS.md](../AGENTS.md) before editing.
-- A Tirith daemon must be running for this repository, and every agent
-  must claim files through it before editing them. See
-  [6-agent-workflow/03-tirith-dogfooding.md](6-agent-workflow/03-tirith-dogfooding.md).
-- Serena is the code-intelligence layer; long-form agent memory is
-  Tirith's own memory primitive, stored under `.tirith/memory/`.
+Read [AGENTS.md](../AGENTS.md) before editing anything: it is the contract
+for every agent working here, including the rule that files are claimed
+through Tirith before they are edited.
 
 ## Conventions for writing docs
 
@@ -39,12 +34,15 @@ order is obvious. Files inside a section are also numbered.
   `.tirith/memory/` (committed), written through the `memory_write`
   tool. See
   [6-agent-workflow/02-memory.md](6-agent-workflow/02-memory.md).
+- Tool names and schemas are documented once, in
+  [1-about/04-primitives.md](1-about/04-primitives.md). Other docs name
+  tools and link there; they do not restate fields.
 - Images: put files in `_static/images/`, reference them with relative
   paths, and keep them under 500 KB.
 - The landing page is `index.html` at the repository root; `docs/index.html`
-  only redirects there. The page is hand-written, has no build
-  step, and repeats the install and client-setup commands from
-  `README.md`, `1-about/05-installation.md`, and
-  `2-examples/02-client-setup.md`. When those commands change, change
-  the page in the same commit. Design rationale:
+  only redirects there. The page is hand-written, has no build step, and
+  repeats the install and client-setup commands from `README.md`,
+  `1-about/05-installation.md`, and `2-examples/02-client-setup.md`. When
+  those commands change, change the page in the same commit. Design
+  rationale:
   [5-decisions/0007-github-pages-landing-page.md](5-decisions/0007-github-pages-landing-page.md).

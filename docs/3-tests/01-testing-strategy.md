@@ -11,10 +11,12 @@ are tested as such. The transport is tested once, end to end.
 | Unit | `#[cfg(test)] mod tests` in each domain module | Overlap rules, lease expiry with a manual clock, path normalization, task dependency resolution, contract versioning | None |
 | State | `src/state.rs` tests | Atomicity of multi-path claims, lazy reaping, renew-on-activity, which primitives a delta carries, renewals folded into the next delta | None |
 | Store | `src/store.rs` tests | Round-trip to a temp dir, deltas append or rewrite only their own files, the persister coalesces bursts and flushes, reports and recovers from a failed write, loading a corrupt file is an error, not a panic | tokio (for `spawn_blocking`) |
-| Integration | `tests/http_roundtrip.rs` | Start the real server on an ephemeral localhost port, drive it with `tirith::client`, assert on tool responses, restart it and check persistence, fetch the dashboard | tokio + localhost network |
-| Persistence | `tests/persistence.rs` | Fifty agents claiming at once, reads that do not rewrite logs, lease renewals reaching disk by shutdown, everything surviving a restart | tokio + localhost network |
+| Integration | `tests/http_roundtrip.rs` | Start the real server on an ephemeral localhost port, drive it with `tirith::client`: refusal and release, restart, lease expiry, the task/contract/notice flow, paging and id prefixes, task ownership and contract republish guards, lost leases and the four-TTL cap, briefs, messages, shutdown with an open SSE stream, the daemon registry, the dashboard, and the two budgets also pinned in `tests/budgets.rs` | tokio + localhost network |
+| Budgets | `tests/budgets.rs` | One test per row of the ADR-0013 table against a daemon seeded with 300 claims, notices and decisions: `tools/list` size, status-line text blocks, 20 compact rows with a cursor, `status`, `claims_list`, `renew`, brief, and search rows without bodies | tokio + localhost network |
+| Persistence | `tests/persistence.rs` | Fifty agents claiming at once, reads that do not rewrite logs, lease renewals reaching disk by shutdown, seen marks that never rewrite the notice log, a bad line reported instead of stopping the daemon, a failed write reported on the response, everything surviving a restart | tokio + localhost network |
+| Memory | `tests/memory_layer.rs` | One Markdown file per note round-tripped through a directory, an edit rewriting exactly one file, hand-written and corrupt files, folders in permalinks, and every note the repository ships in `.tirith/memory/` parsing; then the memory tools through the daemon: write, read, search bounds, relations, a claim carrying its notes, a restart | tokio (+ localhost network for the tool half) |
 | Benchmark | `examples/swarm_bench.rs` | Throughput, latency percentiles, and response bytes per tool (structured, text, largest, ~tokens) for N agents on persistent MCP sessions against a seeded daemon, with a memory workload (search, read the top hit, write a note per round); also `tools/list` bytes, bytes per agent per round, and `.tirith/` growth on disk; then invariant checks (no overlapping claims, `persist_error` null, notices on disk equal notices in memory). Run before touching the write path or a response shape: `cargo run --release --example swarm_bench -- 200 10`, optionally `THINK_MS=3000` | Release build |
-| Shim | `tests/stdio_shim.rs` | Spawn the built binary as `tirith stdio` the way a client would, speak JSON-RPC over its pipes, check it starts one daemon and that a second shim reuses it | tokio + localhost network + built binary |
+| Shim | `tests/stdio_shim.rs` | Spawn the built binary as `tirith stdio` the way a client would, speak JSON-RPC over its pipes: it starts one daemon and a second shim reuses it, replaces a daemon of another version or a dead record, and leaves another repository's daemon alone | tokio + localhost network + built binary |
 | Demo | `examples/demo.sh` | Human-readable acceptance for each milestone | Built binary |
 
 ## Rules
@@ -44,8 +46,9 @@ agent, zero think time. Each agent round is `claim`, `notice_list`,
 `memory_search`, `notice_publish` (every third round), `decision_record`
 (every fifth) and `release`. "Live" is the working tree as built at
 02:30Z, after ADR-0010, ADR-0011 and ADR-0017 but before list paging,
-swarm-safe `status`, digest search rows and brief on claim. Update this
-table when those land.
+swarm-safe `status`, digest search rows and brief on claim, which landed
+later that day. The table is the recorded baseline; ADR-0013 asks for a
+rerun before the 1.0.0 release.
 
 | Metric | 0.1.3, 1 agent | Live, 1 agent | Live, 100 agents | Live, 1000 agents |
 |---|---|---|---|---|
@@ -70,7 +73,7 @@ pays one fsync per note file on top (task fc218faa). The remaining bytes
 are unpaged lists and the full-board `status` and `claims_list`, which
 grow with the number of live agents (tasks 89b35cb6, d50d3346), plus
 search rows that carry bodies (task 6137f8af). The harness that produced
-this table is being folded into `examples/swarm_bench.rs` (task c01a95cd).
+this table is `examples/swarm_bench.rs`.
 
 ## Running
 
@@ -82,10 +85,12 @@ cargo test --test http_roundtrip # one integration file
 cargo test -- --nocapture        # see server logs
 ```
 
-CI runs, in order: `cargo fmt --check`, `cargo clippy --all-targets
+`scripts/check.sh` is the definition-of-done chain from AGENTS.md and the
+same order CI runs: `cargo fmt --check`, `cargo clippy --all-targets
 --all-features -- -D warnings`, `cargo test --all-features`, `cargo doc
 --no-deps` with `RUSTDOCFLAGS=-D warnings`, `cargo machete`, `cargo deny
-check`. There is no coverage step.
+check`; it also fails if a test left a `tirith serve` daemon running.
+There is no coverage step.
 
 ## Coverage expectations
 

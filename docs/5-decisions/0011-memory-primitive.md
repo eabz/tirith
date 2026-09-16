@@ -1,6 +1,10 @@
 # ADR-0011: Memory notes are Markdown files scoped to repository paths
 
-**Status:** Accepted, 2026-09-16
+**Status:** Accepted, 2026-09-16. Refined by
+[ADR-0012](0012-retire-basic-memory.md), which retires Basic Memory
+instead of keeping it for path-free notes, and by
+[ADR-0013](0013-v1-definition.md), which adds a fourth tool,
+`memory_delete`, and bounds search rows to excerpts.
 
 ## Context
 

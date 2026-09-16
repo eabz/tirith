@@ -414,7 +414,7 @@ enum MessageCommand {
 }
 
 /// Common options every remote command needs.
-#[derive(Debug, Args)]
+#[derive(Debug)]
 struct Remote {
     url: String,
     agent: String,
@@ -424,28 +424,6 @@ struct Remote {
 /// Parses arguments and runs the chosen command.
 pub(crate) async fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
-    if let Command::Serve {
-        bind,
-        task_orphan_secs,
-        no_tray,
-    } = cli.command
-    {
-        return serve(bind, task_orphan_secs, no_tray, cli.root).await;
-    }
-    if let Command::Stdio { bind } = cli.command {
-        return stdio_shim(bind, cli.root).await;
-    }
-    if let Command::Update { to, check } = cli.command {
-        return self_update(to, check, &cli.root).await;
-    }
-    #[cfg(all(feature = "tray", target_os = "macos"))]
-    if let Command::Tray = cli.command {
-        // The tray owns the main thread; run it on a plain thread's worth
-        // of stack outside the async runtime's control.
-        return tokio::task::block_in_place(tirith::tray::run)
-            .map(|()| ExitCode::SUCCESS)
-            .map_err(anyhow::Error::from);
-    }
     let url = match cli.url {
         Some(url) => url,
         None => JsonStore::new(&cli.root)
@@ -459,12 +437,23 @@ pub(crate) async fn run() -> Result<ExitCode> {
         agent: cli.agent,
         json: cli.json,
     };
+    // The local commands return from here; everything else is a tool call.
     let (tool, arguments) = match cli.command {
-        Command::Serve { .. } | Command::Stdio { .. } | Command::Update { .. } => {
-            unreachable!("handled above")
-        }
+        Command::Serve {
+            bind,
+            task_orphan_secs,
+            no_tray,
+        } => return serve(bind, task_orphan_secs, no_tray, cli.root).await,
+        Command::Stdio { bind } => return stdio_shim(bind, cli.root).await,
+        Command::Update { to, check } => return self_update(to, check, &cli.root).await,
         #[cfg(all(feature = "tray", target_os = "macos"))]
-        Command::Tray => unreachable!("handled above"),
+        Command::Tray => {
+            // The tray owns the main thread; run it on a plain thread's
+            // worth of stack outside the async runtime's control.
+            return tokio::task::block_in_place(tirith::tray::run)
+                .map(|()| ExitCode::SUCCESS)
+                .map_err(anyhow::Error::from);
+        }
         Command::Tools => return tools(&remote).await,
         Command::Call { tool, arguments } => {
             let mut value: Value =
@@ -814,17 +803,17 @@ async fn self_update(version: Option<String>, check: bool, root: &Path) -> Resul
     println!("installing {} into {}", target.tag, dir.display());
     update::install(&target.tag, &dir).await?;
     println!("updated to {}", target.version);
-    if let Ok(Some(info)) = JsonStore::new(root).read_daemon_info() {
-        if info.version != target.version {
-            println!(
-                "note: the daemon for {} (pid {}) still runs {}; stop it with `kill {}` so the next session starts {}",
-                root.display(),
-                info.pid,
-                info.version,
-                info.pid,
-                target.version
-            );
-        }
+    if let Ok(Some(info)) = JsonStore::new(root).read_daemon_info()
+        && info.version != target.version
+    {
+        println!(
+            "note: the daemon for {} (pid {}) still runs {}; stop it with `kill {}` so the next session starts {}",
+            root.display(),
+            info.pid,
+            info.version,
+            info.pid,
+            target.version
+        );
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -938,12 +927,8 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
         .into_iter()
         .flatten()
         .map(|l| {
-            let holder = l["now_held_by"]
-                .as_str()
-                .map(|o| format!(" (now {o})"))
-                .unwrap_or_default();
             format!(
-                "warning: lost lease on {}{holder} at {}; stop editing it",
+                "warning: lost lease on {} at {}; stop editing it",
                 s(&l["path"]),
                 when(&l["at"])
             )
@@ -1034,17 +1019,11 @@ fn render_result(tool: &str, agent: &str, v: &Value) -> String {
             })
             .unwrap_or_default(),
         ("release", "ok") => format!("released {agent}  {}", strs(&v["released"])),
-        ("renew", "ok") => {
-            let until = if v["expires_at"].is_string() {
-                when(&v["expires_at"])
-            } else {
-                v["claims"]
-                    .as_array()
-                    .and_then(|cs| cs.iter().map(|c| when(&c["expires_at"])).max())
-                    .unwrap_or_default()
-            };
-            format!("renewed  {agent}  {} claims until {until}", v["count"])
-        }
+        ("renew", "ok") => format!(
+            "renewed  {agent}  {} claims until {}",
+            v["count"],
+            when(&v["expires_at"])
+        ),
         ("claims_list", "ok") => page(v, "claims", "no live claims", |c| {
             format!(
                 "{:<8} {:<28} {:<32} expires {}",
@@ -1076,14 +1055,10 @@ fn render_result(tool: &str, agent: &str, v: &Value) -> String {
                 ));
             }
             out.push(list(&v["agents"], "no active agents", |a| {
-                let holds = if a["paths"].is_array() {
-                    strs(&a["paths"])
-                } else {
-                    format!("{} paths", a["paths_count"])
-                };
                 format!(
-                    "  {:<12} holds {holds}  in progress {}  lease ends {}",
+                    "  {:<12} holds {} paths  in progress {}  lease ends {}",
                     s(&a["agent"]),
+                    a["paths_count"],
                     a["tasks_in_progress"],
                     when(&a["expires_at"])
                 )
@@ -1094,12 +1069,12 @@ fn render_result(tool: &str, agent: &str, v: &Value) -> String {
         ("task_create" | "task_pull" | "task_update", "ok") => task_line(&v["task"]),
         ("task_list", "ok") => page(v, "tasks", "no tasks", task_line),
         ("contract_publish", "ok") => {
-            let c = &v["contract"];
-            let notice = v["notice_id"]
-                .as_str()
-                .map(|n| format!("  notice {}", &n[..8.min(n.len())]))
-                .unwrap_or_default();
-            format!("{}{notice}", contract_line(c))
+            let notice = if v["notice_id"].is_string() {
+                format!("  notice {}", short(&v["notice_id"]))
+            } else {
+                String::new()
+            };
+            format!("{}{notice}", contract_line(&v["contract"]))
         }
         ("contract_get", "ok") => {
             let c = &v["contract"];
@@ -1129,13 +1104,8 @@ fn render_result(tool: &str, agent: &str, v: &Value) -> String {
             }
             out.join("\n")
         }
-        ("memory_search", "ok") => page(v, "notes", "no notes", |hit| {
-            let note = if hit["note"].is_object() {
-                &hit["note"]
-            } else {
-                hit
-            };
-            let score = hit["score"]
+        ("memory_search", "ok") => page(v, "notes", "no notes", |note| {
+            let score = note["score"]
                 .as_u64()
                 .map(|n| format!(" score {n}"))
                 .unwrap_or_default();

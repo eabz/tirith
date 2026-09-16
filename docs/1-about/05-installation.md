@@ -93,7 +93,7 @@ cd tirith
 cargo install --path .
 ```
 
-Needs a stable Rust toolchain (1.85 or newer). There are no C
+Needs a stable Rust toolchain (1.90 or newer). There are no C
 dependencies: Tirith speaks plain HTTP on localhost, so no TLS library is
 compiled in.
 
@@ -120,10 +120,10 @@ The crate name `tirith` on crates.io belongs to an unrelated project, so
 
 `tirith tray` puts a tower icon in the menu bar that lists every Tirith
 daemon running on this machine, one row per repository with its agent and
-claim counts, refreshed every five seconds. Clicking a row opens that
-daemon's dashboard; `Stop <repo>` shuts the daemon down cleanly; `Quit
-tray` removes the icon. With exactly one daemon a left-click on the icon
-opens its dashboard directly. Daemons find each other through a per-user
+claim counts, refreshed every five seconds. Clicking the icon always shows
+the list, and clicking a row opens that daemon's dashboard; `Stop <repo>`
+shuts the daemon down cleanly; `Quit tray` removes the icon. Daemons find
+each other through a per-user
 registry at `~/Library/Application Support/tirith/daemons.json`
 (`$XDG_STATE_HOME/tirith/daemons.json` on other systems), which every
 daemon writes on start; a crashed daemon drops off the menu within one

@@ -1,6 +1,11 @@
 # ADR-0019: A per-user daemon registry and a macOS menu bar tray
 
-**Status:** Accepted, 2026-09-16
+**Status:** Accepted, 2026-09-16. Refined the same day: the tray is
+launched by `tirith serve` (`tray::launch_if_absent`, skipped with
+`--no-tray`), not by the stdio shim, and since 04:15Z a click on the icon
+always shows the daemon list, with a row opening that daemon's dashboard
+(decision by eabz, code by agent-3). The launch and left-click paragraphs
+below describe the first version.
 
 ## Context
 

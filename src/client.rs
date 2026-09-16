@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
+use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::common::client_side_sse::NeverRetry;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
@@ -71,6 +72,16 @@ fn transport(url: &str) -> StreamableHttpClientTransport<reqwest::Client> {
     StreamableHttpClientTransport::with_client(reqwest::Client::default(), config)
 }
 
+/// An initialized MCP session with the daemon at `url`.
+async fn connect(url: &str) -> Result<RunningService<RoleClient, ()>, ClientError> {
+    ().serve(transport(url))
+        .await
+        .map_err(|e| ClientError::Connect {
+            url: url.to_owned(),
+            cause: Box::new(e),
+        })
+}
+
 /// Calls `tool` on the daemon at `url` and returns its structured result.
 ///
 /// `arguments` must be a JSON object or `null`. When the server returns no
@@ -81,13 +92,7 @@ pub async fn call_tool(url: &str, tool: &str, arguments: Value) -> Result<Value,
         Value::Null => Map::new(),
         _ => return Err(ClientError::ArgumentsNotObject),
     };
-    let client =
-        ().serve(transport(url))
-            .await
-            .map_err(|e| ClientError::Connect {
-                url: url.to_owned(),
-                cause: Box::new(e),
-            })?;
+    let client = connect(url).await?;
     let result = client
         .call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments))
         .await;
@@ -116,13 +121,7 @@ pub async fn call_tool(url: &str, tool: &str, arguments: Value) -> Result<Value,
 
 /// Lists the tools the daemon at `url` exposes, as `(name, description)`.
 pub async fn list_tools(url: &str) -> Result<Vec<(String, String)>, ClientError> {
-    let client =
-        ().serve(transport(url))
-            .await
-            .map_err(|e| ClientError::Connect {
-                url: url.to_owned(),
-                cause: Box::new(e),
-            })?;
+    let client = connect(url).await?;
     let result = client.list_all_tools().await;
     let _ = client.cancel().await;
     let tools = result.map_err(|e| ClientError::Call {

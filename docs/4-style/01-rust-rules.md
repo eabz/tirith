@@ -134,7 +134,11 @@ too_many_lines = "allow"        # length is reviewed by humans, not counted
 
 28. All time comes from a `Clock` trait (`now() -> DateTime<Utc>`). The
     real clock is `SystemClock`; tests use `ManualClock` and advance it.
-    No `Utc::now()` or `Instant::now()` outside `clock.rs`.
+    No `Utc::now()` or `Instant::now()` in the library outside `clock.rs`.
+    Stated exception: the binary (`cli.rs`, `main.rs`, `update.rs`), the
+    stdio shim, and the tray may read the wall clock and `Instant`
+    directly for display, timeouts, and polling, because they sit outside
+    the daemon's state and nothing in them needs a manual clock to test.
 29. Durations are `std::time::Duration` or `chrono::Duration`, never bare
     integers. Serialized TTLs are integers named `*_secs`.
 
@@ -158,8 +162,12 @@ too_many_lines = "allow"        # length is reviewed by humans, not counted
 35. Pin to a caret version (`"1"` style is fine); commit `Cargo.lock`.
 36. Current approved set: `rmcp`, `tokio`, `axum`, `serde`, `serde_json`,
     `schemars`, `clap`, `thiserror`, `anyhow` (binary only), `chrono`,
-    `uuid`, `tracing`, `tracing-subscriber`, `tempfile` (dev). Anything
-    else is a decision to record.
+    `uuid`, `tracing`, `tracing-subscriber`, `reqwest` (no TLS; the MCP
+    client transport and localhost health checks),
+    `tempfile` (dev), and, macOS only behind the `tray` feature,
+    `tray-icon`, `muda`, `objc2-app-kit`, `objc2-foundation`
+    ([ADR-0019](../5-decisions/0019-menu-bar-tray.md)). Anything else is
+    a decision to record.
 
 ## Dead code
 
@@ -209,13 +217,14 @@ cargo install cargo-machete cargo-llvm-cov cargo-deny
 ## Checklist before reporting done
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-cargo machete
-cargo deny check
+scripts/check.sh
 ```
+
+It runs, in order, `cargo fmt --all -- --check`, `cargo clippy
+--all-targets --all-features -- -D warnings`, `cargo test --all-features`,
+`cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`, `cargo machete`,
+`cargo deny check`, and a check for leaked test daemons, printing one line
+per step. Rerun a failed step by hand to see its output.
 
 ## Cross-file types under a shared working tree
 

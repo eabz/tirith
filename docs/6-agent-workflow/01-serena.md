@@ -11,7 +11,7 @@ safer than reading and rewriting whole files.
 2. Call `initial_instructions` once.
 3. Call `list_memories` and read the ones whose names match your task.
 4. If Serena reports that onboarding has not been performed, run
-   `onboarding` once the crate exists and review the memories it writes.
+   `onboarding` and review the memories it writes.
 
 ## Navigation
 
@@ -41,11 +41,13 @@ complete across references; do not re-verify it by re-reading files.
 
 ## Memories
 
-Serena memories live in `.serena/memories/` and are committed. Use them for
-project facts the code does not express: where a quirk comes from, which
-crate feature flags are required, what the current milestone is. Keep them
-short and name them by topic (`workflow/milestone-status`,
-`rust/rmcp-gotchas`). Do not duplicate `docs/`; link to it.
+Serena memories live in `.serena/memories/`, committed, and hold short
+facts that are not tied to a repository path: what the current milestone
+is, how to restart the daemon, which session is which agent. Name them by
+topic (`workflow/project-status`, `workflow/stdio-shim`), keep them short,
+and link to `docs/` instead of repeating it. Knowledge about specific
+paths goes in a Tirith memory note instead; the rule is in
+[02-memory.md](02-memory.md).
 
 ## Diagnostics
 

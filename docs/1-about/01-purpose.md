@@ -3,7 +3,7 @@
 Tirith exists to let 5 to 10 coding agents work in one repository at the
 same time without corrupting each other's work.
 
-## The three failure modes it targets
+## The four failure modes it targets
 
 1. **Concurrent edits.** Two agents change the same file; the later write
    wins and the earlier work is lost or half-merged.
@@ -26,6 +26,11 @@ know what anyone is about to edit. Tirith does, because agents claim paths
 before editing them, so a note scoped to a path can reach the agent
 claiming it. Coordination is what makes the memory useful. See
 [ADR-0011](../5-decisions/0011-memory-primitive.md).
+
+Messages between agents are the small channel the rest needs: "take task
+X", "I released server.rs". They travel through the daemon so every
+client hears them, not only the one with its own session chat. See
+[ADR-0020](../5-decisions/0020-agent-messages.md).
 
 ## What Tirith is not
 
@@ -56,7 +61,7 @@ machine, many-agent setup over multi-tenant deployment.
 | 1 | `tirith serve`, the claims tools, a CLI, JSON persistence, and a demo where two agents claim overlapping files and the second is refused | Done (0.1.0) |
 | 1b | Initial versions of the task board, contracts, change notices, decisions log, and a web dashboard at `/` | Done (0.1.0) |
 | 2 | `tirith stdio` shim that starts the daemon on demand, Tirith used on its own repo | Done (0.1.3) |
-| 2b | Agent-facing hardening from real multi-agent use toward v1 | In progress |
+| 2b | Agent-facing hardening from real multi-agent use: the brief on claim, lost-lease reporting, orphaned tasks, contract republish, the shim replacing stale daemons, agent messages | Done (unreleased, ships in v1) |
 | 2c | Memory notes: the `memory_*` tools over committed Markdown files, and notes for a claimed path returned by `claim` | Done (unreleased, ships in v1) |
 | v1 | Coordination, memory, and token budgets all enforced by tests; see [ADR-0013](../5-decisions/0013-v1-definition.md) | In progress |
 | 3 | Contract shape validation (JSON Schema), notices linked to claims, richer dashboard filters | Planned |

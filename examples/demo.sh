@@ -7,9 +7,12 @@ cd "$(dirname "$0")/.."
 # TIRITH_BIN=/path/to/tirith runs the demo against a prebuilt binary (a release).
 T="${TIRITH_BIN:-}"; [ -n "$T" ] || { cargo build --quiet && T="$PWD/target/debug/tirith"; }
 cd "$(mktemp -d)"
-"$T" serve --bind 127.0.0.1:0 >/dev/null 2>&1 & trap 'kill $!' EXIT
+# --no-tray keeps the daemon a single process; SIGINT is its graceful stop,
+# and the wait makes sure it has exited before the shell does.
+"$T" serve --bind 127.0.0.1:0 --no-tray >/dev/null 2>&1 &
+daemon=$!
+trap 'kill -INT "$daemon" 2>/dev/null; wait "$daemon" 2>/dev/null || true' EXIT
 until [ -f .tirith/runtime/daemon.json ]; do sleep 0.1; done   # the CLI reads the daemon's address from here
-
 # Alice leaves a note about src/auth/ for whoever edits it next.
 "$T" memory write --agent alice "Session ids are opaque" -k gotcha --path src/auth/ --tag auth <<'NOTE'
 Tokens are opaque strings. Compare them, never parse them.
@@ -38,8 +41,10 @@ NOTE
 # `more` counts for the rest. Empty sections are left out.
 "$T" claim --agent bob --reason "fix login redirect" src/auth/login.rs
 
-# Lists are bounded: Bob asks for one row and gets a cursor for the rest.
-"$T" notice list --agent bob --path src/auth/ --unread --limit 1
+# The brief delivered both notices (delivery is the acknowledgement,
+# ADR-0021), so an --unread listing would be empty. Lists are bounded:
+# Bob asks for one row and gets a cursor for the rest.
+"$T" notice list --agent bob --path src/auth/ --limit 1
 
 # Anyone can find the note by text and read it in full.
 "$T" memory search --agent bob "session id"

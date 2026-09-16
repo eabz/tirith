@@ -18,7 +18,7 @@ step() {
 step fmt     cargo fmt --all -- --check
 step clippy  cargo clippy --all-targets --all-features -- -D warnings
 if out=$(cargo test --all-features 2>&1); then
-  printf '%-8s pass  (%s)\n' test "$(printf '%s\n' "$out" | grep -c '^test result: ok')" | sed 's/(\(.*\))/(\1 suites)/'
+  printf '%-8s pass  (%s suites)\n' test "$(printf '%s\n' "$out" | grep -c '^test result: ok')"
 else
   printf '%-8s FAIL\n' test
   printf '%s\n' "$out" | grep -E "^test .*FAILED|panicked at|^error" | head -20
@@ -27,6 +27,7 @@ fi
 step doc     env RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps
 step machete cargo machete
 step deny    cargo deny check
-leaked=$(pgrep -f "tirith serve --root /.*/T/" | wc -l | tr -d ' ')
+# Test daemons serve a tempfile directory: under $TMPDIR/T/ on macOS, /tmp/ on Linux.
+leaked=$(pgrep -f "tirith serve --root (/.*/T/|/tmp/)" | wc -l | tr -d ' ')
 [ "$leaked" = "0" ] && printf '%-8s pass\n' daemons || { printf '%-8s FAIL  (%s leaked test daemons)\n' daemons "$leaked"; status=1; }
 exit $status

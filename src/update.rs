@@ -138,20 +138,26 @@ pub fn install_dir() -> Result<PathBuf, UpdateError> {
     })
 }
 
+/// The error for `program` failing to start: missing from `PATH`, or
+/// anything else the OS reports before it runs.
+fn spawn_error(program: &'static str) -> impl FnOnce(std::io::Error) -> UpdateError {
+    move |e| match e.kind() {
+        std::io::ErrorKind::NotFound => UpdateError::MissingTool { program },
+        _ => UpdateError::ToolFailed {
+            program,
+            status: "failed to start".into(),
+            stderr: e.to_string(),
+        },
+    }
+}
+
 async fn fetch(url: &str) -> Result<String, UpdateError> {
     let (program, mut command) = downloader(url);
     let output = command
         .stdin(Stdio::null())
         .output()
         .await
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => UpdateError::MissingTool { program },
-            _ => UpdateError::ToolFailed {
-                program,
-                status: "failed to start".into(),
-                stderr: e.to_string(),
-            },
-        })?;
+        .map_err(spawn_error(program))?;
     if !output.status.success() {
         return Err(UpdateError::ToolFailed {
             program,
@@ -198,14 +204,7 @@ pub async fn install(tag: &str, dir: &Path) -> Result<(), UpdateError> {
         .stdin(Stdio::null())
         .status()
         .await
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => UpdateError::MissingTool { program },
-            _ => UpdateError::ToolFailed {
-                program,
-                status: "failed to start".into(),
-                stderr: e.to_string(),
-            },
-        })?;
+        .map_err(spawn_error(program))?;
     if status.success() {
         Ok(())
     } else {

@@ -1,16 +1,14 @@
 # Primitives and tool reference
 
-This is the authoritative list of MCP tools. Tool names and input fields
-here are the contract; a change to them must update this file, the
-examples, and `README.md` in the same commit.
+This is the authoritative list of MCP tools, and the only place their
+schemas are written down. Tool names and input fields here are the
+contract; a change to them must update this file, the examples, and
+`README.md` in the same commit.
 
-Every tool takes an `agent` string identifying the caller and returns JSON
-with a `status` field (see [02-architecture.md](02-architecture.md#tool-response-shape)).
-Timestamps are RFC 3339 in UTC.
-
-Status per tool: **Built**, **In progress**, or **Planned**. Every tool below
-is **Built**: the first five primitives as of 0.1.0, the memory tools after
-them. Schemas may still change before 1.0.
+The daemon exposes 22 tools. Every tool takes an `agent` string
+identifying the caller and returns JSON with a `status` field (see
+[02-architecture.md](02-architecture.md#tool-response-shape)). Timestamps
+are RFC 3339 in UTC. Schemas may still change before 1.0.
 
 ## Conventions shared by every tool
 
@@ -22,18 +20,20 @@ also carries `persist_error` and its summary starts with
 `warning: not persisted`; the in-memory decision still stands.
 
 **Lists are bounded and newest first.** `claims_list`, `task_list`,
-`contract_list`, `notice_list`, and `decision_list` take `limit` (default
-20, maximum 200) and `before`, and return `count` (rows in this response),
-`total` (rows that matched), `truncated`, and, when truncated,
-`next_before`. Pass `next_before` back as `before` to get the next older
-page; a bare RFC 3339 timestamp also works as `before` and means
-"strictly older than". Two rows written in the same instant are never
-skipped or repeated between pages because the cursor carries the row id.
+`contract_list`, `notice_list`, `decision_list`, and `message_list` take
+`limit` (default 20, maximum 200) and `before`, and return `count` (rows
+in this response), `total` (rows that matched), `truncated`, and, when
+truncated, `next_before`. Pass `next_before` back as `before` to get the
+next older page; a bare RFC 3339 timestamp also works as `before` and
+means "strictly older than". Two rows written in the same instant are
+never skipped or repeated between pages because the cursor carries the
+row id. `memory_search` is ranked rather than paged: it takes `limit`
+only.
 
 **Rows are compact.** List rows omit null fields and empty arrays, show
-ids as their first eight characters, round timestamps to seconds, and
-drop `acked_by` from notices. The tool that returns one item
-(`contract_get`, `task_update`, ...) returns it in full.
+ids as their first eight characters, and round timestamps to seconds.
+The tool that returns one item (`contract_get`, `task_update`, ...)
+returns it in full.
 
 **A lost lease is reported once, on your next call.** If a lease you held
 has ended, the next response to you, whatever the tool, carries `lost`:
@@ -41,6 +41,10 @@ one `{path, owner, at}` per path, and its text line starts with
 `warning: lost lease on N path(s)`. Stop editing those paths and claim
 them again. `lost` is omitted when there is nothing to report, so
 unaffected responses do not grow.
+
+**Messages arrive the same way.** If another agent has messaged you, your
+next response carries `inbox` (see [Messages](#messages)). Nothing is
+attached when nothing is waiting.
 
 **Any id input accepts a unique prefix.** `task_id`, `notice_id`,
 `depends_on`, and `contract_get`'s `name` take a full id or any prefix
@@ -51,7 +55,7 @@ unknown one `not_found`.
 
 Leases on files or directories. Overlap is refused.
 
-### `claim` — Built
+### `claim`
 
 | Field | Type | Notes |
 |---|---|---|
@@ -79,7 +83,7 @@ omitted when empty:
 - `contracts`: contracts consumed by the paths: `name`, `version`, `kind`.
   Fetch a body with `contract_get`.
 - `decisions`: decisions affecting the paths: `id`, `title`.
-- `memory`: [memory notes](#memory-notes--built) about the paths:
+- `memory`: [memory notes](#memory-notes) about the paths:
   `permalink`, `title`, `kind`, `paths`, `tags`, `updated_at`, and a
   160-character `excerpt`. Never a whole body.
 
@@ -100,7 +104,7 @@ without activity, and after four TTLs (at most four hours) regardless of
 activity; only `claim` or `renew` restarts that age. When a lease you held
 has ended, your next response carries `lost` (see the conventions above).
 
-### `release` — Built
+### `release`
 
 | Field | Type | Notes |
 |---|---|---|
@@ -111,14 +115,14 @@ Returns `ok` with `released`. Releasing a path you do not hold is
 `not_found` and nothing is released; releasing when you hold nothing is
 also `not_found`.
 
-### `renew` — Built
+### `renew`
 
 Extends every lease held by `agent` by its original TTL. Returns `ok` with
 `count` (leases renewed) and `expires_at` (the latest new expiry). Any
 other tool call by the agent also renews, so this is only needed during
 long silent work.
 
-### `claims_list` — Built
+### `claims_list`
 
 | Field | Type | Notes |
 |---|---|---|
@@ -133,7 +137,7 @@ the whole board. Rows: `id`, `owner`, `paths`, `reason`, `claimed_at`,
 `expires_at`, `ttl_secs`. Expired claims are reaped before the answer is
 built.
 
-## Task board — Built
+## Task board
 
 | Tool | Purpose |
 |---|---|
@@ -156,7 +160,7 @@ every call, next to lease expiry, and `status` counts it as
 counts as silent since its task last changed. See
 [ADR-0018](../5-decisions/0018-task-ownership-and-contract-republish.md).
 
-## Contracts — Built
+## Contracts
 
 An interface shape published before implementation.
 
@@ -175,7 +179,7 @@ that dropped it. Pass `expected_version` when two agents may publish the
 same name concurrently: the loser gets `conflict` instead of silently
 overwriting.
 
-## Change notices — Built
+## Change notices
 
 "Something changed and these files care."
 
@@ -187,14 +191,17 @@ overwriting.
 A sixth kind, `contract`, is emitted automatically when a contract gets a
 new version; agents do not publish it themselves.
 
-## Decisions log — Built
+## Decisions log
 
 | Tool | Purpose |
 |---|---|
 | `decision_record` | `title`, `decision`, `rationale`, `alternatives[]`, `affects_paths[]`. Returns `decision` |
 | `decision_list` | Filter by `path` or case-insensitive `query` over title, decision, and rationale; newest first, paged (`limit`, `before`). Returns `count`, `total`, `truncated`, `next_before`, and `decisions` |
 
-## Memory notes — Built
+Decisions recorded here are agent-level project decisions, distinct from
+the ADRs in `docs/5-decisions/`, which are decisions about Tirith itself.
+
+## Memory notes
 
 Durable, path-scoped knowledge an agent leaves for whoever comes next: a
 lesson, a trap, the state of unfinished work. Each note is a committed
@@ -205,7 +212,7 @@ This is the primitive that makes the other five worth keeping after a
 session ends, and it is the one a general-purpose memory server cannot
 provide: notes carry the paths they are about, so a successful `claim`
 hands the agent the notes for the paths it just claimed. See
-[the `claim` tool](#claim--built).
+[the `claim` tool](#claim).
 
 A note's `permalink` is a slug made from its title when it is created, and
 it never changes afterwards, so links and filenames stay valid when the
@@ -214,7 +221,7 @@ title is edited. A permalink may carry `/` segments
 segment is lowercase letters, digits, and dashes, so a permalink cannot
 escape `.tirith/memory/`.
 
-### `memory_write` — Built
+### `memory_write`
 
 | Field | Type | Notes |
 |---|---|---|
@@ -250,7 +257,7 @@ by other Markdown memory tools import without translation:
 The first is an observation: a category, text, and hashtags. The second is
 a relation to another note, by permalink or title.
 
-### `memory_read` — Built
+### `memory_read`
 
 | Field | Type | Notes |
 |---|---|---|
@@ -263,7 +270,7 @@ place a body is ever returned. `related` rows are digests (see
 `memory_search`), at most 20 of them. A `depth` above 3 is `invalid`: a
 dense relation graph reaches every note in a few hops.
 
-### `memory_search` — Built
+### `memory_search`
 
 | Field | Type | Notes |
 |---|---|---|
@@ -291,7 +298,7 @@ Search is plain term scoring in process, and matching is on substrings, so
 `lease` finds `leases`. There are no embeddings and no vector index,
 deliberately: see the alternatives in ADR-0011.
 
-### `memory_delete` — Built
+### `memory_delete`
 
 | Field | Type | Notes |
 |---|---|---|
@@ -303,7 +310,7 @@ deleted and does not come back on restart. A note holding a secret or a
 plainly wrong fact has to be retractable through the same path that wrote
 it; deleting the file by hand is undone by the next full rewrite.
 
-## Messages — Built
+## Messages
 
 Short notes between agents, for the coordination talk that used to go
 through a client's own chat: "take task X", "I released server.rs". They
@@ -326,7 +333,7 @@ broadcast is addressed, at send time, to every agent that made a call in
 the previous hour, minus the sender; agents that show up later do not
 receive it. Nothing is attached when nothing is waiting.
 
-## Status — Built
+## Status
 
 `status` takes an optional `agent` and `verbose`. It returns counts
 (`claims`, `tasks_open`, `tasks_done`, `tasks_orphaned`, `contracts`,
@@ -342,9 +349,6 @@ With `verbose: true` it also returns `agents` (at most 50 rows; then
 `agents_truncated` is true): per agent, `paths_count`, when the latest
 lease `expires_at`, and `tasks_in_progress`. The dashboard's `/api/state`
 remains the full view for humans.
-
-Decisions recorded here are agent-level project decisions, distinct from the
-ADRs in `docs/5-decisions/`, which are decisions about Tirith itself.
 
 ## Resources — Planned
 

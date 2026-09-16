@@ -4,7 +4,8 @@
   <h1>Tirith</h1>
 
   <p><strong>Coordination server for parallel coding agents.</strong><br>
-  Claims, a task board, interface contracts, change notices, and a decisions log, over MCP.</p>
+  Claims, a task board, interface contracts, change notices, a decisions log,
+  path-scoped memory notes, and agent messages, over MCP.</p>
 
   <p>
     <a href="https://github.com/eabz/tirith/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/eabz/tirith/actions/workflows/ci.yml/badge.svg"></a>
@@ -17,20 +18,21 @@
 Run five or ten coding agents on one repository and they edit the same
 files, rename things others depend on, and build both sides of an interface
 to different shapes. Tirith is a small daemon they all talk to: an agent
-claims files before editing, reads change notices before acting, and
-publishes the shape of an interface before either side implements it.
+claims files before editing, gets the notices, contracts, decisions, and
+notes for those files back with the claim, and publishes the shape of an
+interface before either side implements it.
 
-It works with anything that speaks MCP, over stdio or HTTP: Claude Code, Cursor,
-Codex, LangGraph, CrewAI, or a plain script.
+It works with anything that speaks MCP, over stdio or HTTP: Claude Code,
+Cursor, Codex, LangGraph, CrewAI, or a plain script.
 
 It also remembers. Agents leave notes scoped to repository paths, so what
-one agent learned about a file reaches the next agent that claims it. That
-is memory a general-purpose memory server cannot deliver, because it does
-not know what anyone is about to edit. Tirith stores no conversation
-history and no embeddings.
+one agent learned about a file reaches the next agent that claims it.
+Tirith stores no conversation history and no embeddings.
 
-> **Status: pre-alpha.** All primitives, the CLI, persistence, and the
-> dashboard exist and are tested. Tool schemas may change before 1.0.
+> **Status: 0.1.x.** Every primitive, the CLI, persistence, and the
+> dashboard are built and tested. v1 is defined by
+> [ADR-0013](docs/5-decisions/0013-v1-definition.md); tool schemas may
+> still change until it ships.
 
 ## Install
 
@@ -53,18 +55,16 @@ cargo install tirith-mcp
 ```
 
 Already installed? `tirith update` replaces the binary in place with the
-latest release (`--check` only reports, `--to 0.2.0` pins).
-
-Prebuilt binaries for macOS, Linux, and Windows on x86_64 and ARM64 are on
-the [releases page](https://github.com/eabz/tirith/releases). More options
-in [docs/1-about/05-installation.md](docs/1-about/05-installation.md), or
-on the install page at [eabz.github.io/tirith](https://eabz.github.io/tirith/).
+latest release. Prebuilt binaries for macOS, Linux, and Windows on x86_64
+and ARM64 are on the [releases page](https://github.com/eabz/tirith/releases);
+every option is in [docs/1-about/05-installation.md](docs/1-about/05-installation.md).
 
 ## Quick start
 
 Register `tirith stdio` with your client, the same way as any other stdio
 MCP server. It starts the repository's daemon the first time a session
-needs it and proxies to it after that; nothing has to be started by hand.
+needs it, replaces a daemon of another version, and proxies to it after
+that; nothing has to be started by hand.
 
 | Client | Setup |
 |---|---|
@@ -74,29 +74,31 @@ needs it and proxies to it after that; nothing has to be started by hand.
 | LangGraph, CrewAI, curl | connect over HTTP, see [docs/2-examples/02-client-setup.md](docs/2-examples/02-client-setup.md) |
 
 The daemon serves MCP at `http://127.0.0.1:7477/mcp` and a live dashboard
-at `http://127.0.0.1:7477/`. You can also run it yourself with
-`tirith serve` from the repository root.
+at `http://127.0.0.1:7477/`. State is written to `.tirith/` in your
+repository: contracts, notices, decisions, and memory notes are meant to
+be committed; `.tirith/runtime/` (claims, tasks, messages) is gitignored
+by a `.gitignore` Tirith writes itself.
 
 Every agent passes a stable `agent` name with each call. That is the only
 convention it has to follow.
 
 ## What it does
 
-| Primitive | Purpose |
-|---|---|
-| **Claims** | Lease files or directories before editing. Overlaps are refused with the owner, reason, and expiry. Leases expire if the agent dies. |
-| **Task board** | Tasks with priority, owner, and dependencies. Agents pull the next unblocked task. |
-| **Contracts** | Interface shapes published and versioned before implementation. A new version notifies its consumers automatically. |
-| **Change notices** | "Renamed `X` to `Y`, these paths are affected." Dependents get them in the brief that comes back with a claim, once each. |
-| **Decisions log** | Settled choices with rationale, so nothing is decided twice. |
-| **Memory notes** | Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and reachable by whoever claims the paths a note is about. |
-| **Messages** | Short notes between agents ("take task X", "server.rs is free"), delivered on the recipient's next call, so any MCP client can take part. Runtime only, never committed. |
+| Primitive | Tools | Purpose |
+|---|---|---|
+| **Claims** | `claim`, `release`, `renew`, `claims_list` | Lease files or directories before editing. Overlaps are refused with the owner, reason, and expiry. Leases expire if the agent dies, and the agent is told on its next call. |
+| **Task board** | `task_create`, `task_pull`, `task_update`, `task_list` | Tasks with priority, owner, and dependencies. Agents pull the next unblocked task; a task whose owner goes silent returns to the board. |
+| **Contracts** | `contract_publish`, `contract_get`, `contract_list` | Interface shapes published and versioned before implementation. A new version notifies its consumers automatically. |
+| **Change notices** | `notice_publish`, `notice_list` | "Renamed `X` to `Y`, these paths are affected." Dependents get them in the brief that comes back with a claim, once each. |
+| **Decisions log** | `decision_record`, `decision_list` | Settled choices with rationale, so nothing is decided twice. |
+| **Memory notes** | `memory_write`, `memory_read`, `memory_search`, `memory_delete` | Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and delivered to whoever claims the paths a note is about. |
+| **Messages** | `message_send`, `message_list` | Short notes between agents, delivered on the recipient's next call, so any MCP client can take part. Runtime only. |
+| **Status** | `status` | Counts, persistence and load problems; `verbose` adds who holds what. |
 
-Claims and the task board are table stakes. Contracts and change notices are
-the reason Tirith exists: nothing else covers them today. Memory notes are
-what makes the other four worth keeping after the session ends. The full
-tool reference is in
-[docs/1-about/04-primitives.md](docs/1-about/04-primitives.md).
+Twenty-two tools. Every result is JSON with a `status` field, lists are
+paged, and any result may carry `lost` (a lease that ended) or `inbox`
+(messages waiting). The full reference, the single source of truth for
+tool schemas, is [docs/1-about/04-primitives.md](docs/1-about/04-primitives.md).
 
 ## Example
 
@@ -105,33 +107,10 @@ decide what to do next:
 
 ```bash
 tirith claim --agent alice --reason "refactor session handling" src/auth/
-# ok       alice  src/auth  expires 18:20:00Z
+# ok       alice  src/auth  expires 04:14:34Z
 
 tirith claim --agent bob --reason "fix login redirect" src/auth/login.rs
-# conflict src/auth/login.rs overlaps src/auth (alice: "refactor session handling", expires 18:20:00Z)
-```
-
-Over MCP the same refusal is structured, so agents branch on `status`
-instead of parsing text:
-
-```json
-{ "status": "conflict",
-  "conflicts": [ { "path": "src/auth/login.rs", "overlaps": "src/auth",
-                   "owner": "alice", "reason": "refactor session handling",
-                   "expires_at": "2026-09-15T18:20:00Z" } ] }
-```
-
-A contract before the code. Alice publishes the shape of an endpoint; Bob
-reads it before writing the client. When Alice later changes the response,
-the consumers get a notice without anyone remembering to send one:
-
-```bash
-tirith contract publish --agent alice "POST /api/sessions" -k http \
-  -s '{"request":{"email":"string","password":"string"},"response":{"token":"string"}}' \
-  --consumer src/client/sessions.rs
-
-tirith notice list --agent bob --path src/client/ --unread
-# 20c12b66 contract  contract POST /api/sessions updated to v2 (was v1)  affects src/client/sessions.rs  by alice
+# conflict src/auth/login.rs overlaps src/auth (alice: "refactor session handling", expires 04:14:34Z)
 ```
 
 A note left for whoever edits a path next. Alice writes it once; it comes
@@ -142,13 +121,16 @@ tirith memory write --agent alice "Session ids are opaque" -k gotcha --path src/
 Tokens are opaque strings. Compare them, never parse them.
 NOTE
 
+tirith release --agent alice
 tirith claim --agent bob --reason "fix login redirect" src/auth/login.rs
-# ok       bob  src/auth/login.rs  expires 18:30:00Z
+# ok       bob  src/auth/login.rs  expires 04:14:34Z
 # memory:
-#   session-ids-are-opaque gotcha   18:20:00Z  paths src/auth  Session ids are opaque: Tokens are opaque strings. Compare them, never parse them.
+#   session-ids-are-opaque gotcha   04:04:34Z  paths src/auth  Session ids are opaque: Tokens are opaque strings. Compare them, never parse them.
 ```
 
-The full demo is [examples/demo.sh](examples/demo.sh).
+The full walkthrough, with contracts, notices, and the same calls over
+raw MCP, is [docs/2-examples/01-two-agents-demo.md](docs/2-examples/01-two-agents-demo.md);
+the script is [examples/demo.sh](examples/demo.sh).
 
 ## CLI
 
@@ -158,42 +140,21 @@ Every tool has a subcommand; the CLI uses the same MCP path agents do.
 tirith serve                               # run the repo's daemon by hand
 tirith stdio                               # per-session shim clients spawn; starts the daemon if needed
 tirith update                              # replace the binary with the latest release
-tirith status                              # counts and who holds what
+tirith status                              # counts, and who holds what
 tirith claim | release | renew | claims
 tirith task     create | pull | update | list
 tirith contract publish | get | list
-tirith notice   publish | list | ack
+tirith notice   publish | list
 tirith decision record | list
 tirith memory   write | read | search | delete   # body from --body, --file, or stdin
-tirith message  send | list                # talk to other agents; inbox shows on any result
-tirith tray                                # macOS menu bar icon listing daemons
+tirith message  send | list                # talk to other agents; the inbox shows on any result
+tirith tray                                # macOS only: menu bar icon listing every daemon
 tirith tools                               # list tools with descriptions
 tirith call <tool> '<json>'                # call any tool directly
 ```
 
 `--agent` sets your name, `--json` prints the raw result, and non-`ok`
 outcomes exit with status 1.
-
-## Menu bar
-
-On macOS, `tirith tray` shows a tower in the menu bar listing every Tirith
-daemon on the machine with its agent and claim counts; click one to open
-its dashboard, or stop it from the same menu. Details in
-[docs/1-about/05-installation.md](docs/1-about/05-installation.md).
-
-## How it runs
-
-One daemon per repository, over streamable HTTP on localhost. MCP clients
-normally spawn a fresh server per session, which would give ten agents ten
-private states; Tirith is deliberately one shared process. `tirith stdio`
-bridges each per-session client to that process, starting it if needed
-([ADR-0006](docs/5-decisions/0006-stdio-shim-starts-daemon.md)). State is held in
-memory and written through to JSON under `.tirith/` in your repository.
-Contracts, notices, and decisions are meant to be committed so the next
-session inherits them; claims and tasks are runtime state and gitignored.
-
-Details in [docs/1-about/02-architecture.md](docs/1-about/02-architecture.md)
-and the decision records in [docs/5-decisions/](docs/5-decisions/README.md).
 
 ## Documentation
 
@@ -206,7 +167,7 @@ and the decision records in [docs/5-decisions/](docs/5-decisions/README.md).
 | [5-decisions](docs/5-decisions/) | Architecture decision records |
 | [6-agent-workflow](docs/6-agent-workflow/) | How agents work on this repo: Serena, memory, Tirith on itself |
 | [7-release](docs/7-release/) | Release process and version bumping |
-| [index.html](index.html) | The landing page served at [eabz.github.io/tirith](https://eabz.github.io/tirith/) from the repository root; `docs/index.html` only redirects there |
+| [index.html](index.html) | The landing page at [eabz.github.io/tirith](https://eabz.github.io/tirith/) |
 
 ## Contributing
 

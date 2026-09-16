@@ -8,9 +8,11 @@
 //! them.
 //!
 //! Two bookkeeping helpers cover every primitive: [`LogCursor`] for
-//! append-mostly JSON Lines files (notices, decisions) and [`ChangedIds`]
-//! for one-file-per-item directories (contracts, memory notes). A new primitive picks
-//! one, adds a field to [`Delta`], and is done. See ADR-0010.
+//! append-mostly JSON Lines files (notices, the seen log, decisions,
+//! messages) and [`ChangedIds`] for one-file-per-item directories
+//! (contracts, memory notes). Claims and tasks are small and rewritten
+//! whole. A new primitive picks one, adds a field to [`Delta`], and is
+//! done. See ADR-0010.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -51,7 +53,8 @@ pub struct Snapshot {
     pub contracts: Vec<Contract>,
     /// All notices.
     pub notices: Vec<Notice>,
-    /// Who acknowledged which notice, oldest first (runtime only).
+    /// Which agents each notice has reached, oldest first (runtime only,
+    /// ADR-0021).
     #[serde(default)]
     pub notice_seen: Vec<NoticeSeen>,
     /// All decisions.
@@ -108,6 +111,16 @@ impl LogCursor {
         Self {
             persisted,
             rewrite: false,
+        }
+    }
+
+    /// A cursor for a log that was loaded with `loaded` items of which
+    /// `kept` survived. When nothing was dropped the file already matches
+    /// memory; otherwise a rewrite is pending so it does again.
+    pub fn after_load(loaded: usize, kept: usize) -> Self {
+        Self {
+            persisted: kept,
+            rewrite: kept != loaded,
         }
     }
 
@@ -205,7 +218,8 @@ impl<I: Ord> ChangedIds<I> {
 
 /// What changed since the last persist, ready to be written.
 ///
-/// `None` and [`Log::Unchanged`] mean "leave that file alone".
+/// `None`, an empty `Vec`, and [`Log::Unchanged`] mean "leave those files
+/// alone".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Delta {
     /// Sequence number this delta brings the store to.
@@ -218,7 +232,7 @@ pub struct Delta {
     pub contracts: Vec<Contract>,
     /// Notice log changes.
     pub notices: Log<Notice>,
-    /// Acknowledgement log changes (runtime only, ADR-0021).
+    /// Seen log changes (runtime only, ADR-0021).
     pub notice_seen: Log<NoticeSeen>,
     /// Decision log changes.
     pub decisions: Log<Decision>,
@@ -360,7 +374,7 @@ struct Inner {
     contracts_changed: ChangedIds<ContractId>,
     memory_changed: ChangedIds<MemoryId>,
     notices_log: LogCursor,
-    /// The acknowledgement log's cursor; acks never rewrite notices.jsonl.
+    /// The seen log's cursor; a delivery never rewrites notices.jsonl.
     seen_log: LogCursor,
     decisions_log: LogCursor,
     /// Agent-to-agent messages and who has received what (ADR-0020).
@@ -413,23 +427,17 @@ impl State {
     pub fn new(clock: Arc<dyn Clock>, snapshot: Snapshot) -> Self {
         let started_at = clock.now();
         let load_errors = snapshot.load_errors.clone();
-        // Messages past retention are dropped here; the file is rewritten
-        // to match on the next persist.
+        // Two logs may shrink on load: messages past retention are dropped,
+        // and seen marks for notices that no longer exist are dropped by
+        // `from_parts`. Their files are rewritten to match on the next
+        // persist.
         let loaded_messages = snapshot.messages.len();
         let messages = MessageBoard::from_messages(snapshot.messages, started_at);
-        // Acks for notices that no longer exist are dropped by from_parts;
-        // the log is rewritten to match when that happens.
         let loaded_seen = snapshot.notice_seen.len();
         let notices_log = LogCursor::new(snapshot.notices.len());
         let notices = NoticeBoard::from_parts(snapshot.notices, snapshot.notice_seen);
-        let mut seen_log = LogCursor::new(notices.seen().len());
-        if notices.seen().len() != loaded_seen {
-            seen_log.mark_rewrite();
-        }
-        let mut messages_log = LogCursor::new(messages.messages().len());
-        if messages.messages().len() != loaded_messages {
-            messages_log.mark_rewrite();
-        }
+        let seen_log = LogCursor::after_load(loaded_seen, notices.seen().len());
+        let messages_log = LogCursor::after_load(loaded_messages, messages.messages().len());
         Self {
             inner: Mutex::new(Inner {
                 claims: ClaimBook::from_claims(snapshot.claims),
@@ -450,9 +458,7 @@ impl State {
                 memory_changed: ChangedIds::default(),
                 touched: false,
                 last_seen: BTreeMap::new(),
-                task_orphan: Duration::seconds(
-                    i64::try_from(DEFAULT_TASK_ORPHAN_SECS).unwrap_or(i64::MAX),
-                ),
+                task_orphan: orphan_duration(DEFAULT_TASK_ORPHAN_SECS),
                 tasks_orphaned: 0,
                 reaped: Reaped::default(),
             }),
@@ -465,7 +471,7 @@ impl State {
     /// Sets how long an in-progress task's owner may be silent before the
     /// task returns to `todo`. Zero disables reaping.
     pub fn set_task_orphan_secs(&self, secs: u64) {
-        self.lock().task_orphan = Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX));
+        self.lock().task_orphan = orphan_duration(secs);
     }
 
     /// Files and lines the store skipped when this state was loaded.
@@ -751,17 +757,17 @@ impl State {
             inner.contracts_changed.mark(published.contract.id);
             let notice = published.previous_version.and_then(|previous| {
                 let contract = &published.contract;
-                let notice = NewNotice {
-                    kind: NoticeKind::Contract,
-                    summary: format!(
+                let notice = NewNotice::new(
+                    NoticeKind::Contract,
+                    format!(
                         "contract {} updated to v{} (was v{previous})",
                         contract.name, contract.current.version
                     ),
-                    from: Some(format!("v{previous}")),
-                    to: Some(format!("v{}", contract.current.version)),
-                    affected_paths: published.notify.clone(),
-                    contract_id: Some(contract.id),
-                };
+                )
+                .with_from(format!("v{previous}"))
+                .with_to(format!("v{}", contract.current.version))
+                .with_affected_paths(published.notify.clone())
+                .with_contract_id(contract.id);
                 // The summary above is never empty, so this cannot fail.
                 inner.notices.publish(agent, notice, now).ok().cloned()
             });
@@ -924,9 +930,10 @@ impl State {
     ///
     /// Notices returned are marked seen by `agent` in the durable seen log
     /// (ADR-0021), so the next brief on the same paths shows the next ones
-    /// instead of repeating these, and an unread listing skips them.
+    /// instead of repeating these, and an unread listing skips them. The
+    /// memory scan runs outside the lock, like every other memory read.
     pub fn brief(&self, agent: &AgentId, paths: &[RepoPath]) -> Brief {
-        self.access(None, |inner, now| {
+        let (mut brief, book) = self.access(None, |inner, now| {
             let notices = newest(
                 paths,
                 |path| {
@@ -952,28 +959,31 @@ impl State {
                 |d| d.id,
                 |d| d.recorded_at,
             );
-            let memory = newest(
-                paths,
-                |path| inner.memory.for_path(path, None),
-                |m| m.id,
-                |m| m.updated_at,
-            );
             let more = BriefMore {
                 notices: notices.len().saturating_sub(BRIEF_LIMIT),
                 contracts: contracts.len().saturating_sub(BRIEF_LIMIT),
                 decisions: decisions.len().saturating_sub(BRIEF_LIMIT),
-                memory: memory.len().saturating_sub(BRIEF_LIMIT),
+                memory: 0,
             };
             let brief = Brief {
                 notices: capped(notices),
                 contracts: capped(contracts),
                 decisions: capped(decisions),
-                memory: capped(memory),
+                memory: Vec::new(),
                 more,
             };
             mark_delivered(inner, Some(agent), brief.notices.iter().map(|n| n.id), now);
-            brief
-        })
+            (brief, Arc::clone(&inner.memory))
+        });
+        let memory = newest(
+            paths,
+            |path| book.for_path(path, None),
+            |m| m.id,
+            |m| m.updated_at,
+        );
+        brief.more.memory = memory.len().saturating_sub(BRIEF_LIMIT);
+        brief.memory = capped(memory);
+        brief
     }
 
     /// Leases `agent` lost since it was last told. Each is returned once;
@@ -1163,6 +1173,11 @@ impl State {
     }
 }
 
+/// `secs` as a duration, saturating instead of overflowing.
+fn orphan_duration(secs: u64) -> Duration {
+    Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
+}
+
 fn summary_for<'a>(agents: &'a mut Vec<AgentSummary>, agent: &AgentId) -> &'a mut AgentSummary {
     let index = agents
         .iter()
@@ -1290,10 +1305,10 @@ mod tests {
         );
     }
 
-    /// ADR-0021: an ack appends one row to its own log and leaves the
-    /// notice log untouched; a repeat by the same agent appends nothing.
+    /// ADR-0021: a delivery appends one row to the seen log and leaves the
+    /// notice log untouched; a repeat to the same agent appends nothing.
     #[test]
-    fn an_ack_appends_to_the_ack_log_not_the_notice_log() {
+    fn a_delivery_appends_to_the_seen_log_not_the_notice_log() {
         let (_, state) = state();
         let notice = state
             .notice_publish(
@@ -1319,15 +1334,15 @@ mod tests {
         let delivered = state.notices(None, &unread);
         assert_eq!(delivered.len(), 1, "delivered once");
         assert_eq!(delivered[0].id, notice.id);
-        let acked = state.take_dirty().unwrap();
+        let seen = state.take_dirty().unwrap();
         assert!(
-            matches!(acked.notices, Log::Unchanged),
+            matches!(seen.notices, Log::Unchanged),
             "the notice row is not rewritten"
         );
         assert!(
-            matches!(acked.notice_seen, Log::Appended(ref a) if a.len() == 1 && a[0].agent == agent("b")),
+            matches!(seen.notice_seen, Log::Appended(ref a) if a.len() == 1 && a[0].agent == agent("b")),
             "{:?}",
-            acked.notice_seen
+            seen.notice_seen
         );
 
         assert!(

@@ -85,30 +85,7 @@ impl Drop for DaemonGuard {
 async fn shim_starts_daemon_and_proxies_tools() {
     let dir = tempfile::tempdir().unwrap();
     let _daemon = DaemonGuard::new(dir.path());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tirith"))
-        .args(["stdio", "--root"])
-        .arg(dir.path())
-        .args(["--bind", "127.0.0.1:0"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-
-    let init = rpc(
-        &mut stdin,
-        &mut lines,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": { "protocolVersion": "2025-06-18", "capabilities": {},
-                        "clientInfo": { "name": "test", "version": "0" } }
-        }),
-    )
-    .await
-    .unwrap();
+    let (child, mut stdin, mut lines, init) = shim(dir.path(), "127.0.0.1:0").await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tirith", "{init}");
     assert!(
         init["result"]["instructions"]
@@ -116,12 +93,6 @@ async fn shim_starts_daemon_and_proxies_tools() {
             .unwrap()
             .contains("claim")
     );
-    rpc(
-        &mut stdin,
-        &mut lines,
-        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
-    )
-    .await;
 
     let tools = rpc(
         &mut stdin,
@@ -170,28 +141,7 @@ async fn shim_starts_daemon_and_proxies_tools() {
     assert!(health.status().is_success());
 
     // A second shim finds the existing daemon instead of starting another.
-    let mut second = Command::new(env!("CARGO_BIN_EXE_tirith"))
-        .args(["stdio", "--root"])
-        .arg(dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let mut stdin2 = second.stdin.take().unwrap();
-    let mut lines2 = BufReader::new(second.stdout.take().unwrap()).lines();
-    rpc(&mut stdin2, &mut lines2, json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "t", "version": "0" } }
-    }))
-    .await;
-    rpc(
-        &mut stdin2,
-        &mut lines2,
-        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
-    )
-    .await;
+    let (_second, mut stdin2, mut lines2, _) = shim(dir.path(), "127.0.0.1:0").await;
     let listed = rpc(
         &mut stdin2,
         &mut lines2,
@@ -217,17 +167,18 @@ async fn shim_starts_daemon_and_proxies_tools() {
 async fn wait_for_daemon(root: &std::path::Path) -> Option<Value> {
     let file = root.join(".tirith/runtime/daemon.json");
     for _ in 0..200 {
-        if let Ok(text) = std::fs::read_to_string(&file) {
-            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                return Some(value);
-            }
+        if let Ok(text) = std::fs::read_to_string(&file)
+            && let Ok(value) = serde_json::from_str::<Value>(&text)
+        {
+            return Some(value);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     None
 }
 
-/// Spawns a shim for `root` and completes the MCP handshake.
+/// Spawns a shim for `root` and completes the MCP handshake, returning
+/// the child, its pipes, and the `initialize` reply.
 async fn shim(
     root: &std::path::Path,
     bind: &str,
@@ -235,6 +186,7 @@ async fn shim(
     tokio::process::Child,
     tokio::process::ChildStdin,
     tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    Value,
 ) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_tirith"))
         .args(["stdio", "--root"])
@@ -248,7 +200,7 @@ async fn shim(
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    rpc(
+    let init = rpc(
         &mut stdin,
         &mut lines,
         json!({
@@ -257,14 +209,15 @@ async fn shim(
                         "clientInfo": { "name": "test", "version": "0" } }
         }),
     )
-    .await;
+    .await
+    .unwrap();
     rpc(
         &mut stdin,
         &mut lines,
         json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
     )
     .await;
-    (child, stdin, lines)
+    (child, stdin, lines, init)
 }
 
 #[tokio::test]
@@ -293,7 +246,7 @@ async fn shim_replaces_a_daemon_of_another_version() {
     let record = dir.path().join(".tirith/runtime/daemon.json");
     std::fs::write(&record, outdated.to_string()).unwrap();
 
-    let (_shim, mut stdin, mut lines) = shim(dir.path(), "127.0.0.1:0").await;
+    let (_shim, mut stdin, mut lines, _) = shim(dir.path(), "127.0.0.1:0").await;
     let status = rpc(
         &mut stdin,
         &mut lines,
@@ -346,7 +299,7 @@ async fn shim_replaces_a_record_whose_daemon_is_gone() {
     )
     .unwrap();
 
-    let (_shim, mut stdin, mut lines) = shim(dir.path(), "127.0.0.1:0").await;
+    let (_shim, mut stdin, mut lines, _) = shim(dir.path(), "127.0.0.1:0").await;
     let status = rpc(
         &mut stdin,
         &mut lines,
@@ -407,7 +360,7 @@ async fn shim_leaves_another_repositorys_daemon_alone() {
         .unwrap()
         .to_owned();
 
-    let (_shim, mut stdin, mut lines) = shim(b.path(), &bind_a).await;
+    let (_shim, mut stdin, mut lines, _) = shim(b.path(), &bind_a).await;
     let status = rpc(
         &mut stdin,
         &mut lines,

@@ -76,9 +76,8 @@
 
   /* banners */
   .banner { margin:14px 24px 0; padding:10px 14px; border-radius:10px; border:1px solid var(--bad);
-    background:color-mix(in srgb, var(--bad) 12%, transparent); font-size:13px; }
+    background:color-mix(in srgb, var(--bad) 12%, transparent); font-size:13px; white-space:pre-line; }
   .banner:empty { display:none; }
-  .banner { white-space:pre-line; }
 
   main { padding:18px 24px 30px; max-width:1500px; margin:0 auto; }
 
@@ -130,7 +129,7 @@
   .empty code { color:var(--accent); background:var(--panel-2); padding:1px 5px; border-radius:4px; }
   .paths { display:flex; flex-wrap:wrap; gap:3px; max-width:340px; }
   code.path { font-size:12px; background:var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:1px 6px; color:var(--accent); white-space:nowrap; }
-  code.path.more { color:var(--dim); cursor:help; }
+  code.path.more { color:var(--dim); cursor:pointer; }
   .who { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
   .who i { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 1px rgba(0,0,0,.25); }
   .tag { display:inline-flex; align-items:center; gap:5px; padding:1px 8px; border-radius:999px; font-size:11.5px; border:1px solid currentColor; font-weight:600; white-space:nowrap; }
@@ -161,7 +160,6 @@
   button.more { display:inline-block; margin-top:2px; }
   .title + button.more, .dim + button.more { display:block; }
   .more:hover { text-decoration:underline; }
-  code.path.more { cursor:pointer; }
   .shape summary { cursor:pointer; color:var(--accent); font-size:12px; user-select:none; }
   .shape pre { margin:6px 0 0; white-space:pre-wrap; font-size:12px; color:var(--dim); max-height:220px; overflow:auto; background:var(--panel-2); border-radius:6px; padding:8px; }
   .arrow { color:var(--dim); font-size:12px; }
@@ -359,13 +357,15 @@ function detail(text, key, cls = 'note') {
   const btn = `<button class="more" data-x="${esc(key)}">${open ? 'less' : 'more'}</button>`;
   return open ? `<div class="${cls} open">${esc(text)}</div>${btn}` : btn;
 }
+// Up to `max` paths, then "+n more"; with a `key` the row can be expanded
+// to all of them (and collapsed again) like clamp().
 function paths(list, max = 8, key) {
   list = list || [];
   if (!list.length) return '<span class="dim">—</span>';
-  if (key && expanded.has(key)) max = list.length;
-  const shown = list.slice(0, max).map(p => `<code class="path">${esc(p)}</code>`);
-  if (list.length > max) shown.push(`<code class="path more"${key ? ` data-x="${esc(key)}"` : ''} title="${esc(list.slice(max).join('\n'))}">+${list.length - max} more</code>`);
-  else if (key && expanded.has(key) && list.length > 6) shown.push(`<code class="path more" data-x="${esc(key)}">less</code>`);
+  const open = key && expanded.has(key) && list.length > max;
+  const shown = list.slice(0, open ? list.length : max).map(p => `<code class="path">${esc(p)}</code>`);
+  if (open) shown.push(`<code class="path more" data-x="${esc(key)}">less</code>`);
+  else if (list.length > max) shown.push(`<code class="path more"${key ? ` data-x="${esc(key)}"` : ''} title="${esc(list.slice(max).join('\n'))}">+${list.length - max} more</code>`);
   return `<div class="paths">${shown.join('')}</div>`;
 }
 function short(id) { return `<span class="idc" title="${esc(id)}">${esc(String(id).slice(0, 8))}</span>`; }
@@ -378,7 +378,6 @@ function fill(key, cols, rows, total = rows.length) {
   const n = card.querySelector('.n'); n.textContent = total; n.dataset.total = total;
   card.querySelector('.card-b').innerHTML = rows.length ? table(cols, rows) : `<div class="empty">${EMPTY[key]}</div>`;
 }
-function taskState(t) { return t.state && t.state.status ? t.state : t; }
 function overlaps(a, b) { return a === b || a.startsWith(b + '/') || b.startsWith(a + '/'); }
 function notesFor(notes, list) {
   list = list || [];
@@ -405,9 +404,10 @@ function render(d) {
 
   const c = d.counts;
   const expiring = d.claims.filter(x => { const l = (Date.parse(x.expires_at) - now) / 1000; return l > 0 && l < 120; }).length;
-  const states = d.tasks.map(taskState);
-  const blocked = states.filter(s => s.status === 'blocked').length;
-  const inProgress = states.filter(s => s.status === 'in_progress').length;
+  // A task's state is flattened into it: `status`, plus `owner` or `by`.
+  const byStatus = status => d.tasks.filter(t => t.status === status).length;
+  const blocked = byStatus('blocked');
+  const inProgress = byStatus('in_progress');
   const tiles = [
     ['agents', d.agents.length, 'agents', 'var(--accent)', d.agents.some(a => a.tasks_in_progress) ? `${d.agents.reduce((n, a) => n + a.tasks_in_progress, 0)} working` : ''],
     ['claims', c.claims, 'claims', 'var(--ok)', expiring ? [`${expiring} expiring soon`, 'warn'] : ''],
@@ -434,22 +434,26 @@ function render(d) {
   fill('claims', ['owner', 'paths', 'reason', 'notes on these paths', 'claimed', 'lease'],
     claims.map(x => [who(x.owner), paths(x.paths, 6, 'cp:' + x.id), clamp(x.reason, 'cr:' + x.id), noteLinks(notesFor(d.memory, x.paths)), ago(x.claimed_at), lease(x.claimed_at, x.expires_at, x.ttl_secs)]));
 
-  const counts = { all: d.tasks.length, open: d.tasks.length - states.filter(s => s.status === 'done').length,
-    in_progress: inProgress, blocked, todo: states.filter(s => s.status === 'todo').length, done: states.filter(s => s.status === 'done').length };
+  const done = byStatus('done');
+  const counts = { all: d.tasks.length, open: d.tasks.length - done, in_progress: inProgress, blocked, todo: byStatus('todo'), done };
   $('task-filters').innerHTML = ['open', 'in_progress', 'blocked', 'todo', 'done', 'all']
     .map(f => `<button class="btn${f === taskFilter ? ' on' : ''}" data-f="${f}">${f.replace('_', ' ')} <span class="dim">${counts[f]}</span></button>`).join('');
   for (const b of $('task-filters').querySelectorAll('button')) b.onclick = () => { taskFilter = b.dataset.f; store.set('taskFilter', taskFilter); if (lastData) render(lastData); };
   const order = { in_progress: 0, blocked: 1, todo: 2, done: 3 };
-  const tasks = d.tasks.map(t => ({ t, s: taskState(t) }))
-    .filter(({ s }) => taskFilter === 'all' || (taskFilter === 'open' ? s.status !== 'done' : s.status === taskFilter))
-    .sort((a, b) => (order[a.s.status] - order[b.s.status]) || (b.t.priority - a.t.priority) || Date.parse(b.t.updated_at || 0) - Date.parse(a.t.updated_at || 0));
+  const tasks = d.tasks
+    .filter(t => taskFilter === 'all' || (taskFilter === 'open' ? t.status !== 'done' : t.status === taskFilter))
+    .sort((a, b) => (order[a.status] - order[b.status]) || (b.priority - a.priority) || Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0));
+  const lastNote = t => {
+    if (t.status === 'blocked' && t.reason) return clamp(t.reason, 'tb:' + t.id, 'note bad');
+    const note = t.notes?.[t.notes.length - 1];
+    return note ? `<div class="dim" title="${esc(note.by)}">${who(note.by)}</div>${detail(note.text, 'tn:' + t.id)}` : '<span class="dim">—</span>';
+  };
   fill('tasks', ['id', 'status', 'owner', 'pri', 'title', 'depends on', 'paths', 'last note', 'updated'],
-    tasks.map(({ t, s }) => [short(t.id), `<span class="tag ${s.status}">${s.status.replace('_', ' ')}</span>`, who(s.owner || s.by),
+    tasks.map(t => [short(t.id), `<span class="tag ${t.status}">${t.status.replace('_', ' ')}</span>`, who(t.owner || t.by),
       `<span class="pri${t.priority > 0 ? ' hi' : ''}">P${t.priority}</span>`,
       `<div class="title">${esc(t.title)}</div>${detail(t.description, 'td:' + t.id)}`,
       (t.depends_on || []).map(short).join(' ') || '<span class="dim">—</span>', paths(t.paths, 6, 'tp:' + t.id),
-      s.status === 'blocked' && s.reason ? clamp(s.reason, 'tb:' + t.id, 'note bad')
-        : (t.notes?.length ? `<div class="dim" title="${esc(t.notes[t.notes.length - 1].by)}">${who(t.notes[t.notes.length - 1].by)}</div>${detail(t.notes[t.notes.length - 1].text, 'tn:' + t.id)}` : '<span class="dim">—</span>'),
+      lastNote(t),
       t.updated_at ? ago(t.updated_at) : '<span class="dim">—</span>']), d.tasks.length);
 
   fill('contracts', ['name', 'kind', 'version', 'consumers', 'by', 'published', 'shape'],

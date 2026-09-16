@@ -7,23 +7,31 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+#[path = "common/raw_client.rs"]
+mod raw_client;
 
-use rmcp::ServiceExt;
+use std::net::SocketAddr;
+
+use raw_client::raw_client;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::{RoleClient, RunningService};
-use rmcp::transport::common::client_side_sse::NeverRetry;
-use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
-};
 use serde_json::{Value, json};
 use tirith::server::{ServeOptions, ServerHandle, start};
 
 /// `tools/list` for the whole tool surface, in serialized JSON chars.
-/// 7 KiB held 21 tools; `message_send` and `message_list` (ADR-0020) cost
-/// about 640 chars of schema between them, so the bound moved to 7,800.
-/// Raise it only for a real tool or parameter, never for prose.
+/// Every agent downloads it once per session, so it is a per-session
+/// token cost. Raise it only for a real tool or parameter, never for
+/// prose; per ADR-0017 every raise names what it pays for:
+///
+/// - Measured 2026-09-16: 10,445 chars for 17 tools before slimming
+///   (largest 1,040); about 6,100 for 20 tools after, with a floor of
+///   4,170 if every description were removed.
+/// - 6,144 to 6,656 for the paging parameters: `limit` and `before` on
+///   five list tools, `all` on two, `verbose` on `status`.
+/// - 6,656 to 7,168 for the `memory_delete` tool and the `if_updated_at`
+///   input on `memory_write`.
+/// - 7,168 to 7,800 for `message_send` and `message_list` (ADR-0020),
+///   about 640 chars of schema between them.
 const TOOLS_LIST_MAX: usize = 7_800;
 /// Any single tool in `tools/list`.
 const TOOL_MAX: usize = 500;
@@ -158,13 +166,6 @@ impl Daemon {
     }
 }
 
-async fn raw_client(url: &str) -> RunningService<RoleClient, ()> {
-    let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_owned());
-    config.retry_config = Arc::new(NeverRetry::default());
-    let transport = StreamableHttpClientTransport::with_client(reqwest::Client::default(), config);
-    ().serve(transport).await.unwrap()
-}
-
 fn bytes(v: &Value) -> usize {
     serde_json::to_string(v).unwrap().len()
 }
@@ -192,11 +193,12 @@ fn assert_compact(row: &Value, context: &str) {
 }
 
 #[tokio::test]
-async fn tools_list_is_under_7_kb_and_no_tool_over_500_chars() {
+async fn tools_list_stays_under_7800_chars_and_no_tool_over_500() {
     let daemon = Daemon::empty().await;
     let tools = daemon.client.list_all_tools().await.unwrap();
     let total = serde_json::to_string(&tools).unwrap().len();
     eprintln!("tools/list: {total} chars for {} tools", tools.len());
+    let mut largest = (String::new(), 0);
     for tool in &tools {
         let size = serde_json::to_string(tool).unwrap().len();
         assert!(
@@ -204,10 +206,16 @@ async fn tools_list_is_under_7_kb_and_no_tool_over_500_chars() {
             "tool {} is {size} chars, budget {TOOL_MAX}",
             tool.name
         );
+        if size > largest.1 {
+            largest = (tool.name.to_string(), size);
+        }
     }
     assert!(
         total <= TOOLS_LIST_MAX,
-        "tools/list is {total} chars, budget {TOOLS_LIST_MAX}"
+        "tools/list is {total} chars for {} tools (largest {} at {}), budget {TOOLS_LIST_MAX}",
+        tools.len(),
+        largest.0,
+        largest.1
     );
     daemon.stop().await;
 }
@@ -402,9 +410,8 @@ async fn renew_is_under_300_bytes() {
 }
 
 /// The brief a claim carries (notices, contracts, decisions, memory for the
-/// claimed paths) must fit with room to spare on a module with 40 unread
-/// notices. Until the brief lands, this measures the claim response as it
-/// is; the bound is the same either way.
+/// claimed paths, ADR-0014) must fit with room to spare on a module with 40
+/// unread notices.
 #[tokio::test]
 async fn claim_with_brief_is_under_4_kb_on_a_module_with_40_unread_notices() {
     let daemon = Daemon::seeded(30).await;

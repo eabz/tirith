@@ -1,6 +1,9 @@
 # ADR-0002: One daemon per repository over streamable HTTP
 
-**Status:** Accepted, 2026-09-15
+**Status:** Accepted, 2026-09-15. Refined by
+[ADR-0006](0006-stdio-shim-starts-daemon.md), which built the stdio shim
+planned here, and [ADR-0016](0016-shim-replaces-stale-daemon.md), which
+lets that shim replace a daemon of another version.
 
 ## Context
 

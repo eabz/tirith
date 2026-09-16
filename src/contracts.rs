@@ -110,7 +110,9 @@ impl Contract {
     }
 }
 
-/// Input for publishing a contract.
+/// Input for publishing a contract. Build it with [`NewContract::new`]
+/// and the `with_*` setters outside this module, so a new optional field
+/// never breaks a caller (decision 19c6595c).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewContract {
     /// See [`Contract::name`].
@@ -128,6 +130,54 @@ pub struct NewContract {
     /// name exists at another version, publishing is refused, so two agents
     /// cannot silently overwrite each other's v2.
     pub expected_version: Option<u32>,
+}
+
+impl NewContract {
+    /// A contract `name` of `kind` with `shape`, no consumers, no notes,
+    /// and no version expectation.
+    ///
+    /// ```
+    /// use serde_json::json;
+    /// use tirith::contracts::{ContractKind, NewContract};
+    /// use tirith::types::RepoPath;
+    ///
+    /// let contract = NewContract::new("POST /api/sessions", ContractKind::Http, json!({}))
+    ///     .with_consumers(vec![RepoPath::new("src/client").unwrap()])
+    ///     .with_expected_version(0);
+    /// assert_eq!(contract.expected_version, Some(0));
+    /// ```
+    pub fn new(name: impl Into<String>, kind: ContractKind, shape: Value) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            shape,
+            consumers: None,
+            notes: String::new(),
+            expected_version: None,
+        }
+    }
+
+    /// Sets the consumer paths; an empty list clears them on a republish.
+    #[must_use]
+    pub fn with_consumers(mut self, consumers: Vec<RepoPath>) -> Self {
+        self.consumers = Some(consumers);
+        self
+    }
+
+    /// Sets the free-text notes for this version.
+    #[must_use]
+    pub fn with_notes(mut self, notes: impl Into<String>) -> Self {
+        self.notes = notes.into();
+        self
+    }
+
+    /// Refuses the publish unless the contract is at `version` (0 when it
+    /// must not exist yet).
+    #[must_use]
+    pub fn with_expected_version(mut self, version: u32) -> Self {
+        self.expected_version = Some(version);
+        self
+    }
 }
 
 /// The result of publishing.
@@ -197,15 +247,15 @@ impl ContractRegistry {
             return Err(ContractError::EmptyName);
         }
         if let Some(existing) = self.contracts.iter_mut().find(|c| c.name == name) {
-            if let Some(expected) = new.expected_version {
-                if expected != existing.current.version {
-                    return Err(ContractError::VersionConflict {
-                        name,
-                        current: existing.current.version,
-                        expected,
-                        published_by: Some(existing.current.published_by.clone()),
-                    });
-                }
+            if let Some(expected) = new.expected_version
+                && expected != existing.current.version
+            {
+                return Err(ContractError::VersionConflict {
+                    name,
+                    current: existing.current.version,
+                    expected,
+                    published_by: Some(existing.current.published_by.clone()),
+                });
             }
             let next_version = existing.current.version + 1;
             let previous = std::mem::replace(
@@ -325,14 +375,8 @@ mod tests {
     }
 
     fn new(name: &str, shape: Value) -> NewContract {
-        NewContract {
-            name: name.into(),
-            kind: ContractKind::Http,
-            shape,
-            consumers: Some(vec![RepoPath::new("src/client").unwrap()]),
-            notes: String::new(),
-            expected_version: None,
-        }
+        NewContract::new(name, ContractKind::Http, shape)
+            .with_consumers(vec![RepoPath::new("src/client").unwrap()])
     }
 
     fn path(p: &str) -> RepoPath {
@@ -420,13 +464,14 @@ mod tests {
     }
 
     #[test]
-    fn lookup_by_name_or_id_and_filter_by_consumer() {
+    fn lookup_by_name_id_or_id_prefix_and_filter_by_consumer() {
         let mut reg = ContractRegistry::default();
         let published = reg
             .publish(agent("a"), new("Foo", json!({})), t0())
             .unwrap();
         assert!(reg.get("Foo").is_some());
         assert!(reg.get(&published.contract.id.to_string()).is_some());
+        assert!(reg.get(&published.contract.id.short()).is_some());
         assert!(reg.get("Bar").is_none());
         let inside = RepoPath::new("src/client/sessions.rs").unwrap();
         let outside = RepoPath::new("src/server").unwrap();

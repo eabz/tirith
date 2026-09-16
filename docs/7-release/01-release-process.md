@@ -134,13 +134,13 @@ crate name, not the binary name.
 
 ## The landing page
 
-`docs/index.html` is served by GitHub Pages at
-<https://eabz.github.io/tirith/docs/>. The Pages source is branch `main`,
-folder `/` (root), so the repository's `/index.html` is a redirect stub
-that forwards the site root to `docs/`; `.nojekyll` at the root and in
-`docs/` disables Jekyll. If the Pages source is ever switched to `/docs`,
-the stub becomes unused and can be deleted. The page carries the same install
-and client-setup commands as `README.md`,
+`index.html` at the repository root is served by GitHub Pages at
+<https://eabz.github.io/tirith/>. The Pages source is branch `main`,
+folder `/` (root), with `.nojekyll` at the root so the file is served
+as-is; `docs/index.html` is a redirect stub that keeps old `/docs/` links
+working. Reasoning and the two amendments that moved the page:
+[ADR-0007](../5-decisions/0007-github-pages-landing-page.md). The page
+carries the same install and client-setup commands as `README.md`,
 `docs/1-about/05-installation.md`, and
 `docs/2-examples/02-client-setup.md`, plus the version shown in its
 `tirith status` sample. When any of those change, or when an install

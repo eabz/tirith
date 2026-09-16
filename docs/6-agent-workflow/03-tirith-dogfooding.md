@@ -6,38 +6,32 @@ publish notices for breaking changes, release when done. An agent that
 cannot reach the daemon and cannot start it must stop and say so; editing
 without a claim is a rule violation, not a fallback.
 
+## The daemon
+
 Tirith is registered for Claude Code in `.mcp.json` and for Cursor in
-`.cursor/mcp.json` as the stdio server `tirith stdio`, which starts the
-daemon at `http://127.0.0.1:7477` if it is not already running. Nothing
-has to be started by hand.
-Its state lives in this repo's `.tirith/` directory: runtime files are
-gitignored, while `contracts/`, `notices.jsonl`, and `decisions.jsonl` are
-committed so the next session inherits them.
-
-## Setup
-
-Nothing, normally: the shim starts the daemon on the first session. To
-start it by hand anyway:
+`.cursor/mcp.json` as the stdio server `tirith stdio`. The shim starts the
+daemon at `http://127.0.0.1:7477` on the first session if none is running,
+and nothing has to be started by hand. To start or inspect it anyway:
 
 ```bash
 tirith serve                        # or: cargo run --quiet -- serve
+tirith status                       # reads .tirith/runtime/daemon.json
 ```
 
-Check it with `tirith status` (or `cargo run --quiet -- status`), which
-reads the daemon address from `.tirith/runtime/daemon.json`.
+The dashboard is at `http://127.0.0.1:7477/`. State lives in this repo's
+`.tirith/` directory: `runtime/` (leases, task board, seen marks,
+messages, daemon record) is gitignored; `contracts/`, `memory/`,
+`notices.jsonl`, and `decisions.jsonl` are committed so the next session
+inherits them.
 
-The dashboard is at `http://127.0.0.1:7477/`. After installing a new
-Tirith version nothing needs stopping: the next session's shim sees that
-the running daemon reports another version, stops it cleanly, and starts
-the new one (see
-[../5-decisions/0016-shim-replaces-stale-daemon.md](../5-decisions/0016-shim-replaces-stale-daemon.md)).
-The restart is written to `.tirith/runtime/serve.log`. The one case that
-is not detected is a daemon built from a working tree with the same
-version string as the installed binary; stop that one by hand with the
-pid in `daemon.json`.
-
-Runtime state lands in `.tirith/runtime/` (gitignored). Contracts, notices,
-and decisions land in `.tirith/` and are committed.
+After installing a new Tirith version nothing needs stopping: the next
+session's shim sees that the running daemon reports another version,
+stops it cleanly, and starts the new one
+([ADR-0016](../5-decisions/0016-shim-replaces-stale-daemon.md)); the
+restart is written to `.tirith/runtime/serve.log`. The one case it cannot
+detect is a daemon built from a working tree with the same version string
+as the installed binary. Stop that one by hand with the pid in
+`daemon.json`; the Serena memory `workflow/daemon-restart` has the steps.
 
 ## Protocol for every agent
 
@@ -56,21 +50,25 @@ and decisions land in `.tirith/` and are committed.
    schema, a store format), `contract_publish` it first.
 4. **Notice on every breaking change.** `notice_publish` for renames,
    signature changes, removed items, and moved files, listing affected
-   paths. `find_referencing_symbols` in Serena tells you the affected paths.
-5. **Renew during long work.** If a task runs longer than the TTL, call
-   `renew` or any other tool. A lease also ends after four TTLs however
-   active you are; only `claim` or `renew` restarts that clock. If a
-   response carries `lost`, the lease on those paths ended: stop editing
-   them and claim them again.
-6. **Release when done.** `release` all claims. Record settled choices with
-   `decision_record`.
-7. **Talk through Tirith.** Coordination talk between agents goes through
+   paths. `find_referencing_symbols` in Serena tells you the affected
+   paths. A notice is seen by an agent when Tirith delivers it, in a brief
+   or an unread listing; there is nothing to acknowledge
+   ([ADR-0021](../5-decisions/0021-notice-acks-log.md)).
+5. **Renew during long work.** Any call renews your leases. A lease also
+   ends after four TTLs however active you are; only `claim` or `renew`
+   restarts that clock. If a response carries `lost`, the lease on those
+   paths ended: stop editing them and claim them again.
+6. **Talk through Tirith.** Coordination talk between agents goes through
    `message_send` (to an agent name, or `*` for everyone active in the
    last hour) and arrives as `inbox` on the recipient's next call, five
    at a time; `message_list` is the history. This works for every MCP
    client, unlike a chat app's own session messaging.
-8. **Report.** Say which claims you held, which notices you published, and
-   whether any claim was refused.
+7. **Release when done.** `release` all claims. Record settled choices
+   with `decision_record`, and write what you learned about the paths you
+   touched with `memory_write` ([02-memory.md](02-memory.md)).
+
+The report at the end of a task names the claims held, the notices
+published, and any claim that was refused (AGENTS.md section 2).
 
 ## Why this matters here
 

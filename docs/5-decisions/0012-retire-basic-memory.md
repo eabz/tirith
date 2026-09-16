@@ -2,7 +2,9 @@
 
 **Status:** Accepted, 2026-09-16. Supersedes the "Basic Memory keeps its
 job for notes that are not about this repository's paths" consequence of
-[ADR-0011](0011-memory-primitive.md).
+[ADR-0011](0011-memory-primitive.md). The last consequence below is
+historical: the memory tools landed later the same day
+([ADR-0013](0013-v1-definition.md)).
 
 ## Context
 

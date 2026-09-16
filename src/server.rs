@@ -271,7 +271,7 @@ pub struct NoticeListInput {
     /// Only notices published at or after this RFC 3339 timestamp.
     #[serde(default)]
     pub since: Option<String>,
-    /// Only notices you have not published or acknowledged. Without
+    /// Only notices you neither published nor were already shown. Without
     /// `path` or `all`, this is scoped to the paths you currently hold.
     #[serde(default)]
     pub unread: Option<bool>,
@@ -577,8 +577,7 @@ fn render_brief(base: &Value, sections: &[(&str, Vec<Value>, usize)]) -> Value {
             if !rows.is_empty() {
                 object.insert((*name).to_owned(), Value::Array(rows.clone()));
             }
-            let left = u64::try_from(*left).unwrap_or(u64::MAX);
-            more.insert((*name).to_owned(), Value::from(left));
+            more.insert((*name).to_owned(), Value::from(*left));
         }
         object.insert("more".to_owned(), Value::Object(more));
     }
@@ -625,12 +624,13 @@ fn compact_string(text: String) -> String {
     if text.len() == 36 && uuid::Uuid::parse_str(&text).is_ok() {
         return text[..8].to_owned();
     }
-    if text.len() > 20 && text.ends_with('Z') {
-        if let Ok(at) = DateTime::parse_from_rfc3339(&text) {
-            return at
-                .with_timezone(&Utc)
-                .to_rfc3339_opts(SecondsFormat::Secs, true);
-        }
+    if text.len() > 20
+        && text.ends_with('Z')
+        && let Ok(at) = DateTime::parse_from_rfc3339(&text)
+    {
+        return at
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
     }
     text
 }
@@ -748,20 +748,22 @@ fn summary(outcome: &Value) -> String {
         .iter()
         .find_map(|k| outcome[k].as_object().map(|o| (*k, o)))
     {
-        let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+        let id: String = item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .take(8)
+            .collect();
         let name = ["title", "name", "summary", "permalink"]
             .iter()
             .find_map(|k| item.get(*k).and_then(Value::as_str))
             .unwrap_or("");
-        format!("{status}: {kind} {} {name}", &id[..id.len().min(8)])
+        format!("{status}: {kind} {id} {name}")
     } else {
         status.to_owned()
     };
-    let mut cut: String = line.chars().take(SUMMARY_MAX).collect();
-    if cut.chars().count() < line.chars().count() {
-        cut.push('…');
-    }
-    cut
+    truncate(&line, SUMMARY_MAX)
 }
 
 fn join_paths(paths: &[Value], renewed: usize) -> String {
@@ -837,8 +839,14 @@ fn paths(raw: &[String]) -> Result<Vec<RepoPath>, Value> {
     parse_paths(raw).map_err(invalid)
 }
 
-fn opt_paths(raw: Option<&Vec<String>>) -> Result<Vec<RepoPath>, Value> {
-    raw.map_or(Ok(Vec::new()), |r| paths(r))
+fn opt_paths(raw: Option<&[String]>) -> Result<Vec<RepoPath>, Value> {
+    raw.map_or(Ok(Vec::new()), paths)
+}
+
+/// `raw` trimmed, or `None` when absent or blank: optional text inputs
+/// that clients send as `""` mean "not given".
+fn nonblank(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|r| !r.is_empty())
 }
 
 fn opt_path(raw: Option<&str>) -> Result<Option<RepoPath>, Value> {
@@ -874,17 +882,20 @@ impl From<PrefixError> for Value {
     }
 }
 
-impl From<IdError> for Value {
-    fn from(e: IdError) -> Self {
-        invalid(e)
-    }
+/// Errors whose every variant is an `invalid` outcome.
+macro_rules! invalid_from {
+    ($($error:ty),* $(,)?) => {
+        $(
+            impl From<$error> for Value {
+                fn from(e: $error) -> Self {
+                    invalid(e)
+                }
+            }
+        )*
+    };
 }
 
-impl From<PathError> for Value {
-    fn from(e: PathError) -> Self {
-        invalid(e)
-    }
-}
+invalid_from!(IdError, PathError, DecisionError);
 
 impl From<ClaimError> for Value {
     fn from(e: ClaimError) -> Self {
@@ -940,12 +951,6 @@ impl From<NoticeError> for Value {
     }
 }
 
-impl From<DecisionError> for Value {
-    fn from(e: DecisionError) -> Self {
-        invalid(e)
-    }
-}
-
 impl From<MessageError> for Value {
     fn from(e: MessageError) -> Self {
         match e {
@@ -992,11 +997,6 @@ impl TirithServer {
         Self { state, persister }
     }
 
-    /// The shared state.
-    pub fn state(&self) -> &Arc<State> {
-        &self.state
-    }
-
     /// Waits for pending changes to reach disk and wraps `outcome` as a
     /// tool result. Calls that only renewed leases do not wait.
     ///
@@ -1013,37 +1013,34 @@ impl TirithServer {
         mut outcome: Value,
     ) -> Result<CallToolResult, McpError> {
         let mut not_persisted = None;
-        if self.state.is_dirty() {
-            if let Err(error) = self.persister.flush().await {
-                tracing::error!(%error, "failed to persist state");
-                not_persisted = Some(error.to_string());
-            }
+        if self.state.is_dirty()
+            && let Err(error) = self.persister.flush().await
+        {
+            tracing::error!(%error, "failed to persist state");
+            not_persisted = Some(error.to_string());
         }
         let mut warnings = Vec::new();
-        // The domain decision stands (it is what every other agent sees),
-        // but the caller must know it may not survive a restart.
-        if let Some(error) = &not_persisted {
-            if let Value::Object(map) = &mut outcome {
-                map.insert("persist_error".into(), Value::String(error.clone()));
+        // Every outcome is an object (see `with_status`); the piggybacks
+        // below are keys on it.
+        if let Value::Object(map) = &mut outcome {
+            // The domain decision stands (it is what every other agent
+            // sees), but the caller must know it may not survive a restart.
+            if let Some(error) = not_persisted {
+                warnings.push(format!("not persisted ({error})"));
+                map.insert("persist_error".into(), Value::String(error));
             }
-            warnings.push(format!("not persisted ({error})"));
-        }
-        // A lease that ended while the agent may still be editing is the
-        // one thing it must hear about regardless of what it asked.
-        if let Some(agent) = agent.and_then(|raw| AgentId::new(raw).ok()) {
-            let lost = self.state.take_lost(&agent);
-            if !lost.is_empty() {
-                warnings.push(format!("lost lease on {} path(s)", lost.len()));
-                if let Value::Object(map) = &mut outcome {
+            if let Some(agent) = agent.and_then(|raw| AgentId::new(raw).ok()) {
+                // A lease that ended while the agent may still be editing
+                // is the one thing it must hear about whatever it asked.
+                let lost = self.state.take_lost(&agent);
+                if !lost.is_empty() {
+                    warnings.push(format!("lost lease on {} path(s)", lost.len()));
                     map.insert("lost".into(), compact(to_value(&lost)));
                 }
-            }
-            // Messages from other agents ride on whatever was asked, once.
-            let inbox = self.state.take_inbox(&agent);
-            if !inbox.messages.is_empty() {
-                let waiting = inbox.messages.len() + inbox.more;
-                warnings.push(format!("inbox: {waiting}"));
-                if let Value::Object(map) = &mut outcome {
+                // Messages from other agents ride on whatever was asked, once.
+                let inbox = self.state.take_inbox(&agent);
+                if !inbox.messages.is_empty() {
+                    warnings.push(format!("inbox: {}", inbox.messages.len() + inbox.more));
                     let rows: Vec<Value> = inbox
                         .messages
                         .iter()
@@ -1098,10 +1095,10 @@ impl TirithServer {
             // Whoever lost these paths a moment ago may have left them
             // half-edited; the new owner should know before touching them.
             let previous = self.state.previous_owners(&granted.new_paths);
-            if !previous.is_empty() {
-                if let Some(object) = value.as_object_mut() {
-                    object.insert("previous_owner".to_owned(), compact(to_value(&previous)));
-                }
+            if !previous.is_empty()
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert("previous_owner".to_owned(), compact(to_value(&previous)));
             }
             // The brief: what the agent needs to know about these paths,
             // delivered with the claim instead of asked for in four calls.
@@ -1124,7 +1121,7 @@ impl TirithServer {
     ) -> Result<CallToolResult, McpError> {
         let outcome = run(|| {
             let agent = agent(&input.agent)?;
-            let paths = input.paths.as_ref().map(|p| paths(p)).transpose()?;
+            let paths = input.paths.as_deref().map(paths).transpose()?;
             let released = self.state.release(&agent, paths)?;
             Ok(ok(json!({ "agent": agent, "released": released })))
         });
@@ -1194,13 +1191,11 @@ impl TirithServer {
                 .collect::<Result<Vec<_>, _>>()?;
             let task = self.state.task_create(
                 agent,
-                NewTask {
-                    title: input.title,
-                    description: input.description.unwrap_or_default(),
-                    priority: input.priority.unwrap_or(0),
-                    depends_on,
-                    paths: opt_paths(input.paths.as_ref())?,
-                },
+                NewTask::new(input.title)
+                    .with_description(input.description.unwrap_or_default())
+                    .with_priority(input.priority.unwrap_or(0))
+                    .with_depends_on(depends_on)
+                    .with_paths(opt_paths(input.paths.as_deref())?),
             )?;
             Ok(ok(json!({ "task": task })))
         });
@@ -1286,17 +1281,15 @@ impl TirithServer {
         let outcome = run(|| {
             let agent = agent(&input.agent)?;
             let kind: ContractKind = parse(&input.kind)?;
-            let (published, notice) = self.state.contract_publish(
-                agent,
-                NewContract {
-                    name: input.name,
-                    kind,
-                    shape: input.shape,
-                    consumers: input.consumers.as_deref().map(paths).transpose()?,
-                    notes: input.notes.unwrap_or_default(),
-                    expected_version: input.expected_version,
-                },
-            )?;
+            let mut new = NewContract::new(input.name, kind, input.shape)
+                .with_notes(input.notes.unwrap_or_default());
+            if let Some(consumers) = input.consumers.as_deref().map(paths).transpose()? {
+                new = new.with_consumers(consumers);
+            }
+            if let Some(version) = input.expected_version {
+                new = new.with_expected_version(version);
+            }
+            let (published, notice) = self.state.contract_publish(agent, new)?;
             Ok(ok(json!({
                 "contract": published.contract,
                 "previous_version": published.previous_version,
@@ -1374,17 +1367,18 @@ impl TirithServer {
                 .as_deref()
                 .map(ContractId::parse)
                 .transpose()?;
-            let notice = self.state.notice_publish(
-                agent,
-                NewNotice {
-                    kind,
-                    summary: input.summary,
-                    from: input.from,
-                    to: input.to,
-                    affected_paths: paths(&input.affected_paths)?,
-                    contract_id,
-                },
-            )?;
+            let mut new = NewNotice::new(kind, input.summary)
+                .with_affected_paths(paths(&input.affected_paths)?);
+            if let Some(from) = input.from {
+                new = new.with_from(from);
+            }
+            if let Some(to) = input.to {
+                new = new.with_to(to);
+            }
+            if let Some(id) = contract_id {
+                new = new.with_contract_id(id);
+            }
+            let notice = self.state.notice_publish(agent, new)?;
             Ok(ok(json!({ "notice": notice })))
         });
         self.finish(Some(&input.agent), outcome).await
@@ -1447,13 +1441,10 @@ impl TirithServer {
             let agent = agent(&input.agent)?;
             let decision = self.state.decision_record(
                 agent,
-                NewDecision {
-                    title: input.title,
-                    decision: input.decision,
-                    rationale: input.rationale.unwrap_or_default(),
-                    alternatives: input.alternatives.unwrap_or_default(),
-                    affects_paths: opt_paths(input.affects_paths.as_ref())?,
-                },
+                NewDecision::new(input.title, input.decision)
+                    .with_rationale(input.rationale.unwrap_or_default())
+                    .with_alternatives(input.alternatives.unwrap_or_default())
+                    .with_affects_paths(opt_paths(input.affects_paths.as_deref())?),
             )?;
             Ok(ok(json!({ "decision": decision })))
         });
@@ -1552,20 +1543,13 @@ impl TirithServer {
     ) -> Result<CallToolResult, McpError> {
         let outcome = run(|| {
             let agent = agent(&input.agent)?;
-            let kind = match input.kind.as_deref().map(str::trim) {
-                Some(raw) if !raw.is_empty() => raw.parse::<MemoryKind>()?,
-                _ => MemoryKind::default(),
-            };
-            let permalink = match input.permalink.as_deref().map(str::trim) {
-                Some(raw) if !raw.is_empty() => Some(Permalink::parse(raw)?),
-                _ => None,
-            };
+            let kind: Option<MemoryKind> = opt_parse(nonblank(input.kind.as_deref()))?;
             let mut new = NewMemory::new(input.title, input.body)
-                .with_kind(kind)
-                .with_paths(opt_paths(input.paths.as_ref())?)
+                .with_kind(kind.unwrap_or_default())
+                .with_paths(opt_paths(input.paths.as_deref())?)
                 .with_tags(input.tags.unwrap_or_default());
-            if let Some(permalink) = permalink {
-                new = new.with_permalink(permalink);
+            if let Some(raw) = nonblank(input.permalink.as_deref()) {
+                new = new.with_permalink(Permalink::parse(raw)?);
             }
             if let Some(at) = input.if_updated_at.as_deref().map(timestamp).transpose()? {
                 new = new.with_if_updated_at(at);
@@ -1620,10 +1604,7 @@ impl TirithServer {
     ) -> Result<CallToolResult, McpError> {
         let outcome = run(|| {
             let agent = agent(&input.agent)?;
-            let kind = match input.kind.as_deref().map(str::trim) {
-                Some(raw) if !raw.is_empty() => Some(raw.parse::<MemoryKind>()?),
-                _ => None,
-            };
+            let kind: Option<MemoryKind> = opt_parse(nonblank(input.kind.as_deref()))?;
             let limit = input
                 .limit
                 .unwrap_or(DEFAULT_SEARCH_LIMIT)
@@ -1693,14 +1674,9 @@ impl TirithServer {
     ) -> Result<CallToolResult, McpError> {
         let outcome = run(|| {
             let agent = agent(&input.agent)?;
-            let mut new =
-                NewMessage::new(input.to, input.text).with_paths(opt_paths(input.paths.as_ref())?);
-            if let Some(raw) = input
-                .reply_to
-                .as_deref()
-                .map(str::trim)
-                .filter(|r| !r.is_empty())
-            {
+            let mut new = NewMessage::new(input.to, input.text)
+                .with_paths(opt_paths(input.paths.as_deref())?);
+            if let Some(raw) = nonblank(input.reply_to.as_deref()) {
                 new = new.with_reply_to(self.state.resolve_message(raw)?);
             }
             let message = self.state.message_send(agent, new)?;
@@ -1771,87 +1747,6 @@ impl ServerHandler for TirithServer {
             })
             .collect();
         Ok(ListToolsResult::with_all_items(tools))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use super::*;
-
-    #[test]
-    fn slim_schema_drops_what_clients_do_not_need() {
-        let mut schema = json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "properties": {
-                "agent": {"description": "Your agent name.", "type": "string"},
-                "paths": {"items": {"type": "string"}, "type": "array"},
-                "ttl_secs": {"default": null, "format": "uint64", "minimum": 0, "type": ["integer", "null"]},
-                "kind": {"default": null, "type": ["string", "null"]},
-                "tags": {"default": null, "items": {"type": "string"}, "type": ["array", "null"]},
-                "verbose": {"default": true, "type": "boolean"}
-            },
-            "required": ["agent", "paths"],
-            "type": "object"
-        });
-        slim_schema(&mut schema);
-        assert_eq!(
-            schema,
-            json!({
-                "properties": {
-                    "agent": {"type": "string"},
-                    "paths": {"items": {"type": "string"}, "type": "array"},
-                    "ttl_secs": {"type": "integer"},
-                    "kind": {"type": "string"},
-                    "tags": {"items": {"type": "string"}, "type": "array"},
-                    "verbose": {"default": true, "type": "boolean"}
-                },
-                "required": ["agent", "paths"],
-                "type": "object"
-            })
-        );
-    }
-
-    #[test]
-    fn summaries_are_one_short_line_and_never_json() {
-        let cases = [
-            (
-                json!({"status": "ok", "new_paths": ["src/a.rs", "src/b.rs"], "renewed_paths": [], "expires_at": "2026-09-16T02:10:00Z"}),
-                "ok: claimed src/a.rs src/b.rs until 2026-09-16T02:10:00Z",
-            ),
-            (
-                json!({"status": "conflict", "conflicts": [{"path": "src/a.rs"}], "message": "overlapping claims held by other agents"}),
-                "conflict: overlapping claims held by other agents",
-            ),
-            (
-                json!({"status": "ok", "released": ["src/a.rs"]}),
-                "ok: released src/a.rs",
-            ),
-            (
-                json!({"status": "ok", "count": 40, "notices": []}),
-                "ok: 40 notices",
-            ),
-            (
-                json!({"status": "ok", "task": {"id": "c6cf1a3c-b0f3", "title": "Fix it"}}),
-                "ok: task c6cf1a3c Fix it",
-            ),
-            (
-                json!({"status": "not_found", "message": "no such task"}),
-                "not_found: no such task",
-            ),
-            (
-                json!({"status": "ok", "version": "0.1.3", "claims": 3}),
-                "ok",
-            ),
-        ];
-        for (outcome, want) in cases {
-            let got = summary(&outcome);
-            assert_eq!(got, want);
-            assert!(got.len() < 200 && !got.starts_with('{'));
-        }
-        let long = json!({"status": "ok", "message": "x".repeat(500)});
-        assert_eq!(summary(&long).chars().count(), SUMMARY_MAX + 1);
     }
 }
 
@@ -2025,24 +1920,25 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
     };
     let router = dashboard::router(context).nest_service("/mcp", mcp);
 
-    store.write_daemon_info(&DaemonInfo {
+    let info = DaemonInfo {
         url: mcp_url(addr),
         dashboard_url: dashboard_url(addr),
         pid: std::process::id(),
         started_at: state.started_at(),
         version: VERSION.to_owned(),
-    })?;
+    };
+    store.write_daemon_info(&info)?;
 
     // Announce this daemon to the tray's registry. Best effort: a registry
     // that cannot be written must not stop a daemon.
     if let Some(path) = &options.registry {
         let entry = DaemonEntry {
             root: options.repo_root.clone(),
-            url: mcp_url(addr),
-            dashboard_url: dashboard_url(addr),
-            pid: std::process::id(),
-            version: VERSION.to_owned(),
-            started_at: state.started_at(),
+            url: info.url,
+            dashboard_url: info.dashboard_url,
+            pid: info.pid,
+            version: info.version,
+            started_at: info.started_at,
         };
         if let Err(error) = Registry::load(path).and_then(|mut r| r.register(entry)) {
             tracing::warn!(%error, "could not register in the daemon registry");
@@ -2067,4 +1963,85 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
         shutdown: Some(tx),
         task,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn slim_schema_drops_what_clients_do_not_need() {
+        let mut schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "properties": {
+                "agent": {"description": "Your agent name.", "type": "string"},
+                "paths": {"items": {"type": "string"}, "type": "array"},
+                "ttl_secs": {"default": null, "format": "uint64", "minimum": 0, "type": ["integer", "null"]},
+                "kind": {"default": null, "type": ["string", "null"]},
+                "tags": {"default": null, "items": {"type": "string"}, "type": ["array", "null"]},
+                "verbose": {"default": true, "type": "boolean"}
+            },
+            "required": ["agent", "paths"],
+            "type": "object"
+        });
+        slim_schema(&mut schema);
+        assert_eq!(
+            schema,
+            json!({
+                "properties": {
+                    "agent": {"type": "string"},
+                    "paths": {"items": {"type": "string"}, "type": "array"},
+                    "ttl_secs": {"type": "integer"},
+                    "kind": {"type": "string"},
+                    "tags": {"items": {"type": "string"}, "type": "array"},
+                    "verbose": {"default": true, "type": "boolean"}
+                },
+                "required": ["agent", "paths"],
+                "type": "object"
+            })
+        );
+    }
+
+    #[test]
+    fn summaries_are_one_short_line_and_never_json() {
+        let cases = [
+            (
+                json!({"status": "ok", "new_paths": ["src/a.rs", "src/b.rs"], "renewed_paths": [], "expires_at": "2026-09-16T02:10:00Z"}),
+                "ok: claimed src/a.rs src/b.rs until 2026-09-16T02:10:00Z",
+            ),
+            (
+                json!({"status": "conflict", "conflicts": [{"path": "src/a.rs"}], "message": "overlapping claims held by other agents"}),
+                "conflict: overlapping claims held by other agents",
+            ),
+            (
+                json!({"status": "ok", "released": ["src/a.rs"]}),
+                "ok: released src/a.rs",
+            ),
+            (
+                json!({"status": "ok", "count": 40, "notices": []}),
+                "ok: 40 notices",
+            ),
+            (
+                json!({"status": "ok", "task": {"id": "c6cf1a3c-b0f3", "title": "Fix it"}}),
+                "ok: task c6cf1a3c Fix it",
+            ),
+            (
+                json!({"status": "not_found", "message": "no such task"}),
+                "not_found: no such task",
+            ),
+            (
+                json!({"status": "ok", "version": "0.1.3", "claims": 3}),
+                "ok",
+            ),
+        ];
+        for (outcome, want) in cases {
+            let got = summary(&outcome);
+            assert_eq!(got, want);
+            assert!(got.len() < 200 && !got.starts_with('{'));
+        }
+        let long = json!({"status": "ok", "message": "x".repeat(500)});
+        assert_eq!(summary(&long).chars().count(), SUMMARY_MAX + 1);
+    }
 }

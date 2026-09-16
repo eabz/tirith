@@ -50,7 +50,9 @@ impl Decision {
     }
 }
 
-/// Input for recording a decision.
+/// Input for recording a decision. Build it with [`NewDecision::new`] and
+/// the `with_*` setters outside this module, so a new optional field
+/// never breaks a caller (decision 19c6595c).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NewDecision {
     /// See [`Decision::title`].
@@ -63,6 +65,48 @@ pub struct NewDecision {
     pub alternatives: Vec<String>,
     /// See [`Decision::affects_paths`].
     pub affects_paths: Vec<RepoPath>,
+}
+
+impl NewDecision {
+    /// A decision titled `title` saying `decision`, with no rationale,
+    /// alternatives, or paths yet.
+    ///
+    /// ```
+    /// use tirith::decisions::NewDecision;
+    /// use tirith::types::RepoPath;
+    ///
+    /// let decision = NewDecision::new("Tokens are opaque", "Compare them, never parse them")
+    ///     .with_affects_paths(vec![RepoPath::new("src/auth").unwrap()]);
+    /// assert_eq!(decision.affects_paths.len(), 1);
+    /// ```
+    pub fn new(title: impl Into<String>, decision: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            decision: decision.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Sets why it was decided.
+    #[must_use]
+    pub fn with_rationale(mut self, rationale: impl Into<String>) -> Self {
+        self.rationale = rationale.into();
+        self
+    }
+
+    /// Sets what else was considered.
+    #[must_use]
+    pub fn with_alternatives(mut self, alternatives: Vec<String>) -> Self {
+        self.alternatives = alternatives;
+        self
+    }
+
+    /// Sets the paths the decision constrains.
+    #[must_use]
+    pub fn with_affects_paths(mut self, paths: Vec<RepoPath>) -> Self {
+        self.affects_paths = paths;
+        self
+    }
 }
 
 /// Why a decision operation was refused.
@@ -170,13 +214,9 @@ mod tests {
         let mut log = DecisionLog::default();
         log.record(
             agent("a"),
-            NewDecision {
-                title: "Use JSON storage".into(),
-                decision: "State is written to JSON files".into(),
-                rationale: "diffable in git".into(),
-                affects_paths: vec![RepoPath::new("src/store.rs").unwrap()],
-                ..NewDecision::default()
-            },
+            NewDecision::new("Use JSON storage", "State is written to JSON files")
+                .with_rationale("diffable in git")
+                .with_affects_paths(vec![RepoPath::new("src/store.rs").unwrap()]),
             t0(),
         )
         .unwrap();
@@ -195,11 +235,7 @@ mod tests {
     #[test]
     fn empty_fields_are_refused() {
         let mut log = DecisionLog::default();
-        let mut new = NewDecision {
-            title: " ".into(),
-            decision: "x".into(),
-            ..NewDecision::default()
-        };
+        let mut new = NewDecision::new(" ", "x");
         assert_eq!(
             log.record(agent("a"), new.clone(), t0()).err(),
             Some(DecisionError::EmptyTitle)

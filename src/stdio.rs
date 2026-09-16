@@ -40,6 +40,9 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// been told to stop.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The bind that lets the OS pick a free port.
+const EPHEMERAL: &str = "127.0.0.1:0";
+
 /// Why the shim could not run.
 #[derive(Debug, Error)]
 pub enum StdioError {
@@ -189,9 +192,6 @@ fn reap(child: Child) {
     });
 }
 
-/// The bind that lets the OS pick a free port.
-const EPHEMERAL: &str = "127.0.0.1:0";
-
 /// A daemon that answered its health endpoint.
 struct Found {
     /// What `.tirith/runtime/daemon.json` records.
@@ -261,7 +261,7 @@ async fn probe(store: &JsonStore) -> Option<Found> {
 /// caller can notice an immediate exit, such as a failed bind.
 fn spawn_daemon(root: &Path, bind: &str, store: &JsonStore) -> Result<Child, StdioError> {
     let exe = std::env::current_exe().map_err(StdioError::Spawn)?;
-    let log_path = store.dir().join("runtime").join("serve.log");
+    let log_path = log_path(store);
     let open_log = || OpenOptions::new().create(true).append(true).open(&log_path);
     let stdout = open_log().map_err(StdioError::Spawn)?;
     let stderr = open_log().map_err(StdioError::Spawn)?;
@@ -331,11 +331,20 @@ async fn stop_daemon(store: &JsonStore, found: &Found) -> Result<(), StdioError>
     Ok(())
 }
 
-/// Appends one line to `.tirith/runtime/serve.log`, the daemon's own log,
-/// so a restart is visible next to what the daemon printed.
+/// `.tirith/runtime/serve.log`: the daemon's own output, which the shim
+/// also writes its restart decisions to.
+fn log_path(store: &JsonStore) -> PathBuf {
+    store.dir().join("runtime").join("serve.log")
+}
+
+/// Appends one line to the daemon's log, so a restart is visible next to
+/// what the daemon printed.
 fn log_line(store: &JsonStore, line: &str) {
-    let path = store.dir().join("runtime").join("serve.log");
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path(store))
+    {
         let _ = writeln!(file, "{line}");
     }
 }
@@ -371,16 +380,7 @@ async fn alive(pid: u32) -> bool {
 async fn interrupt(pid: u32) -> io::Result<()> {
     // SIGINT is what `tirith serve` waits for (tokio's ctrl_c), so this is
     // the same clean shutdown as pressing ctrl-c in its terminal.
-    let status = tokio::process::Command::new("kill")
-        .arg("-INT")
-        .arg(pid.to_string())
-        .status()
-        .await?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("kill exited with {status}")))
-    }
+    run_checked("kill", &["-INT", &pid.to_string()]).await
 }
 
 /// Asks the daemon at `pid` to shut down.
@@ -389,14 +389,19 @@ async fn interrupt(pid: u32) -> io::Result<()> {
     // A detached process has no console to receive ctrl-c, so the daemon
     // is terminated. Its state was written through as it changed, so
     // nothing is lost beyond the last in-flight write.
-    let status = tokio::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
+    run_checked("taskkill", &["/PID", &pid.to_string(), "/T", "/F"]).await
+}
+
+/// Runs `program` and fails unless it exits successfully.
+async fn run_checked(program: &str, args: &[&str]) -> io::Result<()> {
+    let status = tokio::process::Command::new(program)
+        .args(args)
         .status()
         .await?;
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(format!("taskkill exited with {status}")))
+        Err(io::Error::other(format!("{program} exited with {status}")))
     }
 }
 

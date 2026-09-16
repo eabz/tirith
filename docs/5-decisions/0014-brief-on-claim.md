@@ -1,6 +1,10 @@
 # ADR-0014: One `claim` response replaces the four reads before every edit
 
-**Status:** Accepted, 2026-09-16
+**Status:** Accepted, 2026-09-16. Refined by
+[ADR-0021](0021-notice-acks-log.md): delivery in a brief is now the
+acknowledgement, seen marks persist in `.tirith/runtime/notice_seen.jsonl`,
+and `notice_ack` no longer exists. The "delivery is not an
+acknowledgement" paragraph below describes the state before that ADR.
 
 ## Context
 

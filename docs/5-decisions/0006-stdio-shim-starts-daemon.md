@@ -1,6 +1,10 @@
 # ADR-0006: The stdio shim starts the daemon on demand
 
-**Status:** Accepted, 2026-09-15
+**Status:** Accepted, 2026-09-15. Superseded in part by
+[ADR-0016](0016-shim-replaces-stale-daemon.md): the consequence "the
+daemon is never stopped automatically" no longer holds. The shim stops
+and replaces a daemon of another version and refuses one that serves
+another repository.
 
 ## Context
 

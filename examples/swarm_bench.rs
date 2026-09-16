@@ -40,6 +40,7 @@ use rmcp::transport::streamable_http_client::{
 };
 use serde_json::{Map, Value, json};
 use tirith::server::{ServeOptions, start};
+use tirith::types::RepoPath;
 
 type Client = RunningService<RoleClient, ()>;
 type BoxError = Box<dyn Error + Send + Sync>;
@@ -363,25 +364,19 @@ async fn check_invariants(url: &str, tirith_dir: &Path) -> Result<(), BoxError> 
         return Err(format!("persist_error is set: {}", status["persist_error"]).into());
     }
     let claims = call(&client, "claims_list", json!({ "agent": "checker" })).await?;
-    let held: Vec<(String, String)> = claims["claims"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .flat_map(|claim| {
-            let owner = claim["owner"].as_str().unwrap_or_default().to_owned();
-            claim["paths"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(move |p| (owner.clone(), p.as_str().unwrap_or_default().to_owned()))
-        })
-        .collect();
+    let mut held: Vec<(String, RepoPath)> = Vec::new();
+    for claim in claims["claims"].as_array().into_iter().flatten() {
+        let owner = claim["owner"].as_str().unwrap_or_default().to_owned();
+        for path in claim["paths"].as_array().into_iter().flatten() {
+            held.push((
+                owner.clone(),
+                RepoPath::new(path.as_str().unwrap_or_default())?,
+            ));
+        }
+    }
     for (i, (owner_a, path_a)) in held.iter().enumerate() {
         for (owner_b, path_b) in &held[i + 1..] {
-            let overlaps = path_a == path_b
-                || path_a.starts_with(&format!("{path_b}/"))
-                || path_b.starts_with(&format!("{path_a}/"));
-            if owner_a != owner_b && overlaps {
+            if owner_a != owner_b && path_a.overlaps(path_b) {
                 return Err(format!(
                     "overlapping claims: {owner_a} holds {path_a}, {owner_b} holds {path_b}"
                 )

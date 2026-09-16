@@ -14,9 +14,12 @@
 //! - [`notices`]: change notices dependents read before acting.
 //! - [`decisions`]: settled choices so nothing is decided twice.
 //! - [`memory`]: path-scoped notes an agent leaves for whoever comes next.
+//! - [`messages`]: agent-to-agent notes, delivered on the recipient's
+//!   next call (runtime only).
 //!
 //! [`stdio`] is the shim MCP clients spawn per session; it starts the
-//! daemon when needed and proxies to it. [`update`] replaces the running
+//! daemon when needed and proxies to it. [`registry`] lists every daemon
+//! on the machine for the menu bar tray. [`update`] replaces the running
 //! binary with a newer release.
 
 #![forbid(unsafe_code)]

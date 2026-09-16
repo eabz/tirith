@@ -241,7 +241,16 @@ mod tests {
         let reloaded = Registry::load(&path).unwrap();
         assert_eq!(reloaded.entries().len(), 2);
         assert_eq!(reloaded.entries()[0].folder_name(), "a");
-        assert!(!path.with_extension("json.tmp").exists());
+        let leftovers: Vec<PathBuf> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 
     #[test]

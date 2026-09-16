@@ -4,6 +4,7 @@ on:
     branches: [main]
   pull_request:
 jobs:
+  # The full definition-of-done chain (scripts/check.sh) on Linux.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -13,11 +14,23 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-features
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-machete,cargo-deny
       - run: cargo machete
       - run: cargo deny check
+  # The `tray` feature compiles to nothing off macOS, so src/tray.rs is
+  # only built here.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features

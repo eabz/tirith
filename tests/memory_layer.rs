@@ -5,14 +5,17 @@
 //! per note into a directory, read the directory back, and end up with the
 //! same notes. They also check that every note the repository ships in
 //! `.tirith/memory/` parses, which is the standing proof of the import
-//! compatibility ADR-0011 claims.
+//! compatibility ADR-0011 claims. The second half drives the memory tools
+//! through a real daemon.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod common;
 
 use std::fs;
 use std::path::Path;
 
-use tirith::memory::{MemoryBook, MemoryKind, MemoryNote, MemorySearch, NewMemory};
+use tirith::memory::{MemoryBook, MemoryKind, MemoryNote, NewMemory};
 use tirith::types::{AgentId, RepoPath};
 
 fn agent(name: &str) -> AgentId {
@@ -23,7 +26,7 @@ fn path(raw: &str) -> RepoPath {
     RepoPath::new(raw).unwrap()
 }
 
-/// Writes every note to its own file, the way `JsonStore::apply` will.
+/// Writes every note to its own file, the way `JsonStore::apply` does.
 fn write_all(dir: &Path, book: &MemoryBook) {
     fs::create_dir_all(dir).unwrap();
     for note in book.notes() {
@@ -35,7 +38,8 @@ fn write_all(dir: &Path, book: &MemoryBook) {
     }
 }
 
-/// Scans a directory back into a book, the way `JsonStore::load` will.
+/// Scans a directory back into a book, the way `JsonStore::load` does,
+/// panicking with the file name on the first note that does not parse.
 ///
 /// The walk is recursive because a permalink may carry folder segments.
 fn read_all(dir: &Path) -> MemoryBook {
@@ -49,8 +53,8 @@ fn read_all(dir: &Path) -> MemoryBook {
             } else if file.extension().is_some_and(|e| e == "md") {
                 let text = fs::read_to_string(&file).unwrap();
                 notes.push(
-                    MemoryNote::from_markdown(&text)
-                        .unwrap_or_else(|e| panic!("{}: {e}", file.display())),
+                    MemoryNote::from_markdown(&text, chrono::Utc::now())
+                        .unwrap_or_else(|e| panic!("{} did not parse: {e}", file.display())),
                 );
             }
         }
@@ -64,11 +68,10 @@ fn seeded() -> MemoryBook {
     book.write(
         agent("storage-claude"),
         NewMemory::new(
-            "Persister writes are sequence-ordered".to_owned(),
+            "Persister writes are sequence-ordered",
             "A snapshot older than the last written one is skipped.\n\n\
-                   - [design] Writes go through spawn_blocking #storage\n\
-                   - follows [[claim-leases-renew-on-any-call]]"
-                .to_owned(),
+             - [design] Writes go through spawn_blocking #storage\n\
+             - follows [[claim-leases-renew-on-any-call]]",
         )
         .with_kind(MemoryKind::Lesson)
         .with_paths(vec![path("src/store.rs")])
@@ -79,8 +82,8 @@ fn seeded() -> MemoryBook {
     book.write(
         agent("claude-scaffold"),
         NewMemory::new(
-            "Claim leases renew on any call".to_owned(),
-            "Any tool call by the owning agent renews all of its leases.".to_owned(),
+            "Claim leases renew on any call",
+            "Any tool call by the owning agent renews all of its leases.",
         )
         .with_kind(MemoryKind::Fact)
         .with_paths(vec![path("src/claims.rs"), path("src/state.rs")])
@@ -129,11 +132,8 @@ fn editing_a_note_rewrites_exactly_one_file() {
     let edited = book
         .write(
             agent("someone-else"),
-            NewMemory::new(
-                "Persister writes are sequence-ordered".to_owned(),
-                "Rewritten body.".to_owned(),
-            )
-            .with_kind(MemoryKind::Lesson),
+            NewMemory::new("Persister writes are sequence-ordered", "Rewritten body.")
+                .with_kind(MemoryKind::Lesson),
             chrono::Utc::now(),
         )
         .unwrap();
@@ -181,45 +181,6 @@ fn a_note_written_by_hand_is_picked_up() {
     assert_eq!(book.for_path(&path("src"), None).len(), 1);
 }
 
-#[test]
-fn a_corrupt_file_is_an_error_not_a_panic() {
-    let bad = "---\ntitle: Broken\nthis line has no colon\n---\nbody";
-    let err = MemoryNote::from_markdown(bad).unwrap_err();
-    assert!(err.to_string().contains("line 2"), "{err}");
-}
-
-#[test]
-fn search_finds_notes_by_path_and_text() {
-    let book = seeded();
-
-    // What an agent claiming src/store.rs should be handed.
-    let scoped = book.for_path(&path("src/store.rs"), None);
-    assert_eq!(scoped.len(), 1);
-    assert_eq!(scoped[0].title, "Persister writes are sequence-ordered");
-
-    let hits = book.search(&MemorySearch {
-        query: Some("lease renewal".to_owned()),
-        ..MemorySearch::default()
-    });
-    assert_eq!(hits[0].note.title, "Claim leases renew on any call");
-
-    // No query is recent activity.
-    let recent = book.search(&MemorySearch {
-        limit: Some(1),
-        ..MemorySearch::default()
-    });
-    assert_eq!(recent.len(), 1);
-}
-
-#[test]
-fn relations_link_notes_into_context() {
-    let book = seeded();
-    let context = book.context("persister-writes-are-sequence-ordered", 1);
-    assert_eq!(context.len(), 2);
-    assert_eq!(context[0].title, "Persister writes are sequence-ordered");
-    assert_eq!(context[1].title, "Claim leases renew on any call");
-}
-
 /// Every note the repository actually ships must parse.
 ///
 /// The notes in `.tirith/memory/` were originally written by Basic Memory
@@ -234,23 +195,12 @@ fn the_repositorys_own_notes_parse() {
     if !dir.exists() {
         return;
     }
-    let mut checked = 0_usize;
-    let mut stack = vec![dir.clone()];
-    while let Some(current) = stack.pop() {
-        for entry in fs::read_dir(&current).unwrap() {
-            let file = entry.unwrap().path();
-            if file.is_dir() {
-                stack.push(file);
-            } else if file.extension().is_some_and(|e| e == "md") {
-                let text = fs::read_to_string(&file).unwrap();
-                let note = MemoryNote::from_markdown(&text)
-                    .unwrap_or_else(|e| panic!("{} did not parse: {e}", file.display()));
-                assert!(!note.title.is_empty());
-                checked += 1;
-            }
-        }
-    }
-    assert!(checked > 0, "{} exists but holds no notes", dir.display());
+    let book = read_all(&dir);
+    assert!(
+        !book.is_empty(),
+        "{} exists but holds no notes",
+        dir.display()
+    );
 }
 
 #[test]
@@ -261,20 +211,21 @@ fn notes_can_live_in_folders() {
     let flat = book
         .write(
             agent("a"),
-            NewMemory::new("Storage design".to_owned(), "Body.".to_owned()),
+            NewMemory::new("Storage design", "Body."),
             chrono::Utc::now(),
         )
         .unwrap()
         .note;
     assert_eq!(flat.permalink.file_path(), "storage-design.md");
 
-    let mut nested =
-        MemoryBook::from_notes(vec![MemoryNote::from_markdown(
-        "---\ntitle: Pre-alpha build\npermalink: tirith/design/pre-alpha-build\n---\n\nBody.\n",
-    )
-    .unwrap()]);
+    let mut nested = MemoryBook::from_notes(vec![
+        MemoryNote::from_markdown(
+            "---\ntitle: Pre-alpha build\npermalink: tirith/design/pre-alpha-build\n---\n\nBody.\n",
+            chrono::Utc::now(),
+        )
+        .unwrap(),
+    ]);
     let note = nested.get("tirith/design/pre-alpha-build").unwrap();
-    assert_eq!(note.permalink.folders(), vec!["tirith", "design"]);
     assert_eq!(
         note.permalink.file_path(),
         "tirith/design/pre-alpha-build.md"
@@ -296,8 +247,7 @@ fn notes_can_live_in_folders() {
     let updated = nested
         .write(
             agent("b"),
-            NewMemory::new("Pre-alpha build".to_owned(), "Edited.".to_owned())
-                .with_permalink(note.permalink.clone()),
+            NewMemory::new("Pre-alpha build", "Edited.").with_permalink(note.permalink.clone()),
             chrono::Utc::now(),
         )
         .unwrap();
@@ -313,28 +263,19 @@ fn notes_can_live_in_folders() {
 // ---------------------------------------------------------------------------
 
 mod mcp {
-    use std::net::SocketAddr;
-    use std::path::Path;
+    use std::sync::Arc;
 
+    use chrono::{Duration, TimeZone, Utc};
     use serde_json::{Value, json};
-    use tirith::client::call_tool;
+    use tirith::clock::ManualClock;
     use tirith::memory::{CLAIM_MEMORY_LIMIT, MAX_CONTEXT_DEPTH};
-    use tirith::server::{ServeOptions, ServerHandle, start};
+    use tirith::server::{ServerHandle, start};
 
-    fn options(root: &Path) -> ServeOptions {
-        ServeOptions {
-            bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-            repo_root: root.to_path_buf(),
-            clock: None,
+    use crate::common::{call, options};
 
-            registry: None,
-        }
-    }
+    const LONG_BODY: &str = "A body long enough that a listing must not carry it. It goes on for a while so that the excerpt has to cut it, and so that twenty of these in one search response would cost real context.";
 
-    async fn call(handle: &ServerHandle, tool: &str, args: Value) -> Value {
-        call_tool(&handle.mcp_url(), tool, args).await.unwrap()
-    }
-
+    /// A lesson by `scribe` tagged `storage`, about `paths`.
     async fn write_note(handle: &ServerHandle, title: &str, body: &str, paths: Value) -> Value {
         call(
             handle,
@@ -351,10 +292,24 @@ mod mcp {
         .await
     }
 
+    /// A note by `scribe` about `src/store.rs` whose body is too long
+    /// for a listing.
+    async fn write_long(handle: &ServerHandle, title: &str) -> Value {
+        call(
+            handle,
+            "memory_write",
+            json!({
+                "agent": "scribe", "title": title, "body": LONG_BODY,
+                "paths": ["src/store.rs"],
+            }),
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn write_read_and_search_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
 
         let written = write_note(
             &handle,
@@ -431,7 +386,7 @@ mod mcp {
     #[tokio::test]
     async fn unknown_notes_and_bad_input_are_refused_not_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
 
         let missing = call(
             &handle,
@@ -481,7 +436,7 @@ mod mcp {
     #[tokio::test]
     async fn notes_survive_a_restart_as_markdown_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
         write_note(
             &handle,
             "Lease renewal",
@@ -499,7 +454,7 @@ mod mcp {
         assert!(text.contains("- src/claims.rs"));
         assert!(text.contains("Any call by the owning agent renews all its leases."));
 
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
         let read = call(
             &handle,
             "memory_read",
@@ -515,7 +470,7 @@ mod mcp {
     #[tokio::test]
     async fn a_claim_carries_back_the_notes_for_its_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
 
         // More notes about src/ than a claim is allowed to return.
         for index in 0..(CLAIM_MEMORY_LIMIT + 3) {
@@ -572,7 +527,7 @@ mod mcp {
     #[tokio::test]
     async fn search_bounds_its_results() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
         for index in 0..8 {
             write_note(
                 &handle,
@@ -607,7 +562,7 @@ mod mcp {
     #[tokio::test]
     async fn relations_are_walked_on_read() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
         write_note(&handle, "Root note", "The root.", json!(["src"])).await;
         write_note(
             &handle,
@@ -636,50 +591,13 @@ mod mcp {
 
         handle.shutdown().await.unwrap();
     }
-}
-
-mod mcp_v4 {
-    use std::net::SocketAddr;
-    use std::path::Path;
-
-    use serde_json::{Value, json};
-    use tirith::client::call_tool;
-    use tirith::server::{ServeOptions, ServerHandle, start};
-
-    fn options(root: &Path) -> ServeOptions {
-        ServeOptions {
-            bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-            repo_root: root.to_path_buf(),
-            clock: None,
-
-            registry: None,
-        }
-    }
-
-    async fn call(handle: &ServerHandle, tool: &str, args: Value) -> Value {
-        call_tool(&handle.mcp_url(), tool, args).await.unwrap()
-    }
-
-    const LONG_BODY: &str = "A body long enough that a listing must not carry it. It goes on for a while so that the excerpt has to cut it, and so that twenty of these in one search response would cost real context.";
-
-    async fn write(handle: &ServerHandle, title: &str) -> Value {
-        call(
-            handle,
-            "memory_write",
-            json!({
-                "agent": "scribe", "title": title, "body": LONG_BODY,
-                "paths": ["src/store.rs"],
-            }),
-        )
-        .await
-    }
 
     /// Only `memory_read` returns a body. Listings carry digests.
     #[tokio::test]
     async fn search_and_related_rows_are_digests() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
-        write(&handle, "Root note").await;
+        let handle = start(options(dir.path(), None)).await.unwrap();
+        write_long(&handle, "Root note").await;
         call(
             &handle,
             "memory_write",
@@ -732,14 +650,14 @@ mod mcp_v4 {
     #[tokio::test]
     async fn a_note_can_be_deleted_and_stays_deleted_after_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
-        write(&handle, "Keep me").await;
-        write(&handle, "Leaked secret").await;
+        let handle = start(options(dir.path(), None)).await.unwrap();
+        write_long(&handle, "Keep me").await;
+        write_long(&handle, "Leaked secret").await;
         let file = dir.path().join(".tirith/memory/leaked-secret.md");
         handle.shutdown().await.unwrap();
         assert!(file.is_file(), "note was never written");
 
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
         let deleted = call(
             &handle,
             "memory_delete",
@@ -761,7 +679,7 @@ mod mcp_v4 {
 
         // The file is gone from disk and a restart does not resurrect it.
         assert!(!file.exists(), "deleted note file still on disk");
-        let handle = start(options(dir.path())).await.unwrap();
+        let handle = start(options(dir.path(), None)).await.unwrap();
         let read = call(
             &handle,
             "memory_read",
@@ -782,13 +700,18 @@ mod mcp_v4 {
     #[tokio::test]
     async fn a_stale_write_is_a_conflict_not_a_clobber() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = start(options(dir.path())).await.unwrap();
-        let first = write(&handle, "Shared note").await;
+        let clock = Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 9, 16, 4, 0, 0).unwrap(),
+        ));
+        let handle = start(options(dir.path(), Some(clock.clone())))
+            .await
+            .unwrap();
+        let first = write_long(&handle, "Shared note").await;
         let seen_at = first["note"]["updated_at"].as_str().unwrap().to_owned();
 
-        // Someone else writes in between. The clock only has whole-second
-        // resolution in frontmatter, so make sure the instant differs.
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        // Someone else writes in between. Frontmatter keeps whole seconds,
+        // so the clock moves by more than one.
+        clock.advance(Duration::seconds(2));
         let theirs = call(
             &handle,
             "memory_write",

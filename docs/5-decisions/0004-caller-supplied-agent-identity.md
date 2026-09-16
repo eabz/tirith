@@ -1,6 +1,9 @@
 # ADR-0004: Agent identity is a caller-supplied string with TTL leases
 
-**Status:** Accepted, 2026-09-15
+**Status:** Accepted, 2026-09-15. Refined by
+[ADR-0015](0015-lease-loss-and-max-age.md): a reaped lease is reported to
+its former owner in the next response, and activity alone cannot hold a
+lease past four TTLs.
 
 ## Context
 
