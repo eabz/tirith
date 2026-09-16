@@ -1,14 +1,16 @@
 //! A read-only HTTP dashboard served next to the MCP endpoint.
 //!
 //! `GET /` returns a single self-contained page that polls
-//! `GET /api/state` every two seconds. There is nothing to build or
-//! install; the page is embedded in the binary.
+//! `GET /api/state` every two seconds. `GET /logo.png` serves the logo the
+//! page shows in its header and uses as its favicon. There is nothing to
+//! build or install; the page and the logo are embedded in the binary.
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::State as Extract;
-use axum::response::{Html, Json};
+use axum::http::header;
+use axum::response::{Html, IntoResponse, Json};
 use axum::routing::get;
 use serde_json::{Value, json};
 
@@ -29,10 +31,11 @@ pub struct DashboardContext {
     pub repo_root: String,
 }
 
-/// Routes: `/`, `/api/state`, `/api/health`.
+/// Routes: `/`, `/logo.png`, `/api/state`, `/api/health`.
 pub fn router(context: DashboardContext) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/logo.png", get(logo))
         .route("/api/state", get(api_state))
         .route("/api/health", get(health))
         .with_state(context)
