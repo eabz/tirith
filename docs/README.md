@@ -13,7 +13,7 @@ order is obvious. Files inside a section are also numbered.
 | [6-agent-workflow/](6-agent-workflow/) | How agents work on this repo: Serena, memory layer, using Tirith on itself |
 | [7-release/](7-release/) | How releases are built and published (cargo-dist), targets, the installer shim |
 | [_static/images/](_static/images/) | Diagrams and screenshots referenced from the docs |
-| [index.html](index.html) | The public landing page at [eabz.github.io/tirith](https://eabz.github.io/tirith/): install, connect, verify. GitHub Pages serves the repository root, where `/index.html` forwards to this file; the `.nojekyll` files keep Jekyll off |
+| [../index.html](../index.html) | The public landing page at [eabz.github.io/tirith](https://eabz.github.io/tirith/): install, connect, verify. It lives at the repository root, which GitHub Pages serves; `docs/index.html` is only a redirect to it, and the root `.nojekyll` keeps Jekyll off |
 
 ## Requirements for working on this repo
 
@@ -21,8 +21,8 @@ order is obvious. Files inside a section are also numbered.
 - A Tirith daemon must be running for this repository, and every agent
   must claim files through it before editing them. See
   [6-agent-workflow/03-tirith-dogfooding.md](6-agent-workflow/03-tirith-dogfooding.md).
-- Serena is the code-intelligence layer; Basic Memory notes live in
-  `.memory/`.
+- Serena is the code-intelligence layer; long-form agent memory is
+  Tirith's own memory primitive, stored under `.tirith/memory/`.
 
 ## Conventions for writing docs
 
@@ -35,13 +35,14 @@ order is obvious. Files inside a section are also numbered.
 - Link to other docs with relative paths so links work on GitHub and locally.
 - When behavior changes, update the doc in the same change. Stale docs are
   bugs.
-- Agent memory is not documentation. Basic Memory notes live in
-  `.memory/` at the repo root (committed), written through the
-  `write_note` tool. See
+- Agent memory is not documentation. Tirith memory notes live in
+  `.tirith/memory/` (committed), written through the `memory_write`
+  tool. See
   [6-agent-workflow/02-memory.md](6-agent-workflow/02-memory.md).
 - Images: put files in `_static/images/`, reference them with relative
   paths, and keep them under 500 KB.
-- `index.html` is the only HTML here. It is hand-written, has no build
+- The landing page is `index.html` at the repository root; `docs/index.html`
+  only redirects there. The page is hand-written, has no build
   step, and repeats the install and client-setup commands from
   `README.md`, `1-about/05-installation.md`, and
   `2-examples/02-client-setup.md`. When those commands change, change

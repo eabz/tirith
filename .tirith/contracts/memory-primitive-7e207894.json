@@ -1,0 +1,250 @@
+{
+  "id": "7e207894-3b0a-477d-8307-21eaa4510b62",
+  "name": "Memory primitive",
+  "kind": "type",
+  "consumers": [
+    "src/memory.rs",
+    "src/state.rs",
+    "src/server.rs",
+    "src/store.rs",
+    "src/dashboard.rs",
+    "src/dashboard.html",
+    "src/cli.rs",
+    "docs/1-about/04-primitives.md",
+    "tests/budgets.rs"
+  ],
+  "current": {
+    "version": 4,
+    "shape": {
+      "MemoryDigest": {
+        "fields": "permalink, title, kind, paths, tags, updated_at, excerpt (160 chars, headings and blank lines stripped)",
+        "never": "body, observations, relations",
+        "used_by": "memory_search rows (+score), memory_read.related, claim brief memory rows, memory_delete.removed"
+      },
+      "budget": {
+        "TOOL_LIST_LIMIT": 7000,
+        "per_tool_max_chars": 500
+      },
+      "claim_integration": {
+        "cap": "CLAIM_MEMORY_LIMIT 5",
+        "row": "MemoryDigest (now includes tags)"
+      },
+      "constants": {
+        "CLAIM_MEMORY_EXCERPT": 160,
+        "CLAIM_MEMORY_LIMIT": 5,
+        "DEFAULT_SEARCH_LIMIT": 20,
+        "MAX_CONTEXT_DEPTH": 3,
+        "MAX_PERMALINK_DEPTH": 8,
+        "MAX_PERMALINK_LEN": 120,
+        "MAX_RELATED": 20,
+        "MAX_SEARCH_LIMIT": 100,
+        "MAX_TITLE_LEN": 120
+      },
+      "state": {
+        "memory": "Inner.memory: Arc<MemoryBook>; fn memory_book(agent) -> Arc<MemoryBook> via access; reads score outside the lock; writes Arc::make_mut",
+        "memory_delete": "fn memory_delete(&self, agent: &AgentId, name: &str) -> Option<MemoryNote>; marks ChangedIds::remove"
+      },
+      "tools": {
+        "memory_delete": {
+          "in": "agent, name (permalink | id | exact title)",
+          "out": "ok {removed: digest} | not_found",
+          "storage": "file unlinked via Delta.memory_removed; gone after restart"
+        },
+        "memory_read": {
+          "errors": "not_found; invalid when depth > 3",
+          "in": "agent, name, depth? 0..=3",
+          "out": "ok {note (full body), related: [digest] max 20}"
+        },
+        "memory_search": {
+          "in": "agent, query?, path?, kind?, tag?, since?, limit? default 20 max 100",
+          "out": "ok {count, truncated, notes: [digest + score]}",
+          "semantics": "ranked by score with a query, newest-first without; substring matching (lease finds leases); stop words and terms under 3 chars dropped unless the whole query is such; per-field hit cap of 3 so repetition does not rank"
+        },
+        "memory_write": {
+          "conflict": "status conflict {permalink, updated_at, message} when if_updated_at != stored updated_at",
+          "errors": "invalid on empty title/body, unknown kind, bad permalink, bad tag (control chars, :, [, ]); not_found when an explicit permalink does not exist",
+          "in": "agent, title, body, kind?, paths[]?, tags[]?, permalink?, if_updated_at? (RFC 3339)",
+          "out": "ok {note (full), created}"
+        }
+      }
+    },
+    "notes": "v4, SHIPPED and tested over a real daemon. Four changes from v3, all driven by head-dev-fable's audit and benchmark. (1) Listings carry digests, never bodies: memory_search rows and memory_read's `related` rows are MemoryDigest {permalink, title, kind, paths, tags, updated_at, excerpt} plus `score` on search rows; only memory_read's `note` has a body. The claim brief's `memory` rows are the same type, so they now include `tags` (claude-token-diet: the claim section of 04-primitives.md says so). (2) memory_write takes `if_updated_at`; a stale value is status `conflict` with `permalink` and the real `updated_at`, the same status shape a refused claim uses. (3) New tool memory_delete {agent, name} returning ok {removed: digest} or not_found; the file is unlinked via Delta.memory_removed (persistence seam v3) and stays gone across restart. (4) Reads no longer hold the State lock while scoring: Inner holds Arc<MemoryBook>, reads take a pointer clone through `access` (leases still renew) and score after releasing; writes use Arc::make_mut. Public State signatures unchanged. Also: `related` is capped at MAX_RELATED (20) and comes from a reverse-relation index instead of a scan. Limits stay 20/100 (head-dev-fable confirmed; 10/50 was only for body-carrying rows). Schema budget: memory_write's description and if_updated_at doc were trimmed to keep every tool under 500 chars; tests/http_roundtrip.rs TOOL_LIST_LIMIT raised 6_656 -> 7_000 with a comment naming memory_delete and if_updated_at, per ADR-0017.",
+    "published_by": "claude-memory-layer",
+    "published_at": "2026-09-16T02:59:21.318369Z"
+  },
+  "history": [
+    {
+      "version": 1,
+      "shape": {
+        "MemoryBook": {
+          "context": "fn context(&self, start: &str, depth: usize) -> Vec<&MemoryNote> - follows relations forward AND backward",
+          "for_path": "fn for_path(&self, &RepoPath, Option<usize>) -> Vec<&MemoryNote> - path-overlap scoped, newest first",
+          "get": "fn get(&self, name_or_id: &str) -> Option<&MemoryNote> - permalink, then id, then exact title",
+          "search": "fn search(&self, &MemorySearch{query, path, kind, tag, since, limit}) -> Vec<MemoryHit{note, score}>",
+          "write": "fn write(&mut self, by: AgentId, new: NewMemory, now) -> Result<MemoryWritten{note, created}, MemoryError> - creates, or updates in place when the permalink matches; id/created_at/permalink survive edits"
+        },
+        "MemoryNote": {
+          "author": "AgentId (first writer)",
+          "body": "String (Markdown)",
+          "created_at": "RFC3339",
+          "id": "MemoryId (uuid newtype, Ord)",
+          "kind": "fact | lesson | gotcha | handoff | research | note",
+          "observations": "[{category, content, tags[]}] parsed from `- [category] text #tag` lines",
+          "paths": "RepoPath[] - the repo scope this note is about",
+          "permalink": "Permalink (lowercase slug; as_str(), file_name())",
+          "relations": "[{kind, target}] parsed from `- kind [[target]]` lines",
+          "tags": "String[] lowercased, deduped, # stripped",
+          "title": "String",
+          "updated_at": "RFC3339",
+          "updated_by": "AgentId (last writer)"
+        },
+        "claim_integration": {
+          "behavior": "the `claim` ok response gains `memory: [{permalink, title, kind, excerpt, updated_at}]` for notes whose paths overlap what was just claimed, so knowledge reaches the agent that is about to edit those files without anyone searching for it. This is the reason the primitive lives in Tirith rather than in a general memory server.",
+          "status": "PLANNED, needs server.rs/state.rs"
+        },
+        "storage": {
+          "compat": "reads Basic Memory notes: inline [a, b] lists, block lists, unknown extra keys ignored, only `title` required",
+          "format": "YAML frontmatter (id, permalink, title, kind, tags, paths, author, updated_by, created_at, updated_at) then the Markdown body",
+          "layout": ".tirith/memory/<permalink>.md, one committed Markdown file per note, permalink is the filename stem and is immutable",
+          "seam": "MemoryNote::to_markdown(&self) -> String and MemoryNote::from_markdown(&str) -> Result<MemoryNote, MemoryError>; store scans the dir like load_contracts"
+        },
+        "tools": {
+          "memory_read": {
+            "in": "agent, name (permalink | id | exact title), depth? (default 0; >0 also returns related notes)",
+            "out": "ok + note + related[] , or not_found"
+          },
+          "memory_search": {
+            "in": "agent, query?, path?, kind?, tag?, since?, limit?",
+            "out": "ok + count + results[{note, score}]; with no query it is newest-first recent activity, which is the session-start orientation call"
+          },
+          "memory_write": {
+            "in": "agent, title, body, kind?, paths[]?, tags[]?, permalink? (targets an existing note; errors not_found if gone)",
+            "out": "ok + note + created: bool"
+          }
+        }
+      },
+      "notes": "src/memory.rs is BUILT: pure domain, no I/O, 22 unit tests + 2 doc tests passing, clippy pedantic clean. The file format and MemoryNote::to_markdown / from_markdown are final. state.rs/store.rs/server.rs glue is NOT written yet: storage-claude holds those files and I am waiting for its \"incremental persistence landed\" notice. Storage treatment agreed with storage-claude in contract \"Persistence seam for primitives\" v2: per-file writes via ChangedIds<MemoryId>, never a JSONL log. For the dashboard: MemoryNote serializes to snake_case JSON with the fields listed under MemoryNote below; excerpt(n) gives a body-free summary line if the payload gets fat.",
+      "published_by": "claude-memory-layer",
+      "published_at": "2026-09-16T01:37:03.222388Z"
+    },
+    {
+      "version": 2,
+      "shape": {
+        "MemoryBook": {
+          "context": "fn context(&self, start: &str, depth: usize) -> Vec<&MemoryNote>",
+          "for_path": "fn for_path(&self, &RepoPath, Option<usize>) -> Vec<&MemoryNote>",
+          "from_notes": "fn from_notes(Vec<MemoryNote>) -> MemoryBook  // what the loader calls",
+          "get": "fn get(&self, name_or_id: &str) -> Option<&MemoryNote> - permalink, then id, then exact title",
+          "search": "fn search(&self, &MemorySearch{query, path, kind, tag, since, limit}) -> Vec<MemoryHit{note, score}>",
+          "write": "fn write(&mut self, by: AgentId, new: NewMemory, now) -> Result<MemoryWritten{note, created}, MemoryError>"
+        },
+        "MemoryNote": {
+          "author": "AgentId (first writer)",
+          "body": "String (Markdown)",
+          "created_at": "RFC3339, whole seconds",
+          "helpers": "concerns(&RepoPath) -> bool, has_tag(&str) -> bool, excerpt(usize) -> String, score(&str) -> u32",
+          "id": "MemoryId (uuid newtype, Ord)",
+          "kind": "fact | lesson | gotcha | handoff | research | note",
+          "observations": "[{category, content, tags[]}] parsed from `- [category] text #tag` lines",
+          "paths": "RepoPath[] - the repo scope this note is about",
+          "permalink": "Permalink",
+          "relations": "[{kind, target}] parsed from `- kind [[target]]` lines",
+          "tags": "String[] lowercased, deduped, # stripped",
+          "title": "String",
+          "updated_at": "RFC3339, whole seconds",
+          "updated_by": "AgentId (last writer)"
+        },
+        "Permalink": {
+          "file_path": "fn file_path(&self) -> String  // RENAMED from file_name; may contain /",
+          "folders": "fn folders(&self) -> Vec<&str>  // parent segments, empty at top level",
+          "from_title": "fn from_title(&str) -> Result<Permalink, MemoryError>  // always flat",
+          "parse": "fn parse(&str) -> Result<Permalink, MemoryError>  // segments of [a-z0-9-], no leading/trailing dash, max 8 deep"
+        },
+        "claim_integration": {
+          "behavior": "the `claim` ok response gains `memory: [{permalink, title, kind, excerpt, updated_at}]` for notes whose paths overlap what was just claimed",
+          "status": "PLANNED, needs server.rs/state.rs"
+        },
+        "storage": {
+          "compat": "reads Basic Memory notes: inline [a, b] lists, block lists, / permalinks, unknown extra keys ignored, only `title` required",
+          "errors": "every malformed file is a MemoryError with a line number, never a panic",
+          "format": "YAML frontmatter (id, permalink, title, kind, tags, paths, author, updated_by, created_at, updated_at) then the Markdown body",
+          "invariant": "from_markdown(note.to_markdown()) == note for every note MemoryBook::write returns; write truncates timestamps to whole seconds to guarantee it",
+          "layout": ".tirith/memory/<permalink>.md, one committed Markdown file per note; permalink is the filename stem, is immutable, and MAY contain / folder segments (max depth 8)",
+          "loader": "walk .tirith/memory RECURSIVELY for *.md, parse each with MemoryNote::from_markdown, then MemoryBook::from_notes",
+          "writer": "for each changed note: mkdir -p parent of dir.join(note.permalink.file_path()), then write_atomic(that path, note.to_markdown().as_bytes())"
+        },
+        "tools": {
+          "memory_read": {
+            "in": "agent, name (permalink | id | exact title), depth?",
+            "out": "ok + note + related[], or not_found"
+          },
+          "memory_search": {
+            "in": "agent, query?, path?, kind?, tag?, since?, limit?",
+            "out": "ok + count + results[{note, score}]; no query means newest-first recent activity"
+          },
+          "memory_write": {
+            "in": "agent, title, body, kind?, paths[]?, tags[]?, permalink?",
+            "out": "ok + note + created: bool"
+          }
+        }
+      },
+      "notes": "v2 CHANGES TWO THINGS for the store glue, see notice 6414b67e. (1) Permalink::file_name() is now Permalink::file_path(); (2) permalinks may contain / folder segments, so the memory directory scan must RECURSE and the writer must create parent directories. Reason: the repo's own Basic Memory notes in .memory/ use permalinks like `tirith/design/pre-alpha-build`, and a flat namespace broke the compatibility promise in ADR-0011. An integration test that parses the real .memory/ notes caught it and now guards it. Escaping the directory is impossible: `.` is outside the allowed charset, so `..` cannot be spelled; there is a unit test for that. STATUS: src/memory.rs, src/types.rs (MemoryId), src/lib.rs, tests/memory_layer.rs and the docs are DONE and green (31 unit + 8 integration + 4 doc tests, clippy pedantic clean, rustfmt clean). Still waiting on storage-claude's \"incremental persistence landed\" notice before adding glue to state.rs/store.rs/server.rs.",
+      "published_by": "claude-memory-layer",
+      "published_at": "2026-09-16T01:46:48.010838Z"
+    },
+    {
+      "version": 3,
+      "shape": {
+        "claim_integration": {
+          "field": "the ok claim response gains `memory`: at most CLAIM_MEMORY_LIMIT (5) newest notes whose paths overlap what was just claimed",
+          "never": "no body field, excerpt is CLAIM_MEMORY_EXCERPT (160) characters",
+          "row": "{permalink, title, kind, paths, updated_at, excerpt}",
+          "status": "BUILT"
+        },
+        "constants": {
+          "CLAIM_MEMORY_EXCERPT": 160,
+          "CLAIM_MEMORY_LIMIT": 5,
+          "DEFAULT_SEARCH_LIMIT": 20,
+          "MAX_CONTEXT_DEPTH": 3,
+          "MAX_PERMALINK_DEPTH": 8,
+          "MAX_SEARCH_LIMIT": 100
+        },
+        "performance": {
+          "index": "MemoryBook keeps a HashMap<Permalink, usize>, a HashMap<MemoryId, usize>, and the lowercased search text per note, so get is a hash lookup and search does not re-lowercase bodies on every call",
+          "remaining": "scoring is still linear in the number of notes; an inverted index is the next step if benchmarks ask for it"
+        },
+        "status": "BUILT and wired as of 2026-09-16; src/memory.rs, src/state.rs, src/store.rs, src/server.rs, tests/memory_layer.rs",
+        "storage": {
+          "delta": "Delta.memory: Vec<MemoryNote> carrying only changed notes, via ChangedIds<MemoryId>",
+          "errors": "StoreError::Memory{path, source} names the unparseable file; never a panic",
+          "init": "memory/ is created by JsonStore::init alongside runtime/ and contracts/",
+          "layout": ".tirith/memory/<permalink>.md, one committed Markdown file per note; permalink may carry / folder segments, max depth 8",
+          "loader": "JsonStore::load_memory walks .tirith/memory recursively for *.md",
+          "writer": "JsonStore::apply creates parent dirs then write_atomic(note.to_markdown())"
+        },
+        "tools": {
+          "memory_read": {
+            "errors": "not_found for an unknown name; invalid when depth > 3",
+            "in": "agent, name (permalink | id | exact title), depth? 0..=3 default 0",
+            "out": "ok {note, related[]}",
+            "semantics": "related follows relations forward AND backward, excluding the note itself"
+          },
+          "memory_search": {
+            "in": "agent, query?, path?, kind?, tag?, since?, limit? default 20 max 100",
+            "out": "ok {count, truncated: bool, notes[]} where each note carries an extra `score`",
+            "semantics": "ranked by score when a query is given, newest-first when it is not, which makes the no-query call the session-start orientation call"
+          },
+          "memory_write": {
+            "errors": "invalid on empty title/body, unknown kind, bad permalink; not_found when an explicit permalink does not exist",
+            "in": "agent, title, body, kind?, paths[]?, tags[]?, permalink?",
+            "out": "ok {note, created: bool}",
+            "semantics": "writing a title whose permalink exists updates in place, keeping id, permalink and created_at; author stays the first writer, updated_by becomes the caller"
+          }
+        }
+      },
+      "notes": "v3 is the SHIPPED shape: the three tools are registered on the server and tested over a real daemon. Changes from v2, all in the tool responses: memory_search returns {count, truncated, notes[]} where each row is the note plus a `score` field, instead of results[{note, score}]; this matches the list convention storage-claude is standardising in tasks 89b35cb6/e3e652b1, so that work does not have to touch memory code. limit defaults to 20 and clamps to 100. memory_read takes depth 0..=3 and returns invalid above that. claim now carries `memory`, at most 5 notes, each {permalink, title, kind, paths, updated_at, excerpt}, never a body. All three tools go through the existing `finish` and the ok/not_found/invalid helpers, so task e3e652b1 stays a single-place change. Note for whoever standardises listing: memory_search results are ranked by score, NOT newest-first, so types::Page::newest_first cannot be used on them as it would re-sort and destroy the ranking; build Page{items, total} directly if you want uniform fields.",
+      "published_by": "claude-memory-layer",
+      "published_at": "2026-09-16T02:09:40.852998Z"
+    }
+  ]
+}

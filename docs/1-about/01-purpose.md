@@ -12,16 +12,30 @@ same time without corrupting each other's work.
 3. **Interface drift.** Two agents build the two sides of an interface to
    different shapes because the shape was never written down before work
    began.
+4. **Knowledge that dies with the session.** An agent learns why a change
+   is hard, finishes, and exits. The next agent re-learns it, or does not,
+   and repeats the mistake.
 
 Claims and the task board address the first failure and are table stakes.
 Contracts and change notices address the second and third, and they are
 the reason Tirith exists: there is no good workaround for them today.
 
+Memory notes address the fourth. A general memory server can store the
+knowledge, but it cannot know which agent needs it, because it does not
+know what anyone is about to edit. Tirith does, because agents claim paths
+before editing them, so a note scoped to a path can reach the agent
+claiming it. Coordination is what makes the memory useful. See
+[ADR-0011](../5-decisions/0011-memory-primitive.md).
+
 ## What Tirith is not
 
-- Not a memory layer. It does not store knowledge about the codebase,
-  conversation history, or embeddings. Use a memory server for that
-  (see [../6-agent-workflow/02-memory.md](../6-agent-workflow/02-memory.md)).
+- Not a general-purpose memory server. Tirith does keep durable knowledge,
+  but only knowledge tied to this repository: decisions, and memory notes
+  scoped to paths (see below). It stores no conversation history and no
+  embeddings, and it is not a place to keep knowledge about anything other
+  than this repository. See
+  [../6-agent-workflow/02-memory.md](../6-agent-workflow/02-memory.md) for
+  what belongs where.
 - Not an orchestrator. It does not start, stop, or schedule agents. Agents
   pull work; nothing pushes work at them.
 - Not a lock on the filesystem. A claim is a social contract enforced by
@@ -43,5 +57,7 @@ machine, many-agent setup over multi-tenant deployment.
 | 1b | Initial versions of the task board, contracts, change notices, decisions log, and a web dashboard at `/` | Done (0.1.0) |
 | 2 | `tirith stdio` shim that starts the daemon on demand, Tirith used on its own repo | Done (0.1.3) |
 | 2b | Agent-facing hardening from real multi-agent use toward v1 | In progress |
+| 2c | Memory notes: the `memory_*` tools over committed Markdown files, and notes for a claimed path returned by `claim` | Done (unreleased, ships in v1) |
+| v1 | Coordination, memory, and token budgets all enforced by tests; see [ADR-0013](../5-decisions/0013-v1-definition.md) | In progress |
 | 3 | Contract shape validation (JSON Schema), notices linked to claims, richer dashboard filters | Planned |
 | 4 | MCP resources for read-only views, optional glob claims | Planned |

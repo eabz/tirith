@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::types::{AgentId, ContractId, NoticeId, RepoPath};
+use crate::types::{AgentId, ContractId, NoticeId, Page, PrefixError, RepoPath, resolve_prefix};
 
 /// What kind of change a notice announces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +206,22 @@ impl NoticeBoard {
             .collect()
     }
 
+    /// Newest `limit` notices matching `filter` and older than the
+    /// `(published_at, id)` cursor `before`. See [`Page`].
+    pub fn list_page(
+        &self,
+        filter: &NoticeFilter,
+        before: Option<&(DateTime<Utc>, NoticeId)>,
+        limit: usize,
+    ) -> Page<&Notice> {
+        Page::newest_first(self.list(filter), |n| (n.published_at, n.id), before, limit)
+    }
+
+    /// Resolves a full id or a unique prefix to a notice id.
+    pub fn resolve_id(&self, raw: &str) -> Result<NoticeId, PrefixError> {
+        resolve_prefix("notice", self.notices.iter().map(|n| n.id), raw)
+    }
+
     /// Marks a notice as handled by `agent`. Acknowledging twice is fine.
     pub fn ack(&mut self, agent: AgentId, id: NoticeId) -> Result<&Notice, NoticeError> {
         let notice = self
@@ -296,6 +312,28 @@ mod tests {
         });
         assert_eq!(unread.len(), 1);
         assert_eq!(board.notices()[0].acked_by.len(), 1);
+    }
+
+    #[test]
+    fn pages_are_newest_first_and_prefixes_resolve() {
+        let mut board = NoticeBoard::default();
+        for i in 0..5 {
+            board
+                .publish(agent("a"), rename(&["src"]), t0() + Duration::seconds(i))
+                .unwrap();
+        }
+        let page = board.list_page(&NoticeFilter::default(), None, 2);
+        assert_eq!(page.total, 5);
+        assert!(page.truncated());
+        assert_eq!(page.items[0].published_at, t0() + Duration::seconds(4));
+        let next = page.next_before(|n| (n.published_at, n.id)).unwrap();
+        let older = board.list_page(&NoticeFilter::default(), Some(&next), 10);
+        assert_eq!(older.items.len(), 3);
+        assert_eq!(older.items[0].published_at, t0() + Duration::seconds(2));
+        assert!(!older.truncated());
+        let id = board.notices()[3].id;
+        assert_eq!(board.resolve_id(&id.short()), Ok(id));
+        assert!(board.resolve_id("").is_err());
     }
 
     #[test]

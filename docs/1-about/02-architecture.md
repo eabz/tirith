@@ -41,8 +41,11 @@ src/tasks.rs       Task board.
 src/contracts.rs   Contracts with version history.
 src/notices.rs     Change notices with acknowledgements.
 src/decisions.rs   Decisions log.
-src/store.rs       Persistence: JSON files under .tirith/, atomic writes,
-                   and the Persister that serializes writes by sequence.
+src/memory.rs      Memory notes and the Markdown file format they are
+                   stored in. Pure: no rmcp, axum, tokio, or I/O.
+src/store.rs       Persistence: JSON files under .tirith/, atomic writes
+                   and appends, and the background Persister that writes
+                   deltas in sequence order.
 src/clock.rs       Clock trait; real clock in prod, manual clock in tests.
 ```
 
@@ -63,8 +66,9 @@ client dies, so identity cannot hang off the transport.
 
 Claims are leases with a TTL (default 10 minutes). Any call from the owning
 agent renews the lease. Expired leases are removed lazily when state is
-read, so a dead agent's claims disappear without a background thread. A
-background tick may be added later purely to persist the cleanup.
+read, so a dead agent's claims disappear without a background thread.
+Renewals are not written on the request path; the persister's one-second
+tick picks them up (see Persistence below).
 
 ## Path model
 
@@ -91,19 +95,32 @@ JSON files under `.tirith/` in the target repository:
   runtime/            gitignored
     daemon.json       mcp url, dashboard url, pid, started_at, version
     serve.log         daemon output, when the stdio shim started it
-    meta.json         snapshot sequence number
+    meta.json         persist sequence number
     claims.json
     tasks.json
   contracts/          committed, one file per contract (<slug>-<id>.json)
+  memory/             committed, one Markdown file per note; a permalink
+                      with `/` segments becomes a subdirectory
   notices.jsonl       committed, one notice per line
   decisions.jsonl     committed, one decision per line
 ```
 
-Every tool call that changed something takes a snapshot with a bumped
-sequence number and hands it to a persister that writes the files in the
-background, in order, skipping any snapshot older than the last one
-written. A failed write is logged and surfaced as `persist_error` in
-`status` and on the dashboard; the in-memory state stays authoritative.
+Writes are incremental. `State` tracks what changed since the last write
+and produces a `Delta`: claims and tasks whole when they changed, only the
+contracts that changed, and for the two logs either the new lines to
+append or, after an in-place edit such as a notice acknowledgement, a full
+rewrite. A single background `Persister` task drains deltas in sequence
+order. A tool call that mutated state waits until its change is on disk;
+concurrent callers wait on the same write, so a burst of claims from a
+swarm becomes one write of `claims.json`. Read-only calls never wait, and
+lease renewals are folded into the next claims write or picked up by a
+one-second tick. A failed write is logged, surfaced as `persist_error` in
+`status` and on the dashboard, and followed by a full rewrite on the next
+attempt; the in-memory state stays authoritative. Measured with
+`examples/swarm_bench.rs`: 200 agents on persistent sessions see single-
+digit millisecond medians, where the previous whole-snapshot-per-call
+design saw seconds. See
+[../5-decisions/0010-incremental-persistence.md](../5-decisions/0010-incremental-persistence.md).
 
 Committed files are human-readable and git-diffable on purpose: contracts
 and decisions are exactly what a future session should inherit. A `Store`
@@ -131,6 +148,20 @@ Default bind is `127.0.0.1:7477`, path `/mcp`. Configurable with
 `--bind`. The daemon writes its address to `.tirith/runtime/daemon.json` so
 the CLI and the stdio shim can find it without configuration.
 
+## Stopping
+
+`tirith serve` stops on ctrl-c, on SIGTERM, or on its own when the
+repository root it serves disappears (checked every two seconds), so a
+daemon never outlives its repository. Shutdown is in this order: stop
+accepting, give open connections two seconds, then close whatever is still
+open (every stdio shim holds an SSE stream that would otherwise keep the
+process alive indefinitely), sync everything pending to disk including
+lease renewals, and finally remove `daemon.json`, but only if it still
+records this process's pid. A record written by a newer daemon that took
+the port meanwhile is left alone. The shim's restart path (ADR-0016)
+relies on this: it waits for the old pid to exit before starting a
+replacement.
+
 ## Tool response shape
 
 Every tool returns structured JSON with a top-level `status` field so agents
@@ -147,5 +178,25 @@ can branch without parsing prose:
 These are all successful tool results at the MCP level (`isError` is
 false); a refused claim is a normal outcome, not a protocol error.
 
-A human-readable summary is also included as text content for clients that
-show only text.
+The JSON travels once, as the result's structured content. The text
+content block is a single line under 200 characters that starts with the
+status, for example `ok: claimed src/a.rs until 02:10:00Z` or `conflict:
+overlapping claims held by other agents`. It is never the JSON repeated:
+clients feed text blocks to the model, so a copy would double the token
+cost of every call. `tirith::client` reads the structured content and
+falls back to the text only when a server sends none.
+
+A successful `claim` is the one response that carries data from another
+primitive: a `memory` array of at most five excerpt rows for notes about
+the claimed paths, so an agent learns what it needs before editing.
+
+Every tool's input schema is post-processed in `tools/list`: the
+`$schema` URL, `default: null`, integer `format` and `minimum`, the
+nullable type unions on optional fields, and per-parameter descriptions
+are dropped. Each tool keeps a one-sentence description that carries the
+semantics a parameter name does not, such as the allowed `kind` values.
+Agents download every schema once per session, so
+`tests/http_roundtrip.rs` pins the whole listing under 6 KB and each tool
+under 500 characters. Parameter semantics live in
+[04-primitives.md](04-primitives.md) and in the input structs' doc
+comments, not on the wire.

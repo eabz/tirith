@@ -14,6 +14,7 @@ tirith/
 │                        publish-crates.yml (crates.io).
 ├── dist-workspace.toml  cargo-dist configuration.
 ├── install.sh           Stable-URL installer shim.
+├── install.ps1          Windows twin of install.sh (PowerShell).
 ├── scripts/bump.sh      Version bump, commit, tag.
 ├── src/
 │   ├── main.rs          Binary entry.
@@ -33,7 +34,9 @@ tirith/
 │   ├── tasks.rs         Task board domain.
 │   ├── contracts.rs     Contracts domain.
 │   ├── notices.rs       Change notices domain.
-│   └── decisions.rs     Decisions log domain.
+│   ├── decisions.rs     Decisions log domain.
+│   └── memory.rs        Memory notes domain, including the Markdown
+│                        file format notes are stored in.
 ├── tests/               Integration tests: the server over localhost HTTP,
 │                        the stdio shim over its pipes.
 ├── examples/
@@ -47,12 +50,14 @@ tirith/
 │   ├── 6-agent-workflow/
 │   ├── 7-release/
 │   └── _static/images/
-├── .memory/             Basic Memory notes, agent-managed, committed.
 ├── .serena/             Serena project config and memories.
-├── .mcp.json            Claude Code project MCP servers (basic-memory, tirith stdio).
-├── .cursor/mcp.json     Cursor MCP servers (basic-memory, tirith stdio).
+├── .mcp.json            Claude Code project MCP servers (tirith stdio).
+├── .cursor/mcp.json     Cursor MCP servers (tirith stdio).
 └── .tirith/             Created at runtime in the *target* repo. Exists here
                          too: Tirith coordinates its own development.
+    ├── memory/          Memory notes, one Markdown file each. Committed.
+    ├── contracts/       One JSON file per contract. Committed.
+    └── runtime/         Claims, tasks, daemon address. Gitignored.
 ```
 
 ## Where things go
@@ -65,7 +70,8 @@ tirith/
 | A usage example | `docs/2-examples/` and, if short, `README.md` |
 | A design decision | `docs/5-decisions/NNNN-title.md` |
 | A picture | `docs/_static/images/` |
-| A fact agents need that the code does not express | A Serena memory, or a Basic Memory note in `.memory/` for long-form |
+| A fact agents need that the code does not express, about paths in this repo | A memory note through `memory_write`, scoped to those paths |
+| A short fact for navigating or building, not tied to a path | A Serena memory |
 
 ## Single crate, for now
 

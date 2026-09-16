@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::types::{AgentId, ContractId, RepoPath};
+use crate::types::{AgentId, ContractId, Page, PrefixError, RepoPath, resolve_prefix};
 
 /// What kind of interface a contract describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,10 +119,15 @@ pub struct NewContract {
     pub kind: ContractKind,
     /// See [`ContractVersion::shape`].
     pub shape: Value,
-    /// See [`Contract::consumers`].
-    pub consumers: Vec<RepoPath>,
+    /// See [`Contract::consumers`]. `None` keeps the existing list when
+    /// republishing; `Some(vec![])` clears it.
+    pub consumers: Option<Vec<RepoPath>>,
     /// See [`ContractVersion::notes`].
     pub notes: String,
+    /// The version the publisher believes is current. When set and the
+    /// name exists at another version, publishing is refused, so two agents
+    /// cannot silently overwrite each other's v2.
+    pub expected_version: Option<u32>,
 }
 
 /// The result of publishing.
@@ -132,6 +137,9 @@ pub struct Published {
     pub contract: Contract,
     /// The version that was current before, if the name already existed.
     pub previous_version: Option<u32>,
+    /// Every path that consumed the contract before or after this publish;
+    /// the change notice goes to all of them.
+    pub notify: Vec<RepoPath>,
 }
 
 /// Why a contract operation was refused.
@@ -146,6 +154,18 @@ pub enum ContractError {
     /// The kind string was not recognized.
     #[error("unknown contract kind {0:?}; expected http, function, type, event, cli, or other")]
     UnknownKind(String),
+    /// `expected_version` did not match what is current.
+    #[error("contract {name:?} is at v{current}, not the expected v{expected}")]
+    VersionConflict {
+        /// The contract name.
+        name: String,
+        /// The current version (0 when the name does not exist yet).
+        current: u32,
+        /// What the publisher expected.
+        expected: u32,
+        /// Who published the current version, if any.
+        published_by: Option<AgentId>,
+    },
 }
 
 /// All contracts.
@@ -177,6 +197,16 @@ impl ContractRegistry {
             return Err(ContractError::EmptyName);
         }
         if let Some(existing) = self.contracts.iter_mut().find(|c| c.name == name) {
+            if let Some(expected) = new.expected_version {
+                if expected != existing.current.version {
+                    return Err(ContractError::VersionConflict {
+                        name,
+                        current: existing.current.version,
+                        expected,
+                        published_by: Some(existing.current.published_by.clone()),
+                    });
+                }
+            }
             let next_version = existing.current.version + 1;
             let previous = std::mem::replace(
                 &mut existing.current,
@@ -191,17 +221,35 @@ impl ContractRegistry {
             let previous_version = previous.version;
             existing.history.push(previous);
             existing.kind = new.kind;
-            existing.consumers = new.consumers;
+            let mut notify = existing.consumers.clone();
+            if let Some(consumers) = new.consumers {
+                for path in &consumers {
+                    if !notify.contains(path) {
+                        notify.push(path.clone());
+                    }
+                }
+                existing.consumers = consumers;
+            }
             return Ok(Published {
                 contract: existing.clone(),
                 previous_version: Some(previous_version),
+                notify,
             });
         }
+        if let Some(expected) = new.expected_version.filter(|v| *v != 0) {
+            return Err(ContractError::VersionConflict {
+                name,
+                current: 0,
+                expected,
+                published_by: None,
+            });
+        }
+        let consumers = new.consumers.unwrap_or_default();
         let contract = Contract {
             id: ContractId::new(),
             name,
             kind: new.kind,
-            consumers: new.consumers,
+            consumers: consumers.clone(),
             current: ContractVersion {
                 version: 1,
                 shape: new.shape,
@@ -215,17 +263,23 @@ impl ContractRegistry {
         Ok(Published {
             contract,
             previous_version: None,
+            notify: consumers,
         })
     }
 
-    /// Finds a contract by exact name or by id string.
+    /// Finds a contract by exact name, by id, or by a unique id prefix.
     pub fn get(&self, name_or_id: &str) -> Option<&Contract> {
         let key = name_or_id.trim();
         self.contracts.iter().find(|c| c.name == key).or_else(|| {
-            ContractId::parse(key)
+            self.resolve_id(key)
                 .ok()
                 .and_then(|id| self.contracts.iter().find(|c| c.id == id))
         })
+    }
+
+    /// Resolves a full id or a unique prefix to a contract id.
+    pub fn resolve_id(&self, raw: &str) -> Result<ContractId, PrefixError> {
+        resolve_prefix("contract", self.contracts.iter().map(|c| c.id), raw)
     }
 
     /// Contracts matching the optional consumer-path and kind filters.
@@ -235,6 +289,23 @@ impl ContractRegistry {
             .filter(|c| path.is_none_or(|p| c.consumed_by(p)))
             .filter(|c| kind.is_none_or(|k| c.kind == k))
             .collect()
+    }
+
+    /// Most recently published `limit` contracts matching the filters,
+    /// whose current version was published before `before`. See [`Page`].
+    pub fn list_page(
+        &self,
+        path: Option<&RepoPath>,
+        kind: Option<ContractKind>,
+        before: Option<&(DateTime<Utc>, ContractId)>,
+        limit: usize,
+    ) -> Page<&Contract> {
+        Page::newest_first(
+            self.list(path, kind),
+            |c| (c.current.published_at, c.id),
+            before,
+            limit,
+        )
     }
 }
 
@@ -258,9 +329,76 @@ mod tests {
             name: name.into(),
             kind: ContractKind::Http,
             shape,
-            consumers: vec![RepoPath::new("src/client").unwrap()],
+            consumers: Some(vec![RepoPath::new("src/client").unwrap()]),
             notes: String::new(),
+            expected_version: None,
         }
+    }
+
+    fn path(p: &str) -> RepoPath {
+        RepoPath::new(p).unwrap()
+    }
+
+    #[test]
+    fn republishing_without_consumers_keeps_them_and_notifies_the_union() {
+        let mut reg = ContractRegistry::default();
+        reg.publish(agent("a"), new("Foo", json!({})), t0())
+            .unwrap();
+        let mut omitted = new("Foo", json!({"v": 2}));
+        omitted.consumers = None;
+        let kept = reg.publish(agent("a"), omitted, t0()).unwrap();
+        assert_eq!(kept.contract.consumers, vec![path("src/client")]);
+        assert_eq!(kept.notify, vec![path("src/client")]);
+        let mut moved = new("Foo", json!({"v": 3}));
+        moved.consumers = Some(vec![path("src/cli")]);
+        let changed = reg.publish(agent("a"), moved, t0()).unwrap();
+        assert_eq!(changed.contract.consumers, vec![path("src/cli")]);
+        assert_eq!(changed.notify, vec![path("src/client"), path("src/cli")]);
+        let mut cleared = new("Foo", json!({"v": 4}));
+        cleared.consumers = Some(Vec::new());
+        let none = reg.publish(agent("a"), cleared, t0()).unwrap();
+        assert!(none.contract.consumers.is_empty());
+        assert_eq!(none.notify, vec![path("src/cli")]);
+    }
+
+    #[test]
+    fn a_stale_expected_version_is_refused_and_a_matching_one_publishes() {
+        let mut reg = ContractRegistry::default();
+        let mut first = new("Foo", json!({}));
+        first.expected_version = Some(0);
+        reg.publish(agent("a"), first, t0()).unwrap();
+        let mut stale = new("Foo", json!({"v": 2}));
+        stale.expected_version = Some(0);
+        assert_eq!(
+            reg.publish(agent("b"), stale, t0()).unwrap_err(),
+            ContractError::VersionConflict {
+                name: "Foo".into(),
+                current: 1,
+                expected: 0,
+                published_by: Some(agent("a")),
+            }
+        );
+        let mut fresh = new("Foo", json!({"v": 2}));
+        fresh.expected_version = Some(1);
+        assert_eq!(
+            reg.publish(agent("b"), fresh, t0())
+                .unwrap()
+                .contract
+                .current
+                .version,
+            2
+        );
+        let mut absent = new("Bar", json!({}));
+        absent.expected_version = Some(3);
+        assert_eq!(
+            reg.publish(agent("b"), absent, t0()).unwrap_err(),
+            ContractError::VersionConflict {
+                name: "Bar".into(),
+                current: 0,
+                expected: 3,
+                published_by: None,
+            }
+        );
     }
 
     #[test]

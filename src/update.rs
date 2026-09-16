@@ -3,7 +3,7 @@
 //! Releases are published by cargo-dist with an installer script per
 //! platform. Updating means re-running that installer for the chosen tag,
 //! pinned to the directory the running binary lives in. The download is
-//! delegated to the system's `curl` (or PowerShell on Windows) so Tirith
+//! delegated to the system's `curl` (or `PowerShell` on Windows) so Tirith
 //! itself ships no TLS stack.
 
 use std::cmp::Ordering;

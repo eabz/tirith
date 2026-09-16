@@ -1,11 +1,13 @@
 ---
 title: Project kickoff 2026-09-15
-type: note
+kind: research
+paths:
+- docs
 tags:
 - tirith
 - kickoff
 - architecture
-permalink: tirith/design/project-kickoff-2026-09-15
+permalink: design/project-kickoff-2026-09-15
 ---
 
 # Project kickoff 2026-09-15

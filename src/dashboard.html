@@ -78,6 +78,7 @@
   .banner { margin:14px 24px 0; padding:10px 14px; border-radius:10px; border:1px solid var(--bad);
     background:color-mix(in srgb, var(--bad) 12%, transparent); font-size:13px; }
   .banner:empty { display:none; }
+  .banner { white-space:pre-line; }
 
   main { padding:18px 24px 30px; max-width:1500px; margin:0 auto; }
 
@@ -136,6 +137,8 @@
   .tag::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
   .tag.todo { color:var(--dim); } .tag.in_progress { color:var(--accent); } .tag.blocked { color:var(--bad); }
   .tag.done { color:var(--ok); } .tag.kind { color:var(--gold); }
+  .tag.k-gotcha { color:var(--warn); } .tag.k-lesson { color:var(--ok); } .tag.k-handoff { color:var(--accent); } .tag.k-fact { color:var(--fg); }
+  .notelink { color:var(--accent); text-decoration:none; font-size:12px; border-bottom:1px dotted var(--accent); }
   .pri { display:inline-block; font-family:var(--mono); font-size:11.5px; color:var(--dim); }
   .pri.hi { color:var(--warn); font-weight:700; }
   .lease { display:inline-flex; flex-direction:column; gap:4px; min-width:90px; }
@@ -150,6 +153,12 @@
   .title { font-weight:600; }
   .note { color:var(--dim); font-size:12.5px; }
   .note.bad { color:var(--bad); }
+  .title, .note, .clamp { overflow-wrap:anywhere; }
+  .clamp { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .open { white-space:pre-line; }
+  .more { background:none; border:0; padding:0; color:var(--accent); font-size:11px; cursor:pointer; font-family:inherit; }
+  .more:hover { text-decoration:underline; }
+  code.path.more { cursor:pointer; }
   .shape summary { cursor:pointer; color:var(--accent); font-size:12px; user-select:none; }
   .shape pre { margin:6px 0 0; white-space:pre-wrap; font-size:12px; color:var(--dim); max-height:220px; overflow:auto; background:var(--panel-2); border-radius:6px; padding:8px; }
   .arrow { color:var(--dim); font-size:12px; }
@@ -219,6 +228,10 @@
     <div class="card-h"><h2>Decisions</h2><span class="n"></span><span class="sp"></span><span class="caret">▼</span></div>
     <div class="card-b"></div>
   </section>
+  <section class="card" id="s-memory" data-key="memory">
+    <div class="card-h"><h2>Memory</h2><span class="n"></span><span class="sp"></span><span class="filters" id="memory-filters"></span><span class="caret">▼</span></div>
+    <div class="card-b"></div>
+  </section>
 </main>
 <footer>
   <span>Tirith <span id="f-version"></span></span>
@@ -233,8 +246,9 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('tirith.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('tirith.' + k, JSON.stringify(v)); } catch {} },
 };
-const SECTIONS = ['agents', 'claims', 'tasks', 'contracts', 'notices', 'decisions'];
-const LABELS = { agents: 'Agents', claims: 'Claims', tasks: 'Tasks', contracts: 'Contracts', notices: 'Notices', decisions: 'Decisions' };
+const SECTIONS = ['agents', 'claims', 'tasks', 'contracts', 'notices', 'decisions', 'memory'];
+const LABELS = { agents: 'Agents', claims: 'Claims', tasks: 'Tasks', contracts: 'Contracts', notices: 'Notices', decisions: 'Decisions', memory: 'Memory' };
+const MEMORY_KINDS = ['fact', 'lesson', 'gotcha', 'handoff', 'research', 'note'];
 const EMPTY = {
   agents: 'No agents have called in yet. Any tool call registers the calling agent here.',
   claims: 'No active claims. Agents call <code>claim</code> before editing files.',
@@ -242,9 +256,22 @@ const EMPTY = {
   contracts: 'No published contracts. Use <code>contract_publish</code> before implementing an interface another agent will consume.',
   notices: 'No change notices. Renames and signature changes go through <code>notice_publish</code>.',
   decisions: 'No decisions recorded yet. Settle choices with <code>decision_record</code>.',
+  memory: 'No memory notes yet. Agents write what the code does not say with <code>memory_write</code>; notes are Markdown files under <code>.tirith/memory/</code>.',
 };
-let paused = false, now = Date.now(), lastOk = 0, lastData = null;
-let query = '', taskFilter = store.get('taskFilter', 'open');
+let paused = false, now = Date.now(), lastOk = 0, lastData = null, etag = null, serverNow = 0, lastWall = 0;
+let query = '', taskFilter = store.get('taskFilter', 'open'), memoryKind = store.get('memoryKind', 'all');
+// Cells expanded with "more", keyed by kind:id so a re-render two seconds
+// later does not snap them shut. Kept in localStorage like the filters.
+const expanded = new Set(store.get('expanded', []));
+function toggleExpanded(key) {
+  if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+  store.set('expanded', [...expanded]);
+  if (lastData) render(lastData);
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-x]');
+  if (b && b.dataset.x) { e.preventDefault(); toggleExpanded(b.dataset.x); }
+});
 const collapsed = store.get('collapsed', {});
 const openShapes = new Set();
 
@@ -311,11 +338,23 @@ function who(name) {
   return `<span class="who"><i style="background:hsl(${hue(name)} 62% 58%)"></i>${esc(name)}</span>`;
 }
 function whoList(list) { return (list || []).length ? list.map(who).join(' ') : '<span class="dim">—</span>'; }
-function paths(list, max = 8) {
+// Long free text collapsed to two lines with a "more" control that opens
+// that cell in place. The full text stays in the DOM, so search still
+// matches it. `key` identifies the row so the choice survives re-renders.
+function clamp(text, key, cls = 'note') {
+  if (!text) return '';
+  const long = text.length > 140 || text.includes('\n');
+  const open = expanded.has(key);
+  const more = long ? ` <button class="more" data-x="${esc(key)}">${open ? 'less' : 'more'}</button>` : '';
+  return `<div class="${cls}${long ? (open ? ' open' : ' clamp') : ''}">${esc(text)}</div>${more}`;
+}
+function paths(list, max = 8, key) {
   list = list || [];
   if (!list.length) return '<span class="dim">—</span>';
+  if (key && expanded.has(key)) max = list.length;
   const shown = list.slice(0, max).map(p => `<code class="path">${esc(p)}</code>`);
-  if (list.length > max) shown.push(`<code class="path more" title="${esc(list.slice(max).join('\n'))}">+${list.length - max} more</code>`);
+  if (list.length > max) shown.push(`<code class="path more"${key ? ` data-x="${esc(key)}"` : ''} title="${esc(list.slice(max).join('\n'))}">+${list.length - max} more</code>`);
+  else if (key && expanded.has(key) && list.length > 6) shown.push(`<code class="path more" data-x="${esc(key)}">less</code>`);
   return `<div class="paths">${shown.join('')}</div>`;
 }
 function short(id) { return `<span class="idc" title="${esc(id)}">${esc(String(id).slice(0, 8))}</span>`; }
@@ -329,14 +368,29 @@ function fill(key, cols, rows, total = rows.length) {
   card.querySelector('.card-b').innerHTML = rows.length ? table(cols, rows) : `<div class="empty">${EMPTY[key]}</div>`;
 }
 function taskState(t) { return t.state && t.state.status ? t.state : t; }
+function overlaps(a, b) { return a === b || a.startsWith(b + '/') || b.startsWith(a + '/'); }
+function notesFor(notes, list) {
+  list = list || [];
+  return (notes || []).filter(n => (n.paths || []).some(p => list.some(q => overlaps(p, q))))
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+}
+function noteLinks(notes, max = 3) {
+  if (!notes.length) return '<span class="dim">—</span>';
+  const shown = notes.slice(0, max).map(n => `<a class="notelink" href="#s-memory" title="${esc(n.kind)}: ${esc(n.excerpt)}">${esc(n.title)}</a>`);
+  if (notes.length > max) shown.push(`<span class="dim">+${notes.length - max} more</span>`);
+  return `<div class="paths">${shown.join('')}</div>`;
+}
 
 /* rendering */
 function render(d) {
-  now = Date.parse(d.server.now) || Date.now();
+  now = serverNow || Date.parse(d.server.now) || Date.now();
   $('mcp').textContent = d.server.mcp_url; $('repo').textContent = d.server.repo_root;
-  $('uptime').textContent = dur(d.server.uptime_secs); $('version').textContent = d.server.version; $('seq').textContent = d.server.seq;
+  $('uptime').textContent = dur(Math.max(0, Math.floor((now - Date.parse(d.server.started_at)) / 1000))); $('version').textContent = d.server.version; $('seq').textContent = d.server.seq;
   $('f-version').textContent = `v${d.server.version}`; $('f-started').textContent = fmtAbs(d.server.started_at);
-  $('banner').textContent = d.server.persist_error ? `Persistence error: ${d.server.persist_error}. State stays in memory but is not being written to .tirith/.` : '';
+  const problems = [];
+  if (d.server.persist_error) problems.push(`Persistence error: ${d.server.persist_error}. State stays in memory but is not being written to .tirith/.`);
+  for (const e of d.server.load_errors || []) problems.push(`Skipped at startup: ${e.path}${e.line ? ` line ${e.line}` : ''}: ${e.error}. Fix the file and restart the daemon to load it.`);
+  $('banner').textContent = problems.join('\n');
 
   const c = d.counts;
   const expiring = d.claims.filter(x => { const l = (Date.parse(x.expires_at) - now) / 1000; return l > 0 && l < 120; }).length;
@@ -352,6 +406,7 @@ function render(d) {
     ['contracts', c.contracts, 'contracts', 'var(--gold)', ''],
     ['notices', c.notices, 'notices', 'var(--warn)', unacked ? [`${unacked} unacknowledged`, 'warn'] : ''],
     ['decisions', c.decisions, 'decisions', 'var(--accent)', ''],
+    ['memory', c.memory || 0, 'memory notes', 'var(--ok)', ''],
   ];
   $('tiles').innerHTML = tiles.map(([key, n, l, color, hint]) => {
     const [text, cls] = Array.isArray(hint) ? hint : [hint, ''];
@@ -366,8 +421,8 @@ function render(d) {
     d.agents.map(a => [who(a.agent), paths(a.paths), a.expires_at ? until(a.expires_at) : '<span class="dim">no claims</span>', `<span class="num">${a.tasks_in_progress}</span>`]));
 
   const claims = [...d.claims].sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
-  fill('claims', ['owner', 'paths', 'reason', 'claimed', 'lease'],
-    claims.map(x => [who(x.owner), paths(x.paths), esc(x.reason), ago(x.claimed_at), lease(x.claimed_at, x.expires_at, x.ttl_secs)]));
+  fill('claims', ['owner', 'paths', 'reason', 'notes on these paths', 'claimed', 'lease'],
+    claims.map(x => [who(x.owner), paths(x.paths, 6, 'cp:' + x.id), clamp(x.reason, 'cr:' + x.id), noteLinks(notesFor(d.memory, x.paths)), ago(x.claimed_at), lease(x.claimed_at, x.expires_at, x.ttl_secs)]));
 
   const counts = { all: d.tasks.length, open: d.tasks.length - states.filter(s => s.status === 'done').length,
     in_progress: inProgress, blocked, todo: states.filter(s => s.status === 'todo').length, done: states.filter(s => s.status === 'done').length };
@@ -381,14 +436,14 @@ function render(d) {
   fill('tasks', ['id', 'status', 'owner', 'pri', 'title', 'depends on', 'paths', 'last note', 'updated'],
     tasks.map(({ t, s }) => [short(t.id), `<span class="tag ${s.status}">${s.status.replace('_', ' ')}</span>`, who(s.owner || s.by),
       `<span class="pri${t.priority > 0 ? ' hi' : ''}">P${t.priority}</span>`,
-      `<div class="title" title="${esc(t.description || '')}">${esc(t.title)}</div>${t.description ? `<div class="note">${esc(t.description)}</div>` : ''}`,
-      (t.depends_on || []).map(short).join(' ') || '<span class="dim">—</span>', paths(t.paths),
-      s.status === 'blocked' && s.reason ? `<span class="note bad">${esc(s.reason)}</span>`
-        : (t.notes?.length ? `<span class="note" title="${esc(t.notes[t.notes.length - 1].by)}">${esc(t.notes[t.notes.length - 1].text)}</span>` : '<span class="dim">—</span>'),
+      `<div class="title">${esc(t.title)}</div>${clamp(t.description, 'td:' + t.id)}`,
+      (t.depends_on || []).map(short).join(' ') || '<span class="dim">—</span>', paths(t.paths, 6, 'tp:' + t.id),
+      s.status === 'blocked' && s.reason ? clamp(s.reason, 'tb:' + t.id, 'note bad')
+        : (t.notes?.length ? `<span class="dim" title="${esc(t.notes[t.notes.length - 1].by)}">${who(t.notes[t.notes.length - 1].by)}</span>${clamp(t.notes[t.notes.length - 1].text, 'tn:' + t.id)}` : '<span class="dim">—</span>'),
       t.updated_at ? ago(t.updated_at) : '<span class="dim">—</span>']), d.tasks.length);
 
   fill('contracts', ['name', 'kind', 'version', 'consumers', 'by', 'published', 'shape'],
-    d.contracts.map(x => [`<span class="title">${esc(x.name)}</span>${x.current.notes ? `<div class="note">${esc(x.current.notes)}</div>` : ''}`,
+    d.contracts.map(x => [`<span class="title">${esc(x.name)}</span>${clamp(x.current.notes, 'cn:' + x.id)}`,
       `<span class="tag kind">${esc(x.kind)}</span>`,
       `v${x.current.version}${x.history.length ? ` <span class="dim">(+${x.history.length} earlier)</span>` : ''}`,
       paths(x.consumers), who(x.current.published_by), ago(x.current.published_at),
@@ -399,12 +454,26 @@ function render(d) {
     [...d.notices].reverse().map(n => [short(n.id), `<span class="tag kind">${esc(n.kind)}</span>`,
       `<div class="title">${esc(n.summary)}</div>${n.from || n.to ? `<div class="note mono">${esc(n.from || '')} <span class="arrow">→</span> ${esc(n.to || '')}</div>` : ''}`,
       paths(n.affected_paths), who(n.published_by), ago(n.published_at),
-      (n.acked_by || []).length ? whoList(n.acked_by) : '<span class="note bad">nobody yet</span>']));
+      (n.acked_by || []).length ? whoList(n.acked_by) : '<span class="note bad">nobody yet</span>']), c.notices);
 
   fill('decisions', ['id', 'title', 'decision', 'rationale', 'affects', 'by', 'when'],
     [...d.decisions].reverse().map(x => [short(x.id), `<span class="title">${esc(x.title)}</span>`, esc(x.decision),
-      `${esc(x.rationale)}${(x.alternatives || []).length ? `<div class="note" title="${esc(x.alternatives.join('\n'))}">${x.alternatives.length} alternative${x.alternatives.length === 1 ? '' : 's'} considered</div>` : ''}`,
-      paths(x.affects_paths), who(x.recorded_by), ago(x.recorded_at)]));
+      `${clamp(x.rationale, 'dr:' + x.id)}${(x.alternatives || []).length ? `<div class="note" title="${esc(x.alternatives.join('\n'))}">${x.alternatives.length} alternative${x.alternatives.length === 1 ? '' : 's'} considered</div>` : ''}`,
+      paths(x.affects_paths), who(x.recorded_by), ago(x.recorded_at)]), c.decisions);
+
+  const memory = d.memory || [];
+  const kindCounts = { all: memory.length };
+  for (const k of MEMORY_KINDS) kindCounts[k] = memory.filter(n => n.kind === k).length;
+  $('memory-filters').innerHTML = ['all', ...MEMORY_KINDS.filter(k => kindCounts[k])]
+    .map(k => `<button class="btn${k === memoryKind ? ' on' : ''}" data-k="${k}">${k} <span class="dim">${kindCounts[k]}</span></button>`).join('');
+  for (const b of $('memory-filters').querySelectorAll('button')) b.onclick = () => { memoryKind = b.dataset.k; store.set('memoryKind', memoryKind); if (lastData) render(lastData); };
+  const notes = memory.filter(n => memoryKind === 'all' || n.kind === memoryKind)
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+  fill('memory', ['note', 'kind', 'paths', 'tags', 'by', 'updated'],
+    notes.map(n => [`<span class="title">${esc(n.title)}</span><div class="note mono">${esc(n.permalink)}</div>${n.excerpt ? `<div class="note">${esc(n.excerpt)}</div>` : ''}`,
+      `<span class="tag kind k-${esc(n.kind)}">${esc(n.kind)}</span>`, paths(n.paths),
+      (n.tags || []).length ? n.tags.map(t => `<code class="path">${esc(t)}</code>`).join(' ') : '<span class="dim">—</span>',
+      who(n.updated_by || n.author), ago(n.updated_at)]), memory.length);
 
   applyFilter();
 }
@@ -435,9 +504,17 @@ function liveTick() {
 async function tick() {
   if (paused) return;
   try {
-    const r = await fetch('/api/state', { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    lastData = await r.json();
+    const r = await fetch('/api/state', { cache: 'no-store', headers: etag ? { 'If-None-Match': etag } : {} });
+    if (r.status === 304 && lastData) {
+      // Nothing changed on the daemon; keep the last data and let the
+      // clock advance so relative times stay right.
+      const wall = Date.now(); serverNow += wall - lastWall; lastWall = wall;
+    } else {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      etag = r.headers.get('ETag');
+      lastData = await r.json();
+      serverNow = Date.parse(lastData.server.now) || Date.now(); lastWall = Date.now();
+    }
     lastOk = Date.now();
     render(lastData);
     if ($('banner').textContent.startsWith('Cannot reach')) $('banner').textContent = '';

@@ -7,10 +7,11 @@ binary is always called `tirith`. Pick whichever of these fits.
 ## One line (macOS, Linux)
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/eabz/tirith/main/install.sh | sh
+curl -LsSf https://eabz.github.io/tirith/install.sh | sh
 ```
 
-That shim fetches the installer attached to the latest GitHub release. It
+That URL is `install.sh` at the repository root, served by GitHub Pages.
+The shim fetches the installer attached to the latest GitHub release. It
 detects your OS and CPU, downloads the matching archive, verifies its
 checksum, installs `tirith` into `$CARGO_HOME/bin` (`~/.cargo/bin` by
 default, created if missing), and tells you if your `PATH` needs a line. Pin a version
@@ -25,8 +26,25 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/eabz/tirith/releases/la
 
 ## One line (Windows)
 
+In PowerShell:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/eabz/tirith/releases/latest/download/tirith-mcp-installer.ps1 | iex"
+irm https://eabz.github.io/tirith/install.ps1 | iex
+```
+
+From `cmd.exe`, or if your execution policy blocks it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://eabz.github.io/tirith/install.ps1 | iex"
+```
+
+`install.ps1` is the Windows twin of `install.sh`: it fetches the
+PowerShell installer attached to the latest release and runs it. It
+honours `$env:TIRITH_VERSION` to pin a release. The release asset itself
+works too:
+
+```powershell
+irm https://github.com/eabz/tirith/releases/latest/download/tirith-mcp-installer.ps1 | iex
 ```
 
 ## Prebuilt archives

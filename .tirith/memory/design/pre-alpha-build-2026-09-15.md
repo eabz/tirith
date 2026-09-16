@@ -1,12 +1,20 @@
 ---
 title: Pre-alpha build 2026-09-15
-type: note
+kind: research
+paths:
+- src/claims.rs
+- src/store.rs
+- src/contracts.rs
+- src/cli.rs
+- Cargo.toml
+- dist-workspace.toml
+- install.sh
 tags:
 - tirith
 - build
 - architecture
 - lessons
-permalink: tirith/design/pre-alpha-build-2026-09-15
+permalink: design/pre-alpha-build-2026-09-15
 ---
 
 # Pre-alpha build 2026-09-15

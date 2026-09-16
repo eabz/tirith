@@ -21,7 +21,13 @@ claims files before editing, reads change notices before acting, and
 publishes the shape of an interface before either side implements it.
 
 It works with anything that speaks MCP, over stdio or HTTP: Claude Code, Cursor,
-Codex, LangGraph, CrewAI, or a plain script. It is not a memory layer.
+Codex, LangGraph, CrewAI, or a plain script.
+
+It also remembers. Agents leave notes scoped to repository paths, so what
+one agent learned about a file reaches the next agent that claims it. That
+is memory a general-purpose memory server cannot deliver, because it does
+not know what anyone is about to edit. Tirith stores no conversation
+history and no embeddings.
 
 > **Status: pre-alpha.** All primitives, the CLI, persistence, and the
 > dashboard exist and are tested. Tool schemas may change before 1.0.
@@ -31,13 +37,13 @@ Codex, LangGraph, CrewAI, or a plain script. It is not a memory layer.
 macOS and Linux:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/eabz/tirith/main/install.sh | sh
+curl -LsSf https://eabz.github.io/tirith/install.sh | sh
 ```
 
-Windows:
+Windows (PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/eabz/tirith/releases/latest/download/tirith-mcp-installer.ps1 | iex"
+irm https://eabz.github.io/tirith/install.ps1 | iex
 ```
 
 With cargo (the package is `tirith-mcp`, the binary is `tirith`):
@@ -83,10 +89,13 @@ convention it has to follow.
 | **Contracts** | Interface shapes published and versioned before implementation. A new version notifies its consumers automatically. |
 | **Change notices** | "Renamed `X` to `Y`, these paths are affected." Dependents read them before acting and acknowledge when handled. |
 | **Decisions log** | Settled choices with rationale, so nothing is decided twice. |
+| **Memory notes** | Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and reachable by whoever claims the paths a note is about. |
 
 Claims and the task board are table stakes. Contracts and change notices are
-the reason Tirith exists: nothing else covers them today. The full tool
-reference is in [docs/1-about/04-primitives.md](docs/1-about/04-primitives.md).
+the reason Tirith exists: nothing else covers them today. Memory notes are
+what makes the other four worth keeping after the session ends. The full
+tool reference is in
+[docs/1-about/04-primitives.md](docs/1-about/04-primitives.md).
 
 ## Example
 
@@ -124,7 +133,21 @@ tirith notice list --agent bob --path src/client/ --unread
 # 20c12b66 contract  contract POST /api/sessions updated to v2 (was v1)  affects src/client/sessions.rs  by alice
 ```
 
-The full two-agent demo is [examples/demo.sh](examples/demo.sh).
+A note left for whoever edits a path next. Alice writes it once; it comes
+back on Bob's claim without anyone searching, as an excerpt, never a body:
+
+```bash
+tirith memory write --agent alice "Session ids are opaque" -k gotcha --path src/auth/ <<'NOTE'
+Tokens are opaque strings. Compare them, never parse them.
+NOTE
+
+tirith claim --agent bob --reason "fix login redirect" src/auth/login.rs
+# ok       bob  src/auth/login.rs  expires 18:30:00Z
+# memory:
+#   session-ids-are-opaque gotcha   18:20:00Z  paths src/auth  Session ids are opaque: Tokens are opaque strings. Compare them, never parse them.
+```
+
+The full demo is [examples/demo.sh](examples/demo.sh).
 
 ## CLI
 
@@ -140,6 +163,7 @@ tirith task     create | pull | update | list
 tirith contract publish | get | list
 tirith notice   publish | list | ack
 tirith decision record | list
+tirith memory   write | read | search | delete   # body from --body, --file, or stdin
 tirith tools                               # list tools with descriptions
 tirith call <tool> '<json>'                # call any tool directly
 ```
@@ -172,7 +196,7 @@ and the decision records in [docs/5-decisions/](docs/5-decisions/README.md).
 | [5-decisions](docs/5-decisions/) | Architecture decision records |
 | [6-agent-workflow](docs/6-agent-workflow/) | How agents work on this repo: Serena, memory, Tirith on itself |
 | [7-release](docs/7-release/) | Release process and version bumping |
-| [index.html](docs/index.html) | The landing page served at [eabz.github.io/tirith](https://eabz.github.io/tirith/) |
+| [index.html](index.html) | The landing page served at [eabz.github.io/tirith](https://eabz.github.io/tirith/) from the repository root; `docs/index.html` only redirects there |
 
 ## Contributing
 

@@ -5,7 +5,7 @@
 #![allow(clippy::print_stdout)]
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -51,6 +51,32 @@ struct Cli {
     command: Command,
 }
 
+/// Paging for list subcommands. Lists are newest first, 20 rows by default.
+#[derive(Debug, Args)]
+struct Page {
+    /// Rows to return (default 20, max 200).
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Only rows older than this: an RFC 3339 time, or the `next_before`
+    /// value a truncated listing printed.
+    #[arg(long)]
+    before: Option<String>,
+}
+
+impl Page {
+    fn args(&self) -> Value {
+        json!({ "limit": self.limit, "before": self.before })
+    }
+}
+
+/// Merges two JSON objects; `extra` wins on duplicate keys.
+fn merge(mut base: Value, extra: Value) -> Value {
+    if let (Value::Object(base), Value::Object(extra)) = (&mut base, extra) {
+        base.extend(extra);
+    }
+    base
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run the daemon for the repository at --root.
@@ -58,6 +84,10 @@ enum Command {
         /// Address to bind.
         #[arg(long, default_value = DEFAULT_BIND)]
         bind: SocketAddr,
+        /// Seconds an in-progress task's owner may be silent before the
+        /// task returns to todo (0 disables).
+        #[arg(long, default_value_t = tirith::state::DEFAULT_TASK_ORPHAN_SECS)]
+        task_orphan_secs: u64,
     },
     /// Serve MCP over stdin/stdout for clients that spawn servers themselves,
     /// starting the repository's daemon if none is running.
@@ -93,11 +123,16 @@ enum Command {
     Release { paths: Vec<String> },
     /// Renew every lease you hold.
     Renew,
-    /// List live claims.
+    /// List live claims: yours, plus any overlapping --path.
     Claims {
         /// Only claims overlapping this path.
         #[arg(long)]
         path: Option<String>,
+        /// The whole board, not just your own claims.
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        page: Page,
     },
     /// Task board.
     Task {
@@ -118,6 +153,11 @@ enum Command {
     Decision {
         #[command(subcommand)]
         command: DecisionCommand,
+    },
+    /// Memory notes scoped to repository paths.
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
     },
     /// List the tools the daemon exposes.
     Tools,
@@ -159,6 +199,9 @@ enum TaskCommand {
         /// Note to append; the reason when blocking.
         #[arg(short, long)]
         note: Option<String>,
+        /// Take or close a task another agent has in progress.
+        #[arg(long)]
+        force: bool,
     },
     /// List tasks.
     List {
@@ -166,6 +209,8 @@ enum TaskCommand {
         status: Option<String>,
         #[arg(long)]
         owner: Option<String>,
+        #[command(flatten)]
+        page: Page,
     },
 }
 
@@ -186,6 +231,10 @@ enum ContractCommand {
         consumers: Vec<String>,
         #[arg(short, long, default_value = "")]
         notes: String,
+        /// Refuse to publish unless the contract is at this version now
+        /// (0 for "does not exist yet"). Omit --consumer to keep the list.
+        #[arg(long, value_name = "N")]
+        expected_version: Option<u32>,
     },
     /// Fetch a contract by name or id.
     Get { name: String },
@@ -195,6 +244,8 @@ enum ContractCommand {
         path: Option<String>,
         #[arg(long)]
         kind: Option<String>,
+        #[command(flatten)]
+        page: Page,
     },
 }
 
@@ -227,6 +278,8 @@ enum NoticeCommand {
         /// Only notices you have not acknowledged.
         #[arg(long)]
         unread: bool,
+        #[command(flatten)]
+        page: Page,
     },
     /// Acknowledge a notice.
     Ack { notice_id: String },
@@ -253,6 +306,66 @@ enum DecisionCommand {
         path: Option<String>,
         #[arg(long)]
         query: Option<String>,
+        #[command(flatten)]
+        page: Page,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MemoryCommand {
+    /// Write a note, or update the note at --permalink.
+    ///
+    /// The body comes from --body, from --file (`-` for stdin), or from
+    /// stdin when neither is given, so multi-line Markdown needs no shell
+    /// quoting: `tirith memory write "Title" --path src/store.rs < note.md`.
+    Write {
+        title: String,
+        /// The Markdown body, inline.
+        #[arg(short, long, conflicts_with = "file")]
+        body: Option<String>,
+        /// Read the body from this file; `-` reads stdin.
+        #[arg(short, long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// fact, lesson, gotcha, handoff, research, or note (the default).
+        #[arg(short, long)]
+        kind: Option<String>,
+        /// Repo-relative paths the note is about.
+        #[arg(long = "path")]
+        paths: Vec<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Target an existing note instead of creating one.
+        #[arg(long)]
+        permalink: Option<String>,
+        /// Only update if the note's `updated_at` still equals this RFC 3339
+        /// time; otherwise the write is a conflict and nothing is lost.
+        #[arg(long, value_name = "RFC3339")]
+        if_updated_at: Option<String>,
+    },
+    /// Delete one note by permalink, id, or exact title.
+    Delete { name: String },
+    /// Read one note by permalink, id, or exact title.
+    Read {
+        name: String,
+        /// Also return notes related within this many relation hops.
+        #[arg(long, default_value_t = 0)]
+        depth: usize,
+    },
+    /// Search notes. With no query, lists the most recently updated.
+    Search {
+        query: Option<String>,
+        /// Only notes whose paths overlap this path.
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+        /// Only notes updated at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 
@@ -267,8 +380,12 @@ struct Remote {
 /// Parses arguments and runs the chosen command.
 pub(crate) async fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
-    if let Command::Serve { bind } = cli.command {
-        return serve(bind, cli.root).await;
+    if let Command::Serve {
+        bind,
+        task_orphan_secs,
+    } = cli.command
+    {
+        return serve(bind, task_orphan_secs, cli.root).await;
     }
     if let Command::Stdio { bind } = cli.command {
         return stdio_shim(bind, cli.root).await;
@@ -303,7 +420,8 @@ pub(crate) async fn run() -> Result<ExitCode> {
             }
             (tool, value)
         }
-        Command::Status => ("status".to_owned(), json!({})),
+        // A human is reading, so ask for the per-agent rows.
+        Command::Status => ("status".to_owned(), json!({ "verbose": true })),
         Command::Claim { reason, ttl, paths } => (
             "claim".to_owned(),
             json!({ "paths": paths, "reason": reason, "ttl_secs": ttl }),
@@ -313,11 +431,15 @@ pub(crate) async fn run() -> Result<ExitCode> {
             json!({ "paths": if paths.is_empty() { Value::Null } else { json!(paths) } }),
         ),
         Command::Renew => ("renew".to_owned(), json!({})),
-        Command::Claims { path } => ("claims_list".to_owned(), json!({ "path": path })),
+        Command::Claims { path, all, page } => (
+            "claims_list".to_owned(),
+            merge(json!({ "path": path, "all": all }), page.args()),
+        ),
         Command::Task { command } => task_call(command),
         Command::Contract { command } => contract_call(command)?,
         Command::Notice { command } => notice_call(command),
         Command::Decision { command } => decision_call(command),
+        Command::Memory { command } => memory_call(command)?,
     };
     call(&remote, &tool, arguments).await
 }
@@ -339,13 +461,18 @@ fn task_call(command: TaskCommand) -> (String, Value) {
             task_id,
             status,
             note,
+            force,
         } => (
             "task_update".to_owned(),
-            json!({ "task_id": task_id, "status": status, "note": note }),
+            json!({ "task_id": task_id, "status": status, "note": note, "force": force }),
         ),
-        TaskCommand::List { status, owner } => (
+        TaskCommand::List {
+            status,
+            owner,
+            page,
+        } => (
             "task_list".to_owned(),
-            json!({ "status": status, "owner": owner }),
+            merge(json!({ "status": status, "owner": owner }), page.args()),
         ),
     }
 }
@@ -358,17 +485,24 @@ fn contract_call(command: ContractCommand) -> Result<(String, Value)> {
             shape,
             consumers,
             notes,
+            expected_version,
         } => {
             let shape: Value = serde_json::from_str(&shape).context("--shape must be JSON")?;
+            // No --consumer means "keep the existing list" on a republish.
+            let consumers = if consumers.is_empty() {
+                Value::Null
+            } else {
+                json!(consumers)
+            };
             (
                 "contract_publish".to_owned(),
-                json!({ "name": name, "kind": kind, "shape": shape, "consumers": consumers, "notes": notes }),
+                json!({ "name": name, "kind": kind, "shape": shape, "consumers": consumers, "notes": notes, "expected_version": expected_version }),
             )
         }
         ContractCommand::Get { name } => ("contract_get".to_owned(), json!({ "name": name })),
-        ContractCommand::List { path, kind } => (
+        ContractCommand::List { path, kind, page } => (
             "contract_list".to_owned(),
-            json!({ "path": path, "kind": kind }),
+            merge(json!({ "path": path, "kind": kind }), page.args()),
         ),
     })
 }
@@ -390,9 +524,13 @@ fn notice_call(command: NoticeCommand) -> (String, Value) {
             path,
             since,
             unread,
+            page,
         } => (
             "notice_list".to_owned(),
-            json!({ "path": path, "since": since, "unread": unread }),
+            merge(
+                json!({ "path": path, "since": since, "unread": unread }),
+                page.args(),
+            ),
         ),
         NoticeCommand::Ack { notice_id } => {
             ("notice_ack".to_owned(), json!({ "notice_id": notice_id }))
@@ -412,14 +550,66 @@ fn decision_call(command: DecisionCommand) -> (String, Value) {
             "decision_record".to_owned(),
             json!({ "title": title, "decision": decision, "rationale": rationale, "alternatives": alternatives, "affects_paths": paths }),
         ),
-        DecisionCommand::List { path, query } => (
+        DecisionCommand::List { path, query, page } => (
             "decision_list".to_owned(),
-            json!({ "path": path, "query": query }),
+            merge(json!({ "path": path, "query": query }), page.args()),
         ),
     }
 }
 
-async fn serve(bind: SocketAddr, root: PathBuf) -> Result<ExitCode> {
+fn memory_call(command: MemoryCommand) -> Result<(String, Value)> {
+    Ok(match command {
+        MemoryCommand::Write {
+            title,
+            body,
+            file,
+            kind,
+            paths,
+            tags,
+            permalink,
+            if_updated_at,
+        } => {
+            let body = match (body, file) {
+                (Some(body), _) => body,
+                (None, Some(path)) if path.as_os_str() == "-" => read_stdin()?,
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?,
+                (None, None) => read_stdin()?,
+            };
+            (
+                "memory_write".to_owned(),
+                json!({ "title": title, "body": body, "kind": kind, "paths": paths, "tags": tags, "permalink": permalink, "if_updated_at": if_updated_at }),
+            )
+        }
+        MemoryCommand::Delete { name } => ("memory_delete".to_owned(), json!({ "name": name })),
+        MemoryCommand::Read { name, depth } => (
+            "memory_read".to_owned(),
+            json!({ "name": name, "depth": depth }),
+        ),
+        MemoryCommand::Search {
+            query,
+            path,
+            kind,
+            tag,
+            since,
+            limit,
+        } => (
+            "memory_search".to_owned(),
+            json!({ "query": query, "path": path, "kind": kind, "tag": tag, "since": since, "limit": limit }),
+        ),
+    })
+}
+
+fn read_stdin() -> Result<String> {
+    let body =
+        std::io::read_to_string(std::io::stdin()).context("reading the note body from stdin")?;
+    if body.trim().is_empty() {
+        anyhow::bail!("the note body is empty; pass --body, --file, or pipe Markdown on stdin");
+    }
+    Ok(body)
+}
+
+async fn serve(bind: SocketAddr, task_orphan_secs: u64, root: PathBuf) -> Result<ExitCode> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -436,15 +626,45 @@ async fn serve(bind: SocketAddr, root: PathBuf) -> Result<ExitCode> {
         clock: None,
     })
     .await?;
+    handle.set_task_orphan_secs(task_orphan_secs);
     println!("tirith {} serving {}", server::VERSION, root.display());
     println!("  mcp       {}", handle.mcp_url());
     println!("  dashboard {}", handle.dashboard_url());
-    tokio::signal::ctrl_c()
-        .await
-        .context("waiting for ctrl-c")?;
-    eprintln!("shutting down");
+    let why = wait_for_stop(&root).await?;
+    eprintln!("shutting down: {why}");
     handle.shutdown().await?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Resolves when the daemon should stop: on ctrl-c, on SIGTERM, or when
+/// the repository root it serves no longer exists (deleted or unmounted),
+/// so a daemon never outlives its repository.
+async fn wait_for_stop(root: &Path) -> Result<&'static str> {
+    let mut root_check = tokio::time::interval(std::time::Duration::from_secs(2));
+    root_check.tick().await; // the first tick is immediate
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("installing the SIGTERM handler")?;
+    #[cfg(not(unix))]
+    let mut terminate = std::future::pending::<()>();
+    loop {
+        #[cfg(unix)]
+        let sigterm = terminate.recv();
+        #[cfg(not(unix))]
+        let sigterm = &mut terminate;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result.context("waiting for ctrl-c")?;
+                return Ok("interrupted");
+            }
+            _ = sigterm => return Ok("terminated"),
+            _ = root_check.tick() => {
+                if !root.is_dir() {
+                    return Ok("repository root is gone");
+                }
+            }
+        }
+    }
 }
 
 async fn stdio_shim(bind: String, root: PathBuf) -> Result<ExitCode> {
@@ -463,11 +683,7 @@ async fn stdio_shim(bind: String, root: PathBuf) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn self_update(
-    version: Option<String>,
-    check: bool,
-    root: &std::path::Path,
-) -> Result<ExitCode> {
+async fn self_update(version: Option<String>, check: bool, root: &Path) -> Result<ExitCode> {
     let current = server::VERSION;
     let pinned = version.is_some();
     let target = match version {
@@ -606,10 +822,16 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
                     .trim()
                     .to_owned()
             };
-            format!(
+            let mut out = vec![format!(
                 "ok       {agent}  {paths}  expires {}",
                 when(&v["expires_at"])
-            )
+            )];
+            // Notes about the paths just claimed: what to know before editing.
+            if let Some(notes) = v["memory"].as_array().filter(|n| !n.is_empty()) {
+                out.push("memory:".to_owned());
+                out.extend(notes.iter().map(|n| format!("  {}", memory_line(n))));
+            }
+            out.join("\n")
         }
         ("claim", "conflict") => v["conflicts"]
             .as_array()
@@ -631,13 +853,17 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
             .unwrap_or_default(),
         ("release", "ok") => format!("released {agent}  {}", strs(&v["released"])),
         ("renew", "ok") => {
-            let latest = v["claims"]
-                .as_array()
-                .and_then(|cs| cs.iter().map(|c| when(&c["expires_at"])).max())
-                .unwrap_or_default();
-            format!("renewed  {agent}  until {latest}")
+            let until = if v["expires_at"].is_string() {
+                when(&v["expires_at"])
+            } else {
+                v["claims"]
+                    .as_array()
+                    .and_then(|cs| cs.iter().map(|c| when(&c["expires_at"])).max())
+                    .unwrap_or_default()
+            };
+            format!("renewed  {agent}  {} claims until {until}", v["count"])
         }
-        ("claims_list", "ok") => list(&v["claims"], "no live claims", |c| {
+        ("claims_list", "ok") => page(v, "claims", "no live claims", |c| {
             format!(
                 "{:<8} {:<28} {:<32} expires {}",
                 s(&c["owner"]),
@@ -662,11 +888,20 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
             if let Some(err) = v["persist_error"].as_str() {
                 out.push(format!("PERSIST ERROR: {err}"));
             }
+            if let Some(orphaned) = v["tasks_orphaned"].as_u64().filter(|n| *n > 0) {
+                out.push(format!(
+                    "  {orphaned} tasks returned to todo from silent owners"
+                ));
+            }
             out.push(list(&v["agents"], "no active agents", |a| {
+                let holds = if a["paths"].is_array() {
+                    strs(&a["paths"])
+                } else {
+                    format!("{} paths", a["paths_count"])
+                };
                 format!(
-                    "  {:<12} holds {}  in progress {}  lease ends {}",
+                    "  {:<12} holds {holds}  in progress {}  lease ends {}",
                     s(&a["agent"]),
-                    strs(&a["paths"]),
                     a["tasks_in_progress"],
                     when(&a["expires_at"])
                 )
@@ -675,7 +910,7 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
         }
         ("task_pull", "none") => "none     no unblocked todo tasks".to_owned(),
         ("task_create" | "task_pull" | "task_update", "ok") => task_line(&v["task"]),
-        ("task_list", "ok") => list(&v["tasks"], "no tasks", task_line),
+        ("task_list", "ok") => page(v, "tasks", "no tasks", task_line),
         ("contract_publish", "ok") => {
             let c = &v["contract"];
             let notice = v["notice_id"]
@@ -688,11 +923,40 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
             let c = &v["contract"];
             format!("{}\n{}", contract_line(c), pretty(&c["current"]["shape"]))
         }
-        ("contract_list", "ok") => list(&v["contracts"], "no contracts", contract_line),
+        ("contract_list", "ok") => page(v, "contracts", "no contracts", contract_line),
         ("notice_publish" | "notice_ack", "ok") => notice_line(&v["notice"]),
-        ("notice_list", "ok") => list(&v["notices"], "no notices", notice_line),
+        ("notice_list", "ok") => page(v, "notices", "no notices", notice_line),
         ("decision_record", "ok") => decision_line(&v["decision"]),
-        ("decision_list", "ok") => list(&v["decisions"], "no decisions", decision_line),
+        ("decision_list", "ok") => page(v, "decisions", "no decisions", decision_line),
+        ("memory_write", "ok") => {
+            let verb = if v["created"].as_bool() == Some(true) {
+                "created"
+            } else {
+                "updated"
+            };
+            format!("{verb:<8} {}", memory_line(&v["note"]))
+        }
+        ("memory_delete", "ok") => format!("deleted  {}", memory_line(&v["removed"])),
+        ("memory_read", "ok") => {
+            let mut out = vec![memory_full(&v["note"])];
+            if let Some(related) = v["related"].as_array().filter(|r| !r.is_empty()) {
+                out.push("related:".to_owned());
+                out.extend(related.iter().map(|n| format!("  {}", memory_line(n))));
+            }
+            out.join("\n")
+        }
+        ("memory_search", "ok") => page(v, "notes", "no notes", |hit| {
+            let note = if hit["note"].is_object() {
+                &hit["note"]
+            } else {
+                hit
+            };
+            let score = hit["score"]
+                .as_u64()
+                .map(|n| format!(" score {n}"))
+                .unwrap_or_default();
+            format!("{}{score}", memory_line(note))
+        }),
         (_, "ok" | "none") => pretty(v),
         (_, other) => {
             let message = s(&v["message"]);
@@ -703,6 +967,29 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
             }
         }
     }
+}
+
+/// A bounded listing: the rows under `key`, then how to see the rest when
+/// the server truncated it.
+fn page(v: &Value, key: &str, empty: &str, line: impl Fn(&Value) -> String) -> String {
+    // An empty listing may carry a reason, e.g. "you hold no paths".
+    let empty = v["message"].as_str().unwrap_or(empty);
+    let mut out = list(&v[key], empty, line);
+    if v["truncated"].as_bool() == Some(true) {
+        let shown = v[key].as_array().map_or(0, Vec::len);
+        let more = v["total"]
+            .as_u64()
+            .map(|t| t.saturating_sub(shown as u64))
+            .map_or(String::new(), |n| format!("{n} more"));
+        let cursor = v["next_before"]
+            .as_str()
+            .map(|b| format!(", pass --before {b}"))
+            .unwrap_or_default();
+        out.push_str("\n…");
+        out.push_str(&more);
+        out.push_str(&cursor);
+    }
+    out
 }
 
 fn list(items: &Value, empty: &str, line: impl Fn(&Value) -> String) -> String {
@@ -753,4 +1040,61 @@ fn decision_line(d: &Value) -> String {
         s(&d["title"]),
         s(&d["decision"])
     )
+}
+
+/// One line per note: permalink, kind, when, paths, title, and the first
+/// line of the body. Never the whole body; that is what `memory read` is for.
+fn memory_line(n: &Value) -> String {
+    let paths = strs(&n["paths"]);
+    let paths = if paths.is_empty() {
+        String::new()
+    } else {
+        format!("  paths {paths}")
+    };
+    // Claim responses and search rows carry a server-made `excerpt` and no
+    // body; a full note carries the body and no excerpt.
+    let summary = match n["excerpt"].as_str() {
+        Some(text) if !text.trim().is_empty() => text.trim().to_owned(),
+        _ => excerpt(s(&n["body"])),
+    };
+    format!(
+        "{} {:<8} {}{paths}  {}: {summary}",
+        s(&n["permalink"]),
+        s(&n["kind"]),
+        when(&n["updated_at"]),
+        s(&n["title"])
+    )
+}
+
+/// The whole note, for `memory read`.
+fn memory_full(n: &Value) -> String {
+    let mut out = vec![memory_line(n)];
+    let tags = strs(&n["tags"]);
+    if !tags.is_empty() {
+        out.push(format!("tags: {tags}"));
+    }
+    out.push(format!(
+        "by {} at {}  (created by {} at {})",
+        s(&n["updated_by"]),
+        when(&n["updated_at"]),
+        s(&n["author"]),
+        when(&n["created_at"])
+    ));
+    out.push(String::new());
+    out.push(s(&n["body"]).trim_end().to_owned());
+    out.join("\n")
+}
+
+/// The first non-empty, non-heading line of a body, cut to 160 characters.
+fn excerpt(body: &str) -> String {
+    let line = body
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("---"))
+        .unwrap_or_default();
+    let mut cut: String = line.chars().take(160).collect();
+    if cut.len() < line.len() {
+        cut.push('…');
+    }
+    cut
 }

@@ -1,11 +1,5 @@
 {
   "mcpServers": {
-    "basic-memory": {
-      "type": "stdio",
-      "command": "basic-memory",
-      "args": ["mcp", "--project", "tirith"],
-      "env": {}
-    },
     "tirith": {
       "type": "stdio",
       "command": "tirith",

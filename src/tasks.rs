@@ -8,11 +8,11 @@
 use std::fmt;
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::types::{AgentId, RepoPath, TaskId};
+use crate::types::{AgentId, Page, PrefixError, RepoPath, TaskId, resolve_prefix};
 
 /// Where a task is in its life, plus who is responsible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +178,16 @@ pub enum TaskError {
     /// The status string was not recognized.
     #[error("unknown status {0:?}; expected todo, in_progress, blocked, or done")]
     UnknownStatus(String),
+    /// The task is in progress under another agent; pass `force` to take it.
+    #[error("task {id} is in progress under {owner} since {since}; pass force to take it")]
+    OwnedByOther {
+        /// The task.
+        id: TaskId,
+        /// Who holds it.
+        owner: AgentId,
+        /// When it last changed under that owner.
+        since: DateTime<Utc>,
+    },
 }
 
 /// All tasks.
@@ -235,6 +245,41 @@ impl TaskBoard {
             .unwrap_or_else(|| unreachable!("just pushed")))
     }
 
+    /// Returns to `todo` every in-progress task whose owner has been silent
+    /// for longer than `threshold`, so a dead agent never blocks the tasks
+    /// that depend on its work. `last_seen` gives an owner's last activity;
+    /// an owner never seen counts as silent since the task last changed.
+    /// Returns the ids reaped, in board order.
+    pub fn reap_orphans(
+        &mut self,
+        last_seen: impl Fn(&AgentId) -> Option<DateTime<Utc>>,
+        threshold: Duration,
+        now: DateTime<Utc>,
+    ) -> Vec<TaskId> {
+        let mut reaped = Vec::new();
+        for task in &mut self.tasks {
+            let TaskState::InProgress { owner } = &task.state else {
+                continue;
+            };
+            let silent_since = last_seen(owner).unwrap_or(task.updated_at);
+            if now - silent_since <= threshold {
+                continue;
+            }
+            task.notes.push(TaskNote {
+                at: now,
+                by: owner.clone(),
+                text: format!(
+                    "returned to todo: owner {owner} silent since {}",
+                    silent_since.to_rfc3339_opts(SecondsFormat::Secs, true)
+                ),
+            });
+            task.state = TaskState::Todo;
+            task.updated_at = now;
+            reaped.push(task.id);
+        }
+        reaped
+    }
+
     /// Whether every dependency of `task` is done.
     pub fn is_unblocked(&self, task: &Task) -> bool {
         task.depends_on
@@ -271,6 +316,7 @@ impl TaskBoard {
         id: TaskId,
         status: TaskStatus,
         note: Option<String>,
+        force: bool,
         now: DateTime<Utc>,
     ) -> Result<&Task, TaskError> {
         let task = self
@@ -278,7 +324,23 @@ impl TaskBoard {
             .iter_mut()
             .find(|t| t.id == id)
             .ok_or(TaskError::NotFound(id))?;
-        let note = note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
+        let mut note = note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
+        if let TaskState::InProgress { owner } = &task.state {
+            if *owner != agent {
+                if !force {
+                    return Err(TaskError::OwnedByOther {
+                        id,
+                        owner: owner.clone(),
+                        since: task.updated_at,
+                    });
+                }
+                let forced = format!("forced by {agent}: was in progress under {owner}");
+                note = Some(match note {
+                    Some(text) => format!("{forced}. {text}"),
+                    None => forced,
+                });
+            }
+        }
         task.state = match status {
             TaskStatus::Todo => TaskState::Todo,
             TaskStatus::InProgress => TaskState::InProgress {
@@ -308,6 +370,28 @@ impl TaskBoard {
             .filter(|t| status.is_none_or(|s| t.state.status() == s))
             .filter(|t| owner.is_none_or(|o| t.state.owner() == Some(o)))
             .collect()
+    }
+
+    /// Most recently updated `limit` tasks matching the filters and
+    /// updated before `before`. See [`Page`].
+    pub fn list_page(
+        &self,
+        status: Option<TaskStatus>,
+        owner: Option<&AgentId>,
+        before: Option<&(DateTime<Utc>, TaskId)>,
+        limit: usize,
+    ) -> Page<&Task> {
+        Page::newest_first(
+            self.list(status, owner),
+            |t| (t.updated_at, t.id),
+            before,
+            limit,
+        )
+    }
+
+    /// Resolves a full id or a unique prefix to a task id.
+    pub fn resolve_id(&self, raw: &str) -> Result<TaskId, PrefixError> {
+        resolve_prefix("task", self.tasks.iter().map(|t| t.id), raw)
     }
 }
 
@@ -373,7 +457,7 @@ mod tests {
         assert_eq!(board.pull(agent("b"), t0()).unwrap().id, first);
         assert!(board.pull(agent("c"), t0()).is_none());
         board
-            .update(agent("b"), first, TaskStatus::Done, None, t0())
+            .update(agent("b"), first, TaskStatus::Done, None, false, t0())
             .unwrap();
         assert_eq!(board.pull(agent("c"), t0()).unwrap().id, second);
     }
@@ -408,6 +492,7 @@ mod tests {
                 id,
                 TaskStatus::Blocked,
                 Some("waiting on api".into()),
+                false,
                 t0(),
             )
             .unwrap();
@@ -436,5 +521,106 @@ mod tests {
         );
         assert_eq!("DONE".parse::<TaskStatus>().unwrap(), TaskStatus::Done);
         assert!("nope".parse::<TaskStatus>().is_err());
+    }
+
+    #[test]
+    fn a_foreign_agent_cannot_take_or_close_an_in_progress_task() {
+        let mut board = TaskBoard::default();
+        let id = board
+            .create(agent("a"), task("x", 0, vec![]), t0())
+            .unwrap()
+            .id;
+        board.pull(agent("b"), t0()).unwrap();
+        let err = board
+            .update(agent("c"), id, TaskStatus::Done, None, false, t0())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TaskError::OwnedByOther {
+                id,
+                owner: agent("b"),
+                since: t0()
+            }
+        );
+        assert_eq!(board.get(id).unwrap().state.owner(), Some(&agent("b")));
+        // The owner itself, and a forced caller, may change it.
+        board
+            .update(
+                agent("b"),
+                id,
+                TaskStatus::Blocked,
+                Some("api".into()),
+                false,
+                t0(),
+            )
+            .unwrap();
+        board
+            .update(agent("b"), id, TaskStatus::InProgress, None, false, t0())
+            .unwrap();
+        let forced = board
+            .update(
+                agent("c"),
+                id,
+                TaskStatus::Done,
+                Some("taking over".into()),
+                true,
+                t0(),
+            )
+            .unwrap();
+        assert_eq!(forced.state, TaskState::Done { by: agent("c") });
+        let last = forced.notes.last().unwrap();
+        assert_eq!(last.by, agent("c"));
+        assert_eq!(
+            last.text,
+            "forced by c: was in progress under b. taking over"
+        );
+    }
+
+    #[test]
+    fn silent_owners_lose_their_tasks_and_dependents_become_pullable() {
+        let mut board = TaskBoard::default();
+        let first = board
+            .create(agent("a"), task("first", 0, vec![]), t0())
+            .unwrap()
+            .id;
+        let second = board
+            .create(agent("a"), task("second", 0, vec![first]), t0())
+            .unwrap()
+            .id;
+        board.pull(agent("dead"), t0()).unwrap();
+        board.pull(agent("alive"), t0());
+        let threshold = Duration::seconds(1800);
+        let later = t0() + Duration::seconds(1801);
+        // Nothing to reap while everyone is within the threshold.
+        assert!(
+            board
+                .reap_orphans(|_| Some(t0()), threshold, t0())
+                .is_empty()
+        );
+        // `alive` was seen recently, `dead` only at t0 (and holds `first`).
+        let seen = |a: &AgentId| (a == &agent("alive")).then_some(later).or(Some(t0()));
+        assert_eq!(board.reap_orphans(seen, threshold, later), vec![first]);
+        let task = board.get(first).unwrap();
+        assert_eq!(task.state, TaskState::Todo);
+        assert_eq!(task.updated_at, later);
+        assert_eq!(
+            task.notes.last().unwrap().text,
+            "returned to todo: owner dead silent since 2026-09-15T18:00:00Z"
+        );
+        // Not pullable until `first` is done; a live agent finishes it.
+        assert!(!board.is_unblocked(board.get(second).unwrap()));
+        board.pull(agent("alive"), later).unwrap();
+        board
+            .update(agent("alive"), first, TaskStatus::Done, None, false, later)
+            .unwrap();
+        assert!(board.is_unblocked(board.get(second).unwrap()));
+        assert_eq!(board.pull(agent("alive"), later).unwrap().id, second);
+        // An owner never seen counts as silent since the task last changed.
+        let none = board.reap_orphans(|_| None, threshold, later + Duration::seconds(1));
+        assert!(none.is_empty(), "alive's task changed at `later`");
+        assert_eq!(
+            board.reap_orphans(|_| None, threshold, later + Duration::seconds(1801)),
+            vec![second]
+        );
     }
 }

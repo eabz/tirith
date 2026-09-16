@@ -149,7 +149,11 @@ commit. There is no build step; the file is served as committed.
 
 ## Installer shim
 
-`install.sh` at the repo root is a stable URL that redirects to the
-release installer, so documentation never has to change when asset names
-or hosting change. It takes `TIRITH_VERSION` to pin a release. Keep it
-POSIX `sh` and dependency-free.
+`install.sh` and `install.ps1` at the repo root are stable URLs that
+redirect to the release installers, so documentation never has to change
+when asset names or hosting change. GitHub Pages serves the repository
+root, which is why the documented commands are
+`https://eabz.github.io/tirith/install.sh` and `.../install.ps1`. Both
+honour `TIRITH_VERSION` to pin a release. Keep `install.sh` POSIX `sh` and
+dependency-free, and keep `install.ps1` compatible with Windows PowerShell
+5.1 (no PowerShell 7-only syntax).

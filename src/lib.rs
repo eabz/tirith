@@ -13,6 +13,7 @@
 //! - [`contracts`]: interface shapes published before implementation.
 //! - [`notices`]: change notices dependents read before acting.
 //! - [`decisions`]: settled choices so nothing is decided twice.
+//! - [`memory`]: path-scoped notes an agent leaves for whoever comes next.
 //!
 //! [`stdio`] is the shim MCP clients spawn per session; it starts the
 //! daemon when needed and proxies to it. [`update`] replaces the running
@@ -27,6 +28,7 @@ pub mod clock;
 pub mod contracts;
 pub mod dashboard;
 pub mod decisions;
+pub mod memory;
 pub mod notices;
 pub mod server;
 pub mod state;

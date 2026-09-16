@@ -110,8 +110,12 @@ with MCPServerAdapter({"url": "http://127.0.0.1:7477/mcp",
 ### Plain script (curl)
 
 Streamable HTTP is JSON-RPC over POST. Initialize once, then call tools.
-The `Mcp-Session-Id` header returned by `initialize` must be echoed back.
-Tirith answers with plain JSON (not SSE) so `curl` output is readable.
+The `Mcp-Session-Id` header returned by `initialize` must be echoed back,
+and the `Accept` header must list both `application/json` and
+`text/event-stream` or the daemon answers 406. Every reply, including a
+single JSON-RPC response, comes back framed as a server-sent event: a
+`data:` line carrying the JSON. Pipe through `grep`/`cut` to get the JSON
+alone.
 
 ```bash
 curl -s http://127.0.0.1:7477/mcp \
@@ -123,11 +127,27 @@ curl -s http://127.0.0.1:7477/mcp \
 curl -s http://127.0.0.1:7477/mcp \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -H "Mcp-Session-Id: $SESSION" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"claim","arguments":{"agent":"script-1","paths":["src/auth/"],"reason":"batch rename"}}}'
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 ```
 
-For anything beyond a demo, use the `tirith` CLI instead; it handles the
-session and prints structured output.
+```bash
+curl -s http://127.0.0.1:7477/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -H "Mcp-Session-Id: $SESSION" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"claim","arguments":{"agent":"script-1","paths":["src/auth/"],"reason":"batch rename"}}}' \
+  | grep '^data: {' | cut -c7-
+```
+
+That is the whole handshake: `initialize` (kept with `-i` so the
+`Mcp-Session-Id` response header is visible; copy it into `SESSION`), the
+`notifications/initialized` notice, which gets an empty 202, and then any
+number of `tools/call` requests carrying the header. The tool result is in
+`result.structuredContent`; `result.content` is a one-line text summary
+for clients that show only text.
+
+Scripts and other agents should not do this by hand: the `tirith` CLI
+speaks the protocol, keeps the session, and prints compact text or
+`--json`, which is why it exists (decision 48538341).
 
 ### Verifying the connection
 

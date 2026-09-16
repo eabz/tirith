@@ -2,8 +2,10 @@
 
 Tirith is an MCP coordination server that keeps parallel coding agents from
 stepping on each other in one repository: file claims with leases, a task
-board, published interface contracts, change notices, and a decisions log.
-It is written in Rust. It is not a memory layer.
+board, published interface contracts, change notices, a decisions log, and
+memory notes scoped to repository paths. It is written in Rust. It is not a
+general-purpose memory server: it keeps only knowledge tied to the paths it
+coordinates, never conversation history or embeddings.
 
 This file is the contract between the humans and every agent (Claude Code,
 Cursor, Codex, plain scripts) that edits this repo. Read it fully before
@@ -63,17 +65,18 @@ Details: `docs/6-agent-workflow/01-serena.md`.
 
 Two layers, with different jobs:
 
-- **Serena memories** (`.serena/memories/`): short, project-scoped facts for
-  navigation and workflow. Committed.
-- **Basic Memory** (`.memory/`, configured via `.mcp.json`, see
-  `docs/6-agent-workflow/02-memory.md`): long-form notes, design
-  reasoning, and research shared across Claude Code, Cursor, and scripts.
-  Stored as Markdown inside the repo and committed, so every contributor's
-  agents share it. Use `search_notes` before design work and `write_note`
-  when a session produced reasoning worth keeping.
+- **Tirith memory notes** (`.tirith/memory/`): durable knowledge about
+  specific paths in this repository, written with `memory_write` and found
+  with `memory_search`. Committed Markdown. Long design notes and research
+  live here too, scoped to the paths they concern. Start a session with
+  `memory_search` and no query, which is recent activity.
+- **Serena memories** (`.serena/memories/`): short facts for navigation
+  and workflow that are not tied to any one path. Committed.
 
 Do not store anything in memory that belongs in `docs/` or in an ADR.
-Memory is for what the repo does not already say.
+Memory is for what the repo does not already say. The line between the
+layers is the path: if you can name the files the knowledge is about, it is
+a Tirith memory note.
 
 ### Tirith (coordination between agents on this repo) — REQUIRED
 
@@ -84,14 +87,20 @@ at `http://127.0.0.1:7477` if none is running (dashboard at
 
 1. `claim` the files or directories you intend to edit before editing.
    If refused, do not edit; pick other work or coordinate with the owner.
-2. Read `notice_list` and `contract_list` for the area you are touching
-   before acting on it.
-3. Publish a `contract` before implementing either side of an interface
+   The `ok` reply is your brief: the unread notices, contracts, decisions,
+   and memory notes for those paths, five newest of each. Read it before
+   editing; `more` tells you whether to page with the list tools.
+2. Publish a `contract` before implementing either side of an interface
    another agent will consume.
-4. Publish a `notice` for every rename or signature change that affects
+3. Publish a `notice` for every rename or signature change that affects
    callers outside the files you claimed.
-5. `release` your claims when done. Record settled choices with
-   `decision_record`.
+4. `release` your claims when done. Record settled choices with
+   `decision_record`, and write what you learned about the paths you
+   touched with `memory_write`.
+
+Leases end after their TTL without activity, and after four TTLs (at most
+four hours) regardless; long sessions re-claim or `renew`. If any response
+carries `lost`, stop editing those paths and claim them again.
 
 If the `tirith` MCP server is unavailable in your session, the `tirith`
 binary is probably not installed or not on PATH; `cargo install --path .`
@@ -125,8 +134,12 @@ Full list with rationale and sources: `docs/4-style/01-rust-rules.md`.
 - Dead code: `pub(crate)` by default so `dead_code` can see it;
   `unreachable_pub` is on. Never `#[allow(dead_code)]` or underscore-prefix
   to keep something "for later". Delete it.
+- Cross-file input types (`NewMemory`, `NewTask`, and the like) are built
+  through a constructor in their owning module, never a struct literal in
+  another file; until a type has one, a new field and its call sites land
+  in one claim window by one agent. A red tree stops every session.
 - Modules: one primitive per module (`claims.rs`, `tasks.rs`,
-  `contracts.rs`, `notices.rs`, `decisions.rs`). All state mutation goes
+  `contracts.rs`, `notices.rs`, `decisions.rs`, `memory.rs`). All state mutation goes
   through `State` methods. `server.rs` only maps MCP tools to `State`
   calls and formats responses.
 
@@ -137,9 +150,10 @@ Full list with rationale and sources: `docs/4-style/01-rust-rules.md`.
   numbered sections). Images go in `docs/_static/images/`.
 - Do not create documentation outside `docs/` except `README.md`,
   `AGENTS.md`, `CLAUDE.md`, and `LICENSE`.
-- `.memory/` holds Basic Memory notes and is committed. It is memory,
+- `.tirith/memory/` holds memory notes and is committed. It is memory,
   not documentation; do not put docs there or notes in `docs/`.
 - `.tirith/runtime/` is gitignored runtime state. Never commit it.
+  Everything else under `.tirith/` is meant to be committed.
 
 ## 6. Git
 

@@ -1,9 +1,10 @@
 #!/bin/sh
 # Tirith installer shim.
 #
-#   curl -LsSf https://raw.githubusercontent.com/eabz/tirith/main/install.sh | sh
+#   curl -LsSf https://eabz.github.io/tirith/install.sh | sh
 #
-# This only fetches the real installer that cargo-dist attaches to every
+# GitHub Pages serves this repository's root, which is what makes the URL
+# short. This only fetches the real installer that cargo-dist attaches to every
 # GitHub release, so the URL above stays stable across releases even though
 # the release assets are named after the crate (tirith-mcp). Set
 # TIRITH_VERSION=v0.2.0 to pin a release. Everything else (install dir,

@@ -1,0 +1,50 @@
+{
+  "id": "fb46b65d-ad0d-425a-9957-f7f70ab14dd5",
+  "name": "Brief on claim",
+  "kind": "type",
+  "consumers": [
+    "src/server.rs",
+    "src/state.rs",
+    "src/notices.rs",
+    "src/cli.rs",
+    "src/client.rs",
+    "tests/http_roundtrip.rs",
+    "docs/1-about/04-primitives.md",
+    "AGENTS.md",
+    "docs/6-agent-workflow/03-tirith-dogfooding.md"
+  ],
+  "current": {
+    "version": 1,
+    "shape": {
+      "delivery": {
+        "rule": "notices shown in a brief are marked delivered to that agent so a second brief on the same paths does not repeat them; delivery is NOT an ack, acked_by is untouched and notice_ack stays explicit",
+        "scope": "delivered marks are per daemon lifetime, held in State, never written to notices.jsonl (a rewrite of the log on every claim would undo ADR-0010); after a daemon restart a notice may be briefed once more, which is harmless",
+        "unread_for_lists": "notice_list unread:true is unchanged and still lists delivered-but-unacked notices"
+      },
+      "ids": "8-char prefixes are accepted by notice_ack, contract_get and decision-related inputs per task 89b35cb6 (storage-claude); brief depends on that landing first",
+      "input": {
+        "new_field": "brief?: bool, default true",
+        "semantics": "when true, the ok response carries the brief sections below for the claimed paths only; brief:false returns the bare claim outcome (no notices/contracts/decisions/memory sections). No new tool, no new schema entry beyond one boolean.",
+        "tool": "claim"
+      },
+      "ordering": "every section newest first by its published_at / recorded_at / updated_at",
+      "output": {
+        "contracts": "newest 5 contracts consumed by the claimed paths: [{name, version, kind}]; fetch bodies with contract_get",
+        "decisions": "newest 5 decisions affecting the claimed paths: [{id: 8-char prefix, title}]",
+        "existing_fields": "claim_id, new_paths, renewed_paths, expires_at stay exactly as today",
+        "memory": "unchanged from contract \"Memory primitive\" v3: at most 5 newest notes, [{permalink, title, kind, paths, updated_at, excerpt<=160}], never a body; brief:false suppresses it like the other sections",
+        "more": "{notices: n, contracts: n, decisions: n, memory: n} = how many matching rows were NOT shown; always present when brief is on so the agent knows whether to page with the list tools",
+        "notices": "newest 5 unread-and-undelivered notices overlapping the claimed paths: [{id: 8-char prefix, kind, summary (<=160 chars, truncated with an ellipsis), by}]",
+        "omitted_when_empty": "each of notices/contracts/decisions/memory is absent (not []) when it has no rows; more is still present",
+        "size": "hard cap 4096 bytes for the serialized ok response. Enforced after rendering: while over the cap, drop the oldest row from the largest section and bump its `more` count. tests/http_roundtrip.rs asserts the cap with 40 max-length notices, 20 contracts, 40 decisions and 20 notes on one path.",
+        "where": "only on status ok; conflict responses are unchanged"
+      },
+      "protocol_after": "claim (brief on) -> edit -> notice_publish on breaking changes -> release. notice_list / contract_list / decision_list / memory_search remain for paging when `more` says there is more, and for paths you are not claiming.",
+      "task_pull": "out of scope for v1 of this contract; a follow-up may attach the same brief for a pulled task's paths"
+    },
+    "notes": "v1, designed 2026-09-16 by claude-token-diet for task 87e14abd. Purpose: replace the four reads the dogfooding protocol requires before every edit (notice_list, contract_list, decision_list, memory_search) with one claim response, cutting a work cycle from 7 round trips to 4 (measured on the swarm bench: 7.0 calls and ~2,350 shipped tokens per claim->release cycle with synthetic bodies; ~13k tokens per cycle against this repo's real state). Row shapes follow the compact-row direction of task 89b35cb6 (8-char ids, no nulls, no empty arrays) and reuse the Memory primitive v3 claim row unchanged. Default true because an opt-in flag is the step agents forget; brief:false exists for renew-style re-claims and for clients that render claims themselves. Implementation waits for src/server.rs and src/state.rs to be released in the agreed order (memory-layer, ci-speedup, storage-claude, then me). ADR: docs/5-decisions/0014-brief-on-claim.md.",
+    "published_by": "claude-token-diet",
+    "published_at": "2026-09-16T02:11:19.325100Z"
+  },
+  "history": []
+}

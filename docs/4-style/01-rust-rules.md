@@ -216,3 +216,24 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo machete
 cargo deny check
 ```
+
+## Cross-file types under a shared working tree
+
+Several agents edit this repository at once, so a change in one file must
+not leave another file uncompilable for someone else to fix.
+
+- A `pub` type that one module owns and another module constructs
+  (`NewMemory`, `NewTask`, `NewNotice`, `NewContract`, `NewDecision`, tool
+  input structs) provides a constructor for its required fields plus
+  `with_*` setters or a builder. Call sites in other files use that, never
+  a struct literal. A new optional field is then additive.
+- `..Default::default()` at a call site is not a substitute: under
+  `clippy::pedantic` the `needless_update` lint rejects the spread while
+  the struct has no extra field, so it cannot be put in place ahead of
+  time.
+- Until a type has a constructor, the field and every call site change
+  land together, in one claim window, by one agent who holds all the
+  files. Publish a `signature` notice naming the consumer paths first.
+
+Source: Tirith decisions 1a7acfb0 and 19c6595c, 2026-09-16, after one
+field on `NewMemory` broke the tree twice in twenty minutes.

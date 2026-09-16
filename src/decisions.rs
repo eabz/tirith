@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::types::{AgentId, DecisionId, RepoPath};
+use crate::types::{AgentId, DecisionId, Page, RepoPath};
 
 /// A recorded decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +131,23 @@ impl DecisionLog {
             .filter(|d| path.is_none_or(|p| d.affects(p)))
             .filter(|d| query.is_none_or(|q| d.matches(q)))
             .collect()
+    }
+
+    /// Newest `limit` decisions matching the filters and older than the
+    /// `(recorded_at, id)` cursor `before`. See [`Page`].
+    pub fn list_page(
+        &self,
+        path: Option<&RepoPath>,
+        query: Option<&str>,
+        before: Option<&(DateTime<Utc>, DecisionId)>,
+        limit: usize,
+    ) -> Page<&Decision> {
+        Page::newest_first(
+            self.list(path, query),
+            |d| (d.recorded_at, d.id),
+            before,
+            limit,
+        )
     }
 }
 
