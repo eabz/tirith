@@ -408,14 +408,13 @@ function render(d) {
   const states = d.tasks.map(taskState);
   const blocked = states.filter(s => s.status === 'blocked').length;
   const inProgress = states.filter(s => s.status === 'in_progress').length;
-  const unacked = d.notices.filter(n => !(n.acked_by || []).length).length;
   const tiles = [
     ['agents', d.agents.length, 'agents', 'var(--accent)', d.agents.some(a => a.tasks_in_progress) ? `${d.agents.reduce((n, a) => n + a.tasks_in_progress, 0)} working` : ''],
     ['claims', c.claims, 'claims', 'var(--ok)', expiring ? [`${expiring} expiring soon`, 'warn'] : ''],
     ['tasks', c.tasks_open, 'open tasks', 'var(--gold)', blocked ? [`${blocked} blocked`, 'bad'] : inProgress ? `${inProgress} in progress` : ''],
     ['tasks', c.tasks_done, 'done tasks', 'var(--dim)', ''],
     ['contracts', c.contracts, 'contracts', 'var(--gold)', ''],
-    ['notices', c.notices, 'notices', 'var(--warn)', unacked ? [`${unacked} unacknowledged`, 'warn'] : ''],
+    ['notices', c.notices, 'notices', 'var(--warn)', ''],
     ['decisions', c.decisions, 'decisions', 'var(--accent)', ''],
     ['memory', c.memory || 0, 'memory notes', 'var(--ok)', ''],
   ];
@@ -461,11 +460,11 @@ function render(d) {
       `<details class="shape" data-id="${esc(x.id)}"${openShapes.has(x.id) ? ' open' : ''}><summary>shape</summary><pre>${esc(JSON.stringify(x.current.shape, null, 2))}</pre></details>`]));
   for (const el of document.querySelectorAll('details.shape')) el.ontoggle = () => { el.open ? openShapes.add(el.dataset.id) : openShapes.delete(el.dataset.id); };
 
-  fill('notices', ['id', 'kind', 'summary', 'affects', 'by', 'when', 'acknowledged by'],
+  fill('notices', ['id', 'kind', 'summary', 'affects', 'by', 'when', 'seen by'],
     [...d.notices].reverse().map(n => [short(n.id), `<span class="tag kind">${esc(n.kind)}</span>`,
       `${clamp(n.summary, 'ns:' + n.id, 'title')}${n.from || n.to ? detail(`${n.from || ''} → ${n.to || ''}`, 'nf:' + n.id, 'note mono') : ''}`,
       paths(n.affected_paths, 6, 'np:' + n.id), who(n.published_by), ago(n.published_at),
-      (n.acked_by || []).length ? whoList(n.acked_by) : '<span class="note bad">nobody yet</span>']), c.notices);
+      (n.acked_by || []).length ? whoList(n.acked_by) : '<span class="dim">nobody yet</span>']), c.notices);
 
   fill('decisions', ['id', 'title', 'decision', 'rationale', 'affects', 'by', 'when'],
     [...d.decisions].reverse().map(x => [short(x.id), `<span class="title">${esc(x.title)}</span>`, detail(x.decision, 'dd:' + x.id),

@@ -224,13 +224,8 @@ async fn task_contract_notice_flow() {
     )
     .await;
     assert_eq!(unread["count"], 1);
-    let notice_id = unread["notices"][0]["id"].as_str().unwrap().to_owned();
-    call(
-        &handle,
-        "notice_ack",
-        json!({ "agent": "bob", "notice_id": notice_id }),
-    )
-    .await;
+    // Listing unread notices delivers them, and delivery is the
+    // acknowledgement (ADR-0021).
     let unread = call(
         &handle,
         "notice_list",
@@ -272,7 +267,6 @@ async fn dashboard_and_tool_list_are_served() {
         "contract_list",
         "notice_publish",
         "notice_list",
-        "notice_ack",
         "decision_record",
         "decision_list",
         "status",
@@ -538,32 +532,32 @@ async fn lists_are_bounded_and_page_without_gaps() {
 async fn id_prefixes_are_accepted_and_ambiguity_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
-    let published = call(
+    let created = call(
         &handle,
-        "notice_publish",
-        json!({ "agent": "alice", "kind": "rename", "summary": "s", "affected_paths": ["src"] }),
+        "task_create",
+        json!({ "agent": "alice", "title": "prefix me" }),
     )
     .await;
-    let full = published["notice"]["id"].as_str().unwrap().to_owned();
-    let acked = call(
+    let full = created["task"]["id"].as_str().unwrap().to_owned();
+    let updated = call(
         &handle,
-        "notice_ack",
-        json!({ "agent": "bob", "notice_id": &full[..8] }),
+        "task_update",
+        json!({ "agent": "bob", "task_id": &full[..8], "status": "in_progress" }),
     )
     .await;
-    assert_eq!(acked["status"], "ok", "{acked}");
+    assert_eq!(updated["status"], "ok", "{updated}");
     let missing = call(
         &handle,
-        "notice_ack",
-        json!({ "agent": "bob", "notice_id": "zzzz" }),
+        "task_update",
+        json!({ "agent": "bob", "task_id": "zzzz", "status": "done" }),
     )
     .await;
     assert_eq!(missing["status"], "not_found");
     // Every id starts with the empty string, so an empty prefix is refused too.
     let empty = call(
         &handle,
-        "notice_ack",
-        json!({ "agent": "bob", "notice_id": "" }),
+        "task_update",
+        json!({ "agent": "bob", "task_id": "", "status": "done" }),
     )
     .await;
     assert_ne!(empty["status"], "ok");
@@ -633,7 +627,10 @@ async fn status_stays_small_without_verbose_and_unread_defaults_to_held_paths() 
         json!({ "agent": "a1", "unread": true, "all": true }),
     )
     .await;
-    assert_eq!(all["count"], 2);
+    assert_eq!(
+        all["count"], 1,
+        "the scoped listing delivered `about m1`; only `about m7` is still unread: {all}"
+    );
     let nobody = call(
         &handle,
         "notice_list",
@@ -1072,7 +1069,10 @@ async fn claim_briefs_unread_notices_five_at_a_time() {
         json!({ "agent": "me", "path": "src/m/f.rs", "unread": true }),
     )
     .await;
-    assert_eq!(unread["total"], 40, "delivered is not acked");
+    assert_eq!(
+        unread["total"], 30,
+        "the two briefs delivered ten; delivery is the acknowledgement (ADR-0021)"
+    );
 
     let bare = call(
         &handle,

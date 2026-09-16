@@ -43,6 +43,12 @@ A change is done only when all of these hold:
 
 Never claim a step passed without running it in this session.
 
+Run the chain through `scripts/check.sh`, which prints one line per step
+and hides the rest: test output is tokens, and a full `cargo test` read
+into an agent's context costs thousands of them. While editing, run only
+the tests of the module you touched (`cargo test --lib claims`); run the
+full chain once, before you release your claims.
+
 ## 3. Tooling workflow
 
 ### Serena (code intelligence)

@@ -75,6 +75,7 @@ this table is being folded into `examples/swarm_bench.rs` (task c01a95cd).
 ## Running
 
 ```bash
+scripts/check.sh                 # the whole chain, one line per step
 cargo test                       # everything
 cargo test --lib                 # unit and state tests only, fastest
 cargo test --test http_roundtrip # one integration file

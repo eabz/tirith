@@ -144,6 +144,68 @@ async fn lease_renewals_reach_disk_by_shutdown() {
     assert_eq!(renewed, first + Duration::seconds(120));
 }
 
+/// ADR-0021: acknowledging a notice appends to a runtime log and leaves
+/// the committed notice log byte-identical; the ack survives a restart.
+#[tokio::test]
+async fn an_ack_never_rewrites_the_notice_log_and_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let url = handle.mcp_url();
+    let published = call_tool(
+        &url,
+        "notice_publish",
+        json!({ "agent": "alice", "kind": "rename", "summary": "x to y", "affected_paths": ["src/x.rs"] }),
+    )
+    .await
+    .unwrap();
+    let id = published["notice"]["id"].as_str().unwrap().to_owned();
+    handle.shutdown().await.unwrap();
+    let notices_path = dir.path().join(".tirith/notices.jsonl");
+    let before = fs::read(&notices_path).unwrap();
+
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let url = handle.mcp_url();
+    let unread = call_tool(
+        &url,
+        "notice_list",
+        json!({ "agent": "bob", "path": "src/x.rs", "unread": true }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unread["count"], 1, "{unread}");
+    assert_eq!(unread["notices"][0]["id"], id[..8], "{unread}");
+    // Listing it delivered it; delivery is the acknowledgement (ADR-0021).
+    handle.shutdown().await.unwrap();
+    assert_eq!(
+        fs::read(&notices_path).unwrap(),
+        before,
+        "notices.jsonl is byte-identical"
+    );
+    let acks = fs::read_to_string(dir.path().join(".tirith/runtime/notice_seen.jsonl")).unwrap();
+    assert_eq!(acks.lines().count(), 1, "{acks}");
+    assert!(acks.contains("\"bob\""));
+
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let url = handle.mcp_url();
+    let after = call_tool(
+        &url,
+        "notice_list",
+        json!({ "agent": "bob", "path": "src/x.rs", "unread": true }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(after["count"], 0, "the ack was replayed on load: {after}");
+    let carol = call_tool(
+        &url,
+        "notice_list",
+        json!({ "agent": "carol", "path": "src/x.rs", "unread": true }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(carol["count"], 1, "only bob acked: {carol}");
+    handle.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_bad_line_does_not_stop_the_daemon_and_is_reported() {
     let dir = tempfile::tempdir().unwrap();

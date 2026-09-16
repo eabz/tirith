@@ -287,7 +287,7 @@ impl MessageBoard {
             .iter()
             .filter(|m| self.undelivered(agent, m))
             .collect();
-        waiting.sort_by(|a, b| (b.at, b.id).cmp(&(a.at, a.id)));
+        waiting.sort_by_key(|m| std::cmp::Reverse((m.at, m.id)));
         let more = waiting.len().saturating_sub(INBOX_LIMIT);
         let messages: Vec<Message> = waiting.into_iter().take(INBOX_LIMIT).cloned().collect();
         if !messages.is_empty() {

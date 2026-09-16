@@ -39,7 +39,7 @@ src/types.rs       AgentId, RepoPath, and the id newtypes.
 src/claims.rs      Claim, overlap rules, lease logic. Pure, testable.
 src/tasks.rs       Task board.
 src/contracts.rs   Contracts with version history.
-src/notices.rs     Change notices with acknowledgements.
+src/notices.rs     Change notices and the per-agent seen log.
 src/decisions.rs   Decisions log.
 src/memory.rs      Memory notes and the Markdown file format they are
                    stored in. Pure: no rmcp, axum, tokio, or I/O.
@@ -108,8 +108,8 @@ JSON files under `.tirith/` in the target repository:
 Writes are incremental. `State` tracks what changed since the last write
 and produces a `Delta`: claims and tasks whole when they changed, only the
 contracts that changed, and for the two logs either the new lines to
-append or, after an in-place edit such as a notice acknowledgement, a full
-rewrite. A single background `Persister` task drains deltas in sequence
+append or, after a persist failure, a full rewrite; notice rows are never
+edited in place, deliveries go to their own runtime log. A single background `Persister` task drains deltas in sequence
 order. A tool call that mutated state waits until its change is on disk;
 concurrent callers wait on the same write, so a burst of claims from a
 swarm becomes one write of `claims.json`. Read-only calls never wait, and
@@ -133,8 +133,8 @@ The same HTTP server serves a read-only dashboard at `/` and its data at
 `/api/state`. The page is a single embedded HTML file with no external
 assets: it polls every two seconds and shows the Tirith logo, count tiles,
 agents, claims with lease progress bars, the task board with status
-filters, contracts with their current shape, change notices with who has
-acknowledged them, and decisions. A text filter narrows every table, and
+filters, contracts with their current shape, change notices with who has seen
+them, and decisions. A text filter narrows every table, and
 the page follows the system light or dark theme with a manual toggle. The
 logo is served from `/logo.png`, embedded from `src/dashboard-logo.png`
 (a 192px cut of `docs/_static/images/logo.jpeg`), and doubles as the

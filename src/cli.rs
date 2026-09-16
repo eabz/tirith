@@ -287,7 +287,7 @@ enum NoticeCommand {
         /// RFC 3339 timestamp.
         #[arg(long)]
         since: Option<String>,
-        /// Only notices you have not acknowledged.
+        /// Only notices not yet delivered to you.
         #[arg(long)]
         unread: bool,
         /// Every notice, not only those on the paths you hold.
@@ -296,8 +296,6 @@ enum NoticeCommand {
         #[command(flatten)]
         page: Page,
     },
-    /// Acknowledge a notice.
-    Ack { notice_id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -591,9 +589,6 @@ fn notice_call(command: NoticeCommand) -> (String, Value) {
                 page.args(),
             ),
         ),
-        NoticeCommand::Ack { notice_id } => {
-            ("notice_ack".to_owned(), json!({ "notice_id": notice_id }))
-        }
     }
 }
 
@@ -1111,7 +1106,7 @@ fn render_result(tool: &str, agent: &str, v: &Value) -> String {
             format!("{}\n{}", contract_line(c), pretty(&c["current"]["shape"]))
         }
         ("contract_list", "ok") => page(v, "contracts", "no contracts", contract_line),
-        ("notice_publish" | "notice_ack", "ok") => notice_line(&v["notice"]),
+        ("notice_publish", "ok") => notice_line(&v["notice"]),
         ("notice_list", "ok") => page(v, "notices", "no notices", notice_line),
         ("decision_record", "ok") => decision_line(&v["decision"]),
         ("decision_list", "ok") => page(v, "decisions", "no decisions", decision_line),

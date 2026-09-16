@@ -79,7 +79,7 @@ claims, notices and decisions (the first two rows are also pinned in
 
 | Surface | Budget |
 |---|---|
-| `tools/list`, 23 tools | under 7.8 KB (measured 6,656 B with 20 tools; 21 with `memory_delete` stayed under 7 KB; `message_send` and `message_list` added about 640 B of schema, ADR-0020) |
+| `tools/list`, 22 tools | under 7.8 KB (measured 6,656 B with 20 tools; `memory_delete` stayed under 7 KB; `message_send` and `message_list` added about 640 B, ADR-0020; `notice_ack` removed, ADR-0021) |
 | Text content block of any result | under 200 bytes, a status line, never JSON |
 | Any list tool with default arguments | at most 20 rows, newest first, `truncated` and a `before` cursor |
 | A list row | no null fields, no empty arrays, 8-char id prefix, seconds-precision timestamps |

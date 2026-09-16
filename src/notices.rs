@@ -2,10 +2,12 @@
 //!
 //! Dependents list notices for the paths they are about to touch before
 //! acting, then acknowledge the ones they have handled so `unread_by`
-//! filters stay meaningful. Acknowledgements are their own append-only
-//! log ([`NoticeAck`], ADR-0021): a notice row is never rewritten after
-//! it is published, and the in-memory `acked_by` is rebuilt from the log
-//! on load.
+//! acting. A notice counts as seen by an agent once Tirith has delivered
+//! it to that agent, in a brief or an unread listing; there is no manual
+//! acknowledgement (ADR-0021). Seen marks are their own append-only log
+//! ([`NoticeSeen`]): a notice row is never rewritten after it is
+//! published, and the in-memory `acked_by` set is rebuilt from the log on
+//! load.
 
 use std::fmt;
 use std::str::FromStr;
@@ -92,7 +94,8 @@ pub struct Notice {
     pub published_by: AgentId,
     /// When it was published.
     pub published_at: DateTime<Utc>,
-    /// Agents that have handled it.
+    /// Agents it has been delivered to (the wire keeps the historical
+    /// field name).
     pub acked_by: Vec<AgentId>,
 }
 
@@ -103,20 +106,20 @@ impl Notice {
     }
 
     /// Whether `agent` still needs to read this notice: they neither
-    /// published nor acknowledged it.
+    /// published it nor had it delivered.
     pub fn unread_by(&self, agent: &AgentId) -> bool {
         &self.published_by != agent && !self.acked_by.contains(agent)
     }
 }
 
-/// One acknowledgement: `agent` handled `notice_id` at `at`. Appended to
-/// its own runtime log so acking never rewrites the notices log.
+/// One delivery: `notice_id` was shown to `agent` at `at`. Appended to
+/// its own runtime log so marking never rewrites the notices log.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct NoticeAck {
-    /// The acknowledged notice.
+pub struct NoticeSeen {
+    /// The delivered notice.
     pub notice_id: NoticeId,
-    /// Who handled it.
+    /// Who saw it.
     pub agent: AgentId,
     /// When.
     pub at: DateTime<Utc>,
@@ -166,13 +169,13 @@ pub enum NoticeError {
     UnknownKind(String),
 }
 
-/// All notices, oldest first, plus the acknowledgement log in the order
-/// it was appended.
+/// All notices, oldest first, plus the seen log in the order it was
+/// appended.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoticeBoard {
     notices: Vec<Notice>,
     #[serde(default)]
-    acks: Vec<NoticeAck>,
+    seen: Vec<NoticeSeen>,
 }
 
 impl NoticeBoard {
@@ -180,7 +183,7 @@ impl NoticeBoard {
     pub fn from_notices(notices: Vec<Notice>) -> Self {
         Self {
             notices,
-            acks: Vec::new(),
+            seen: Vec::new(),
         }
     }
 
@@ -244,51 +247,37 @@ impl NoticeBoard {
         resolve_prefix("notice", self.notices.iter().map(|n| n.id), raw)
     }
 
-    /// Rebuilds a board from persisted notices and the acknowledgement
-    /// log, replaying each ack into the notice's `acked_by`. Acks for
-    /// notices that no longer exist are dropped.
-    pub fn from_parts(notices: Vec<Notice>, acks: Vec<NoticeAck>) -> Self {
+    /// Rebuilds a board from persisted notices and the seen log, replaying
+    /// each delivery into the notice's `acked_by`. Entries for notices
+    /// that no longer exist are dropped.
+    pub fn from_parts(notices: Vec<Notice>, seen: Vec<NoticeSeen>) -> Self {
         let mut board = Self {
             notices,
-            acks: Vec::with_capacity(acks.len()),
+            seen: Vec::with_capacity(seen.len()),
         };
-        for ack in acks {
-            if let Some(notice) = board.notices.iter_mut().find(|n| n.id == ack.notice_id) {
-                if !notice.acked_by.contains(&ack.agent) {
-                    notice.acked_by.push(ack.agent.clone());
+        for entry in seen {
+            if let Some(notice) = board.notices.iter_mut().find(|n| n.id == entry.notice_id) {
+                if !notice.acked_by.contains(&entry.agent) {
+                    notice.acked_by.push(entry.agent.clone());
                 }
-                board.acks.push(ack);
+                board.seen.push(entry);
             }
         }
         board
     }
 
-    /// The acknowledgement log, oldest first. The persister appends new
-    /// entries from here through a `LogCursor`.
-    pub fn acks(&self) -> &[NoticeAck] {
-        &self.acks
+    /// The seen log, oldest first. The persister appends new entries from
+    /// here through a `LogCursor`.
+    pub fn seen(&self) -> &[NoticeSeen] {
+        &self.seen
     }
 
-    /// Marks a notice as handled by `agent` without recording when.
-    /// Acknowledging twice is fine. Prefer [`ack_at`](Self::ack_at), which
-    /// also appends to the log that survives a restart.
-    pub fn ack(&mut self, agent: AgentId, id: NoticeId) -> Result<&Notice, NoticeError> {
-        let notice = self
-            .notices
-            .iter_mut()
-            .find(|n| n.id == id)
-            .ok_or(NoticeError::NotFound(id))?;
-        if !notice.acked_by.contains(&agent) {
-            notice.acked_by.push(agent);
-        }
-        Ok(notice)
-    }
-
-    /// Marks a notice as handled by `agent` at `now` and appends the ack
-    /// to the log. A repeated ack changes nothing and appends nothing.
-    pub fn ack_at(
+    /// Records that `id` was delivered to `agent` at `now`, appending to
+    /// the seen log the first time; a repeat changes nothing and appends
+    /// nothing. Called by brief on claim and by unread listings.
+    pub fn mark_seen(
         &mut self,
-        agent: AgentId,
+        agent: &AgentId,
         id: NoticeId,
         now: DateTime<Utc>,
     ) -> Result<&Notice, NoticeError> {
@@ -297,11 +286,11 @@ impl NoticeBoard {
             .iter_mut()
             .find(|n| n.id == id)
             .ok_or(NoticeError::NotFound(id))?;
-        if !notice.acked_by.contains(&agent) {
+        if !notice.acked_by.contains(agent) {
             notice.acked_by.push(agent.clone());
-            self.acks.push(NoticeAck {
+            self.seen.push(NoticeSeen {
                 notice_id: id,
-                agent,
+                agent: agent.clone(),
                 at: now,
             });
         }
@@ -377,8 +366,8 @@ mod tests {
                 .len(),
             2
         );
-        board.ack(agent("bob"), id).unwrap();
-        board.ack(agent("bob"), id).unwrap();
+        board.mark_seen(&agent("bob"), id, t0()).unwrap();
+        board.mark_seen(&agent("bob"), id, t0()).unwrap();
         let unread = board.list(&NoticeFilter {
             unread_by: Some(agent("bob")),
             ..NoticeFilter::default()
@@ -420,48 +409,48 @@ mod tests {
         );
         let ghost = NoticeId::new();
         assert_eq!(
-            board.ack(agent("a"), ghost).err(),
+            board.mark_seen(&agent("a"), ghost, t0()).err(),
             Some(NoticeError::NotFound(ghost))
         );
     }
 
     #[test]
-    fn acks_are_logged_once_and_replayed_on_load() {
+    fn deliveries_are_logged_once_and_replayed_on_load() {
         let mut board = NoticeBoard::default();
         let id = board
             .publish(agent("alice"), rename(&["src/auth"]), t0())
             .unwrap()
             .id;
         let later = t0() + Duration::seconds(5);
-        board.ack_at(agent("bob"), id, later).unwrap();
-        board.ack_at(agent("bob"), id, later).unwrap();
-        board.ack_at(agent("carol"), id, later).unwrap();
-        assert_eq!(board.acks().len(), 2, "one log entry per agent");
-        assert_eq!(board.acks()[0].agent, agent("bob"));
-        assert_eq!(board.acks()[0].at, later);
+        board.mark_seen(&agent("bob"), id, later).unwrap();
+        board.mark_seen(&agent("bob"), id, later).unwrap();
+        board.mark_seen(&agent("carol"), id, later).unwrap();
+        assert_eq!(board.seen().len(), 2, "one log entry per agent");
+        assert_eq!(board.seen()[0].agent, agent("bob"));
+        assert_eq!(board.seen()[0].at, later);
 
-        // What the store does on load: notice rows as published (no acks
-        // inside them) plus the ack log.
+        // What the store does on load: notice rows as published (no
+        // deliveries inside them) plus the seen log.
         let mut rows = board.notices().to_vec();
         for row in &mut rows {
             row.acked_by.clear();
         }
-        let reloaded = NoticeBoard::from_parts(rows, board.acks().to_vec());
+        let reloaded = NoticeBoard::from_parts(rows, board.seen().to_vec());
         assert_eq!(
             reloaded.notices()[0].acked_by,
             vec![agent("bob"), agent("carol")]
         );
         assert!(!reloaded.notices()[0].unread_by(&agent("bob")));
         assert!(reloaded.notices()[0].unread_by(&agent("dave")));
-        assert_eq!(reloaded.acks().len(), 2);
+        assert_eq!(reloaded.seen().len(), 2);
 
-        // An ack for a notice that no longer exists is dropped, not kept.
-        let stray = NoticeAck {
+        // An entry for a notice that no longer exists is dropped, not kept.
+        let stray = NoticeSeen {
             notice_id: NoticeId::new(),
             agent: agent("bob"),
             at: later,
         };
         let pruned = NoticeBoard::from_parts(board.notices().to_vec(), vec![stray]);
-        assert!(pruned.acks().is_empty());
+        assert!(pruned.seen().is_empty());
     }
 }

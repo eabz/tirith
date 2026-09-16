@@ -87,7 +87,7 @@ convention it has to follow.
 | **Claims** | Lease files or directories before editing. Overlaps are refused with the owner, reason, and expiry. Leases expire if the agent dies. |
 | **Task board** | Tasks with priority, owner, and dependencies. Agents pull the next unblocked task. |
 | **Contracts** | Interface shapes published and versioned before implementation. A new version notifies its consumers automatically. |
-| **Change notices** | "Renamed `X` to `Y`, these paths are affected." Dependents read them before acting and acknowledge when handled. |
+| **Change notices** | "Renamed `X` to `Y`, these paths are affected." Dependents get them in the brief that comes back with a claim, once each. |
 | **Decisions log** | Settled choices with rationale, so nothing is decided twice. |
 | **Memory notes** | Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and reachable by whoever claims the paths a note is about. |
 | **Messages** | Short notes between agents ("take task X", "server.rs is free"), delivered on the recipient's next call, so any MCP client can take part. Runtime only, never committed. |

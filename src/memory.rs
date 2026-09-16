@@ -839,7 +839,7 @@ impl MemoryBook {
     /// directory can produce, the one created later wins and the other is
     /// dropped, so the index and the notes never disagree.
     pub fn from_notes(mut notes: Vec<MemoryNote>) -> Self {
-        notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        notes.sort_by_key(|n| (n.created_at, n.id));
         let mut book = Self::default();
         for note in notes {
             if let Some(&existing) = book.by_permalink.get(&note.permalink) {
@@ -1086,13 +1086,9 @@ impl MemoryBook {
             .collect();
 
         if query.is_some() {
-            hits.sort_by(|a, b| {
-                b.score
-                    .cmp(&a.score)
-                    .then(b.note.updated_at.cmp(&a.note.updated_at))
-            });
+            hits.sort_by_key(|h| std::cmp::Reverse((h.score, h.note.updated_at)));
         } else {
-            hits.sort_by(|a, b| b.note.updated_at.cmp(&a.note.updated_at));
+            hits.sort_by_key(|h| std::cmp::Reverse(h.note.updated_at));
         }
         if let Some(limit) = filter.limit {
             hits.truncate(limit);
@@ -1105,7 +1101,7 @@ impl MemoryBook {
     /// This is what an agent is handed when it claims that path.
     pub fn for_path(&self, path: &RepoPath, limit: Option<usize>) -> Vec<&MemoryNote> {
         let mut found: Vec<&MemoryNote> = self.notes.iter().filter(|n| n.concerns(path)).collect();
-        found.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        found.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
         if let Some(limit) = limit {
             found.truncate(limit);
         }

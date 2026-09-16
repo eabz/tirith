@@ -33,7 +33,7 @@ skipped or repeated between pages because the cursor carries the row id.
 **Rows are compact.** List rows omit null fields and empty arrays, show
 ids as their first eight characters, round timestamps to seconds, and
 drop `acked_by` from notices. The tool that returns one item
-(`contract_get`, `task_update`, `notice_ack`, ...) returns it in full.
+(`contract_get`, `task_update`, ...) returns it in full.
 
 **A lost lease is reported once, on your next call.** If a lease you held
 has ended, the next response to you, whatever the tool, carries `lost`:
@@ -86,10 +86,10 @@ omitted when empty:
 `more` is always present and counts, per section, the matching rows that
 were left out; page with `notice_list`, `contract_list`, `decision_list`,
 or `memory_search` when it is not zero. A notice shown in a brief is
-marked delivered to you for the daemon's lifetime and is not shown again
-by your next claim, so repeated claims page through unread notices.
-Delivery is not an acknowledgement: `notice_list` with `unread: true`
-still lists it until you `notice_ack`. The whole `ok` response is capped
+marked seen by you, durably, and is not shown again by your next claim or
+by `notice_list` with `unread: true`, so repeated claims page through the
+notices you have not seen. There is no manual acknowledgement: delivery
+is the acknowledgement (decision 3f6d77d9). The whole `ok` response is capped
 at 4,096 bytes; when a brief would exceed that, the oldest rows of the
 largest section are dropped and its `more` count raised. **Read the brief
 before you edit.** It is the reason those rows were written.
@@ -182,8 +182,7 @@ overwriting.
 | Tool | Purpose |
 |---|---|
 | `notice_publish` | `kind` (`rename`, `signature`, `removed`, `moved`, `behavior`), `summary`, `from`, `to`, `affected_paths[]`, optional `contract_id`. Returns `notice` |
-| `notice_list` | `path` (notices whose `affected_paths` overlap it), `since` (RFC 3339), `unread` (boolean: only notices the caller neither published nor acknowledged), `all`; newest first, paged (`limit`, `before`). `unread` without `path` is scoped to the paths the caller currently holds claims on, so "what must I react to" is one call; `all: true` looks beyond them, and a caller holding nothing gets zero rows and a `message` saying so. Returns `count`, `total`, `truncated`, `next_before`, and `notices` |
-| `notice_ack` | `notice_id`. Marks it handled by `agent` so `unread` filtering works. Returns `notice` |
+| `notice_list` | `path` (notices whose `affected_paths` overlap it), `since` (RFC 3339), `unread` (boolean: only notices never delivered to the caller; listing them marks them seen), `all`; newest first, paged (`limit`, `before`). `unread` without `path` is scoped to the paths the caller currently holds claims on, so "what must I react to" is one call; `all: true` looks beyond them, and a caller holding nothing gets zero rows and a `message` saying so. Returns `count`, `total`, `truncated`, `next_before`, and `notices` |
 
 A sixth kind, `contract`, is emitted automatically when a contract gets a
 new version; agents do not publish it themselves.

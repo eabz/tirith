@@ -45,6 +45,9 @@ const TASKS_FILE: &str = "runtime/tasks.json";
 const META_FILE: &str = "runtime/meta.json";
 const DAEMON_FILE: &str = "runtime/daemon.json";
 const NOTICES_FILE: &str = "notices.jsonl";
+/// Who acknowledged which notice: runtime only, so acking never rewrites
+/// the committed notice log (ADR-0021).
+const NOTICE_SEEN_FILE: &str = "runtime/notice_seen.jsonl";
 /// Agent-to-agent messages: runtime only, never committed (ADR-0020).
 const MESSAGES_FILE: &str = "runtime/messages.jsonl";
 const DECISIONS_FILE: &str = "decisions.jsonl";
@@ -214,6 +217,7 @@ impl JsonStore {
             tasks: self.read_or_default(TASKS_FILE, &mut errors)?,
             contracts: self.load_contracts(&mut errors)?,
             notices: self.read_log(NOTICES_FILE, &mut errors)?,
+            notice_seen: self.read_log(NOTICE_SEEN_FILE, &mut errors)?,
             decisions: self.read_log(DECISIONS_FILE, &mut errors)?,
             memory: self.load_memory(&mut errors)?,
             messages: self.read_log(MESSAGES_FILE, &mut errors)?,
@@ -416,6 +420,7 @@ impl JsonStore {
             self.remove_note_file(*id, &mut dirs)?;
         }
         self.write_log(NOTICES_FILE, &delta.notices, &mut dirs)?;
+        self.write_log(NOTICE_SEEN_FILE, &delta.notice_seen, &mut dirs)?;
         self.write_log(DECISIONS_FILE, &delta.decisions, &mut dirs)?;
         self.write_log(MESSAGES_FILE, &delta.messages, &mut dirs)?;
         sync_dirs(&dirs)?;
@@ -971,6 +976,7 @@ mod tests {
             .unwrap();
         Snapshot {
             messages: Vec::new(),
+            notice_seen: Vec::new(),
             seq: 7,
             claims: claims.claims().to_vec(),
             tasks: vec![],
@@ -1068,6 +1074,7 @@ mod tests {
         store
             .apply(&Delta {
                 messages: Log::Unchanged,
+                notice_seen: Log::Unchanged,
                 seq: 9,
                 notices: Log::Rewritten(loaded.notices.clone()),
                 ..Delta::default()
@@ -1097,6 +1104,7 @@ mod tests {
         let err = store
             .apply(&Delta {
                 messages: Log::Unchanged,
+                notice_seen: Log::Unchanged,
                 seq: 8,
                 contracts: snapshot.contracts.clone(),
                 ..Delta::default()
@@ -1161,6 +1169,7 @@ mod tests {
         store
             .apply(&Delta {
                 messages: Log::Unchanged,
+                notice_seen: Log::Unchanged,
                 seq: 8,
                 notices: Log::Appended(notices[..2].to_vec()),
                 ..Delta::default()
@@ -1172,6 +1181,7 @@ mod tests {
         store
             .apply(&Delta {
                 messages: Log::Unchanged,
+                notice_seen: Log::Unchanged,
                 seq: 9,
                 notices: Log::Appended(notices[2..].to_vec()),
                 ..Delta::default()
@@ -1192,6 +1202,7 @@ mod tests {
         store
             .apply(&Delta {
                 messages: Log::Unchanged,
+                notice_seen: Log::Unchanged,
                 seq: 10,
                 notices: Log::Rewritten(notices[..1].to_vec()),
                 ..Delta::default()

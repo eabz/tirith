@@ -28,7 +28,9 @@ use crate::memory::{MemoryBook, MemoryError, MemoryNote, MemorySearch, MemoryWri
 use crate::messages::{
     BROADCAST_WINDOW, Inbox, Message, MessageBoard, MessageError, MessageFilter, NewMessage,
 };
-use crate::notices::{NewNotice, Notice, NoticeBoard, NoticeError, NoticeFilter, NoticeKind};
+use crate::notices::{
+    NewNotice, Notice, NoticeBoard, NoticeError, NoticeFilter, NoticeKind, NoticeSeen,
+};
 use crate::store::LoadError;
 use crate::tasks::{NewTask, Task, TaskBoard, TaskError, TaskStatus};
 use crate::types::{
@@ -49,6 +51,9 @@ pub struct Snapshot {
     pub contracts: Vec<Contract>,
     /// All notices.
     pub notices: Vec<Notice>,
+    /// Who acknowledged which notice, oldest first (runtime only).
+    #[serde(default)]
+    pub notice_seen: Vec<NoticeSeen>,
     /// All decisions.
     pub decisions: Vec<Decision>,
     /// All memory notes.
@@ -213,6 +218,8 @@ pub struct Delta {
     pub contracts: Vec<Contract>,
     /// Notice log changes.
     pub notices: Log<Notice>,
+    /// Acknowledgement log changes (runtime only, ADR-0021).
+    pub notice_seen: Log<NoticeSeen>,
     /// Decision log changes.
     pub decisions: Log<Decision>,
     /// Only the memory notes that changed.
@@ -232,6 +239,7 @@ impl Delta {
             tasks: Some(snapshot.tasks.clone()),
             contracts: snapshot.contracts.clone(),
             notices: Log::Rewritten(snapshot.notices.clone()),
+            notice_seen: Log::Rewritten(snapshot.notice_seen.clone()),
             decisions: Log::Rewritten(snapshot.decisions.clone()),
             memory: snapshot.memory.clone(),
             memory_removed: Vec::new(),
@@ -352,6 +360,8 @@ struct Inner {
     contracts_changed: ChangedIds<ContractId>,
     memory_changed: ChangedIds<MemoryId>,
     notices_log: LogCursor,
+    /// The acknowledgement log's cursor; acks never rewrite notices.jsonl.
+    seen_log: LogCursor,
     decisions_log: LogCursor,
     /// Agent-to-agent messages and who has received what (ADR-0020).
     messages: MessageBoard,
@@ -371,9 +381,6 @@ struct Inner {
     /// Leases that ended recently: reported once to their owner, and
     /// visible to whoever claims the path next (ADR-0015). Not persisted.
     reaped: Reaped,
-    /// Notices already shown to each agent in a brief, for the daemon's
-    /// lifetime. Not an acknowledgement and never persisted (ADR-0014).
-    delivered: BTreeMap<AgentId, BTreeSet<NoticeId>>,
 }
 
 impl Inner {
@@ -383,6 +390,7 @@ impl Inner {
             || self.tasks_dirty
             || !self.contracts_changed.is_empty()
             || self.notices_log.is_dirty(self.notices.notices().len())
+            || self.seen_log.is_dirty(self.notices.seen().len())
             || self
                 .decisions_log
                 .is_dirty(self.decisions.decisions().len())
@@ -409,6 +417,15 @@ impl State {
         // to match on the next persist.
         let loaded_messages = snapshot.messages.len();
         let messages = MessageBoard::from_messages(snapshot.messages, started_at);
+        // Acks for notices that no longer exist are dropped by from_parts;
+        // the log is rewritten to match when that happens.
+        let loaded_seen = snapshot.notice_seen.len();
+        let notices_log = LogCursor::new(snapshot.notices.len());
+        let notices = NoticeBoard::from_parts(snapshot.notices, snapshot.notice_seen);
+        let mut seen_log = LogCursor::new(notices.seen().len());
+        if notices.seen().len() != loaded_seen {
+            seen_log.mark_rewrite();
+        }
         let mut messages_log = LogCursor::new(messages.messages().len());
         if messages.messages().len() != loaded_messages {
             messages_log.mark_rewrite();
@@ -418,8 +435,9 @@ impl State {
                 claims: ClaimBook::from_claims(snapshot.claims),
                 tasks: TaskBoard::from_tasks(snapshot.tasks),
                 contracts: ContractRegistry::from_contracts(snapshot.contracts),
-                notices_log: LogCursor::new(snapshot.notices.len()),
-                notices: NoticeBoard::from_notices(snapshot.notices),
+                notices_log,
+                notices,
+                seen_log,
                 decisions_log: LogCursor::new(snapshot.decisions.len()),
                 decisions: DecisionLog::from_decisions(snapshot.decisions),
                 memory: Arc::new(MemoryBook::from_notes(snapshot.memory)),
@@ -437,7 +455,6 @@ impl State {
                 ),
                 tasks_orphaned: 0,
                 reaped: Reaped::default(),
-                delivered: BTreeMap::new(),
             }),
             clock,
             started_at,
@@ -556,6 +573,7 @@ impl State {
                 .contracts_changed
                 .take(inner.contracts.contracts(), |c| c.id),
             notices: inner.notices_log.take(inner.notices.notices()),
+            notice_seen: inner.seen_log.take(inner.notices.seen()),
             decisions: inner.decisions_log.take(inner.decisions.decisions()),
             memory: inner.memory_changed.take(inner.memory.notes(), |n| n.id),
             memory_removed: inner.memory_changed.take_removed(),
@@ -571,6 +589,7 @@ impl State {
         inner.tasks_dirty = true;
         inner.contracts_changed.mark_all();
         inner.notices_log.mark_rewrite();
+        inner.seen_log.mark_rewrite();
         inner.decisions_log.mark_rewrite();
         inner.memory_changed.mark_all();
         inner.messages_log.mark_rewrite();
@@ -781,17 +800,15 @@ impl State {
 
     /// Notices matching `filter`.
     pub fn notices(&self, agent: Option<&AgentId>, filter: &NoticeFilter) -> Vec<Notice> {
-        self.access(agent, |inner, _| {
-            inner.notices.list(filter).into_iter().cloned().collect()
-        })
-    }
-
-    /// Acknowledges a notice.
-    pub fn notice_ack(&self, agent: AgentId, id: NoticeId) -> Result<Notice, NoticeError> {
-        self.access(Some(&agent.clone()), |inner, _| {
-            let notice = inner.notices.ack(agent, id)?.clone();
-            inner.notices_log.mark_rewrite();
-            Ok(notice)
+        self.access(agent, |inner, now| {
+            let found: Vec<Notice> = inner.notices.list(filter).into_iter().cloned().collect();
+            mark_delivered(
+                inner,
+                filter.unread_by.as_ref(),
+                found.iter().map(|n| n.id),
+                now,
+            );
+            found
         })
     }
 
@@ -905,14 +922,12 @@ impl State {
     /// unread and undelivered notices, contracts, decisions and memory
     /// notes touching `paths`, each capped at [`BRIEF_LIMIT`].
     ///
-    /// Notices returned are marked delivered to `agent` for the daemon's
-    /// lifetime, so the next brief on the same paths shows the next ones
-    /// instead of repeating these. Delivery is not an acknowledgement and
-    /// is never persisted.
+    /// Notices returned are marked seen by `agent` in the durable seen log
+    /// (ADR-0021), so the next brief on the same paths shows the next ones
+    /// instead of repeating these, and an unread listing skips them.
     pub fn brief(&self, agent: &AgentId, paths: &[RepoPath]) -> Brief {
-        self.access(None, |inner, _| {
-            let shown = inner.delivered.get(agent);
-            let mut notices = newest(
+        self.access(None, |inner, now| {
+            let notices = newest(
                 paths,
                 |path| {
                     let filter = NoticeFilter {
@@ -925,7 +940,6 @@ impl State {
                 |n| n.id,
                 |n| n.published_at,
             );
-            notices.retain(|n| !shown.is_some_and(|s| s.contains(&n.id)));
             let contracts = newest(
                 paths,
                 |path| inner.contracts.list(Some(path), None),
@@ -957,11 +971,7 @@ impl State {
                 memory: capped(memory),
                 more,
             };
-            inner
-                .delivered
-                .entry(agent.clone())
-                .or_default()
-                .extend(brief.notices.iter().map(|n| n.id));
+            mark_delivered(inner, Some(agent), brief.notices.iter().map(|n| n.id), now);
             brief
         })
     }
@@ -1073,13 +1083,21 @@ impl State {
         before: Option<&(DateTime<Utc>, NoticeId)>,
         limit: usize,
     ) -> Page<Notice> {
-        self.access(agent, |inner, _| {
+        self.access(agent, |inner, now| {
             let rows = inner
                 .notices
                 .list(filter)
                 .into_iter()
                 .filter(|n| paths.is_empty() || paths.iter().any(|p| n.affects(p)));
-            Page::newest_first(rows, |n| (n.published_at, n.id), before, limit).map(Clone::clone)
+            let page = Page::newest_first(rows, |n| (n.published_at, n.id), before, limit)
+                .map(Clone::clone);
+            mark_delivered(
+                inner,
+                filter.unread_by.as_ref(),
+                page.items.iter().map(|n| n.id),
+                now,
+            );
+            page
         })
     }
 
@@ -1123,7 +1141,7 @@ impl State {
                     summary_for(&mut agents, owner).tasks_in_progress += 1;
                 }
             }
-            agents.sort_by(|a, b| a.agent.cmp(&b.agent));
+            agents.sort_by_key(|a| a.agent.clone());
             let tasks_done = inner.tasks.list(Some(TaskStatus::Done), None).len();
             StatusReport {
                 started_at: self.started_at,
@@ -1161,6 +1179,22 @@ fn summary_for<'a>(agents: &'a mut Vec<AgentSummary>, agent: &AgentId) -> &'a mu
     &mut agents[index]
 }
 
+/// Records that `ids` reached `agent` (a brief or an unread listing);
+/// no-op without an agent. Delivery is the acknowledgement (ADR-0021).
+fn mark_delivered(
+    inner: &mut Inner,
+    agent: Option<&AgentId>,
+    ids: impl Iterator<Item = NoticeId>,
+    now: DateTime<Utc>,
+) {
+    if let Some(agent) = agent {
+        for id in ids {
+            // A vanished id cannot happen between list and mark; ignore anyway.
+            let _ = inner.notices.mark_seen(agent, id, now);
+        }
+    }
+}
+
 fn snapshot_of(inner: &Inner) -> Snapshot {
     Snapshot {
         seq: inner.seq,
@@ -1168,6 +1202,7 @@ fn snapshot_of(inner: &Inner) -> Snapshot {
         tasks: inner.tasks.tasks().to_vec(),
         contracts: inner.contracts.contracts().to_vec(),
         notices: inner.notices.notices().to_vec(),
+        notice_seen: inner.notices.seen().to_vec(),
         decisions: inner.decisions.decisions().to_vec(),
         memory: inner.memory.notes().to_vec(),
         messages: inner.messages.messages().to_vec(),
@@ -1255,6 +1290,57 @@ mod tests {
         );
     }
 
+    /// ADR-0021: an ack appends one row to its own log and leaves the
+    /// notice log untouched; a repeat by the same agent appends nothing.
+    #[test]
+    fn an_ack_appends_to_the_ack_log_not_the_notice_log() {
+        let (_, state) = state();
+        let notice = state
+            .notice_publish(
+                agent("a"),
+                NewNotice {
+                    kind: NoticeKind::Rename,
+                    summary: "x to y".into(),
+                    from: None,
+                    to: None,
+                    affected_paths: vec![path("src/x.rs")],
+                    contract_id: None,
+                },
+            )
+            .unwrap();
+        let published = state.take_dirty().unwrap();
+        assert!(matches!(published.notices, Log::Appended(ref n) if n.len() == 1));
+        assert!(matches!(published.notice_seen, Log::Unchanged));
+
+        let unread = NoticeFilter {
+            unread_by: Some(agent("b")),
+            ..NoticeFilter::default()
+        };
+        let delivered = state.notices(None, &unread);
+        assert_eq!(delivered.len(), 1, "delivered once");
+        assert_eq!(delivered[0].id, notice.id);
+        let acked = state.take_dirty().unwrap();
+        assert!(
+            matches!(acked.notices, Log::Unchanged),
+            "the notice row is not rewritten"
+        );
+        assert!(
+            matches!(acked.notice_seen, Log::Appended(ref a) if a.len() == 1 && a[0].agent == agent("b")),
+            "{:?}",
+            acked.notice_seen
+        );
+
+        assert!(
+            state.notices(None, &unread).is_empty(),
+            "seen notices are not unread"
+        );
+        assert!(
+            state.take_dirty().is_none(),
+            "a repeat delivery changes nothing"
+        );
+        assert_eq!(state.snapshot().notice_seen.len(), 1);
+    }
+
     #[test]
     fn deltas_carry_only_what_changed() {
         let (_, state) = state();
@@ -1307,12 +1393,22 @@ mod tests {
             "alice's publish renewed her lease; the renewal rides along"
         );
 
-        state.notice_ack(agent("bob"), second.id).unwrap();
+        let delivered = state.notices(
+            None,
+            &NoticeFilter {
+                path: Some(path("b")),
+                unread_by: Some(agent("bob")),
+                ..NoticeFilter::default()
+            },
+        );
+        assert_eq!(delivered.len(), 2, "both notices affect b");
+        assert!(delivered.iter().any(|n| n.id == second.id));
         let delta = state.take_dirty().unwrap();
         assert!(
-            matches!(delta.notices, Log::Rewritten(ref n) if n.len() == 2),
-            "an in-place edit rewrites the log"
+            matches!(delta.notices, Log::Unchanged),
+            "a delivery never rewrites the notice log (ADR-0021)"
         );
+        assert!(matches!(delta.notice_seen, Log::Appended(ref a) if a.len() == 2));
         assert!(
             delta.claims.is_none(),
             "bob holds nothing, so nothing was renewed"

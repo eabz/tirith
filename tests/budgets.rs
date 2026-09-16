@@ -260,10 +260,6 @@ async fn every_result_text_block_is_a_status_line_under_200_bytes() {
         ),
         ("notice_list", json!({ "agent": "alice", "path": "src/m1" })),
         (
-            "notice_ack",
-            json!({ "agent": "alice", "notice_id": "00000000" }),
-        ),
-        (
             "decision_record",
             json!({ "agent": "alice", "title": "T", "decision": "D" }),
         ),

@@ -287,15 +287,6 @@ pub struct NoticeListInput {
     pub before: Option<String>,
 }
 
-/// Input for `notice_ack`.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct NoticeAckInput {
-    /// Your stable agent name.
-    pub agent: String,
-    /// The notice id.
-    pub notice_id: String,
-}
-
 /// Input for `decision_record`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DecisionRecordInput {
@@ -1439,24 +1430,6 @@ impl TirithServer {
                 clamp_limit(input.limit),
             );
             Ok(listing("notices", &page, |n| (n.published_at, n.id)))
-        });
-        self.finish(Some(&input.agent), outcome).await
-    }
-
-    /// Acknowledge a notice.
-    #[tool(
-        name = "notice_ack",
-        description = "Mark a notice handled so it is no longer unread."
-    )]
-    async fn notice_ack(
-        &self,
-        Parameters(input): Parameters<NoticeAckInput>,
-    ) -> Result<CallToolResult, McpError> {
-        let outcome = run(|| {
-            let agent = agent(&input.agent)?;
-            let id = self.state.resolve_notice(&input.notice_id)?;
-            let notice = self.state.notice_ack(agent, id)?;
-            Ok(ok(json!({ "notice": notice })))
         });
         self.finish(Some(&input.agent), outcome).await
     }
