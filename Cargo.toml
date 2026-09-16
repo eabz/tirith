@@ -1,6 +1,6 @@
 [package]
 name = "tirith-mcp"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.85"
 description = "MCP coordination server that keeps parallel coding agents from stepping on each other"
