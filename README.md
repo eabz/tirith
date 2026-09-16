@@ -73,7 +73,14 @@ curl -LsSf https://raw.githubusercontent.com/eabz/tirith/main/install.sh | sh
 Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/eabz/tirith/releases/latest/download/tirith-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/eabz/tirith/releases/latest/download/tirith-mcp-installer.ps1 | iex"
+```
+
+Or from crates.io, where the package is `tirith-mcp` and the binary is
+`tirith`:
+
+```bash
+cargo install tirith-mcp
 ```
 
 Prebuilt binaries for macOS (Apple Silicon, Intel), Linux (x86_64, ARM64,

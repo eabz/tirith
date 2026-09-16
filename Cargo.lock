@@ -1372,8 +1372,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tirith"
-version = "0.1.0"
+name = "tirith-mcp"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",

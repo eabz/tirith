@@ -1,7 +1,8 @@
 # Installation
 
 Tirith ships as a single static binary per platform, built and published by
-CI on every tagged release. Pick whichever of these fits.
+CI on every tagged release, and as the crate `tirith-mcp` on crates.io. The
+binary is always called `tirith`. Pick whichever of these fits.
 
 ## One line (macOS, Linux)
 
@@ -19,20 +20,21 @@ If you would rather not go through the shim, the release asset itself is
 the same thing:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/eabz/tirith/releases/latest/download/tirith-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/eabz/tirith/releases/latest/download/tirith-mcp-installer.sh | sh
 ```
 
 ## One line (Windows)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/eabz/tirith/releases/latest/download/tirith-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/eabz/tirith/releases/latest/download/tirith-mcp-installer.ps1 | iex"
 ```
 
 ## Prebuilt archives
 
 Every release on
 [github.com/eabz/tirith/releases](https://github.com/eabz/tirith/releases)
-carries an archive per target plus a `sha256` file:
+carries an archive per target, named `tirith-mcp-<target>.tar.xz` (or
+`.zip` on Windows), plus a `sha256` file:
 
 | Platform | Target |
 |---|---|
@@ -47,14 +49,23 @@ carries an archive per target plus a `sha256` file:
 
 Unpack and put `tirith` somewhere on your `PATH`.
 
+## cargo install
+
+```bash
+cargo install tirith-mcp
+```
+
+Compiles from crates.io and installs the `tirith` binary. Works on any
+platform with a Rust toolchain, including ones without prebuilt archives.
+
 ## cargo-binstall
 
 ```bash
-cargo binstall tirith --git https://github.com/eabz/tirith
+cargo binstall tirith-mcp
 ```
 
-`cargo-binstall` understands the release layout and downloads the prebuilt
-binary instead of compiling.
+`cargo-binstall` reads the crate metadata, finds the matching prebuilt
+archive on the GitHub release, and installs it without compiling.
 
 ## From source
 
@@ -68,12 +79,11 @@ Needs a stable Rust toolchain (1.85 or newer). There are no C
 dependencies: Tirith speaks plain HTTP on localhost, so no TLS library is
 compiled in.
 
-## Note on crates.io
+## Note on the crate name
 
 The crate name `tirith` on crates.io belongs to an unrelated project, so
-`cargo install tirith` installs something else. Tirith is distributed
-through GitHub releases and the methods above, not crates.io, until it is
-published under a different package name.
+`cargo install tirith` installs something else. Tirith's package is
+`tirith-mcp`; only the binary is named `tirith`.
 
 ## After installing
 

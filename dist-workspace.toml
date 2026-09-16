@@ -17,3 +17,5 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Custom publish jobs run after the GitHub release exists (see .github/workflows/publish-crates.yml)
+publish-jobs = ["./publish-crates"]

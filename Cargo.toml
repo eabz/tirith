@@ -1,6 +1,6 @@
 [package]
-name = "tirith"
-version = "0.1.0"
+name = "tirith-mcp"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "MCP coordination server that keeps parallel coding agents from stepping on each other"
@@ -9,6 +9,18 @@ repository = "https://github.com/eabz/tirith"
 readme = "README.md"
 keywords = ["mcp", "agents", "coordination", "claims"]
 categories = ["development-tools", "command-line-utilities"]
+# Keep the crates.io package to what `cargo install` needs; docs, memory,
+# and dist config live in the repository.
+include = ["/src/**", "/Cargo.toml", "/README.md", "/LICENSE"]
+# The package is `tirith-mcp` on crates.io (the name `tirith` is taken by an
+# unrelated crate); the binary and the library keep the short name.
+[[bin]]
+name = "tirith"
+path = "src/main.rs"
+
+[lib]
+name = "tirith"
+path = "src/lib.rs"
 
 [dependencies]
 # MCP protocol: server over streamable HTTP, client with reqwest for the CLI.
