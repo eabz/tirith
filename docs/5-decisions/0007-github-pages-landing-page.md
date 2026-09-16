@@ -1,9 +1,15 @@
 # ADR-0007: A static landing page in `docs/`, served by GitHub Pages
 
-**Status:** Accepted, 2026-09-16. Amended the same day: the Pages source
-was set to the repository root rather than `/docs`, so a redirect stub
-`/index.html` forwards the site root to `docs/`. The page itself stays in
-`docs/`; nothing else in this record changes.
+**Status:** Accepted, 2026-09-16. Amended twice the same day. First, the
+Pages source was set to the repository root rather than `/docs`, because
+`install.sh` and `install.ps1` at the root must be served from the site
+root; a redirect stub at `/index.html` forwarded visitors to `docs/`.
+Second, the stub was dropped: the landing page now lives at
+`/index.html` itself and references its images as `docs/_static/images/`,
+so the site root renders the page directly with no redirect. Only the
+root `.nojekyll` remains. The layout rule in AGENTS.md section 5 is
+read as covering documentation, not the one static file GitHub Pages
+requires at the root, and this ADR records that exception.
 
 ## Context
 
@@ -15,11 +21,11 @@ stay cheap to maintain for a solo developer plus coding agents.
 
 ## Decision
 
-The landing page is a single hand-written file, `docs/index.html`, with
-inline CSS and a few lines of vanilla JavaScript (install-method tabs and
-copy buttons). GitHub Pages serves it from the `main` branch with the
-`/docs` folder as the source; `docs/.nojekyll` disables Jekyll so the
-file is served as-is. The page links into the Markdown docs on GitHub
+The landing page is a single hand-written file, `index.html` at the
+repository root (originally `docs/index.html`; see the amendments above),
+with inline CSS and a few lines of vanilla JavaScript (install-method
+tabs and copy buttons). GitHub Pages serves the `main` branch root;
+`.nojekyll` disables Jekyll so the file is served as-is. The page links into the Markdown docs on GitHub
 rather than rendering them itself.
 
 The page repeats only what `README.md` and
