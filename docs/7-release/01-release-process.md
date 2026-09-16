@@ -120,6 +120,18 @@ crate name, not the binary name.
   `dist init` (keeps existing answers) and commit the regenerated
   workflow.
 
+## The landing page
+
+`docs/index.html` is served by GitHub Pages at
+<https://eabz.github.io/tirith/> (Pages source: branch `main`, folder
+`/docs`; `docs/.nojekyll` disables Jekyll). It carries the same install
+and client-setup commands as `README.md`,
+`docs/1-about/05-installation.md`, and
+`docs/2-examples/02-client-setup.md`, plus the version shown in its
+`tirith status` sample. When any of those change, or when an install
+command starts requiring a newer binary, update the page in the same
+commit. There is no build step; the file is served as committed.
+
 ## Installer shim
 
 `install.sh` at the repo root is a stable URL that redirects to the

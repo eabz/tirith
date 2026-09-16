@@ -13,6 +13,7 @@ order is obvious. Files inside a section are also numbered.
 | [6-agent-workflow/](6-agent-workflow/) | How agents work on this repo: Serena, memory layer, using Tirith on itself |
 | [7-release/](7-release/) | How releases are built and published (cargo-dist), targets, the installer shim |
 | [_static/images/](_static/images/) | Diagrams and screenshots referenced from the docs |
+| [index.html](index.html) | The public landing page at [eabz.github.io/tirith](https://eabz.github.io/tirith/): install, connect, verify. Served by GitHub Pages from this folder; `.nojekyll` keeps Jekyll off |
 
 ## Requirements for working on this repo
 
@@ -40,3 +41,9 @@ order is obvious. Files inside a section are also numbered.
   [6-agent-workflow/02-memory.md](6-agent-workflow/02-memory.md).
 - Images: put files in `_static/images/`, reference them with relative
   paths, and keep them under 500 KB.
+- `index.html` is the only HTML here. It is hand-written, has no build
+  step, and repeats the install and client-setup commands from
+  `README.md`, `1-about/05-installation.md`, and
+  `2-examples/02-client-setup.md`. When those commands change, change
+  the page in the same commit. Design rationale:
+  [5-decisions/0007-github-pages-landing-page.md](5-decisions/0007-github-pages-landing-page.md).
