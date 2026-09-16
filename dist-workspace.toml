@@ -19,3 +19,11 @@ hosting = "github"
 install-updater = false
 # Custom publish jobs run after the GitHub release exists (see .github/workflows/publish-crates.yml)
 publish-jobs = ["./publish-crates"]
+# Cache compiled dependencies between release builds (Swatinem/rust-cache in
+# every build job). See docs/5-decisions/0009-release-build-cache-and-runners.md
+cache-builds = true
+
+# Build the Intel macOS binary on an Apple Silicon runner; the Apple toolchain
+# cross-compiles both Mac targets and the arm runner is about twice as fast.
+[dist.github-custom-runners]
+x86_64-apple-darwin = "macos-14"

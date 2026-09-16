@@ -17,6 +17,7 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0006](0006-stdio-shim-starts-daemon.md) | The stdio shim starts the daemon on demand | Accepted |
 | [0007](0007-github-pages-landing-page.md) | A static landing page in `docs/`, served by GitHub Pages | Accepted |
 | [0008](0008-embedded-dashboard-assets.md) | Dashboard assets are embedded in the binary from `src/` | Accepted |
+| [0009](0009-release-build-cache-and-runners.md) | Release builds cache dependencies and cross-compile Intel macOS on Apple Silicon | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions.jsonl`

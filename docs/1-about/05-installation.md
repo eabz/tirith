@@ -79,6 +79,19 @@ Needs a stable Rust toolchain (1.85 or newer). There are no C
 dependencies: Tirith speaks plain HTTP on localhost, so no TLS library is
 compiled in.
 
+## Updating
+
+```bash
+tirith update            # latest release, in place
+tirith update --check    # only report; exits 1 if an update is available
+tirith update --to 0.2.0 # a specific version
+```
+
+`tirith update` re-runs the release installer (the shell one on macOS and
+Linux, PowerShell on Windows) into the directory the running binary lives
+in, so it works for the one-liner and archive installs. Installs made with
+`cargo install` are updated with `cargo install tirith-mcp` instead.
+
 ## Note on the crate name
 
 The crate name `tirith` on crates.io belongs to an unrelated project, so

@@ -129,6 +129,10 @@ uuid_id!(
     /// Identifies a recorded decision.
     DecisionId
 );
+uuid_id!(
+    /// Identifies a memory note across its revisions.
+    MemoryId
+);
 
 /// Errors from normalizing a repository path.
 #[derive(Debug, Error, PartialEq, Eq)]

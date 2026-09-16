@@ -31,6 +31,8 @@ runs the `plan` job, which validates the configuration without publishing.
    `cargo publish` for `tirith-mcp`.
 4. Check the install one-liner from a clean shell, and
    `cargo install tirith-mcp` if you want to confirm crates.io.
+   `tirith update --check` from an older install should now report the
+   new version, and `tirith update` should install it in place.
 
 That is the whole process. There is no manual upload step. Steps 1 and 2
 are what `scripts/bump.sh` does for you:
@@ -61,7 +63,7 @@ To publish by hand instead: `cargo publish` from the tagged commit.
 ## Files it owns
 
 - `dist-workspace.toml`: the configuration (targets, installers, hosting,
-  publish jobs).
+  publish jobs, build cache, custom runners).
 - `.github/workflows/publish-crates.yml`: the crates.io publish job,
   hand-written, called by `release.yml`.
 - `scripts/bump.sh`: version bump, commit, and tag.
@@ -81,10 +83,20 @@ aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 aarch64-pc-windows-msvc   x86_64-pc-windows-msvc
 ```
 
-macOS targets build on macOS runners, Windows on Windows runners, Linux
-targets on Linux runners with cross toolchains where needed. Adding a
-target is one line in that file plus `dist generate` to refresh the
-workflow.
+Both macOS targets build on the Apple Silicon runner (`macos-14`, set
+under `github-custom-runners`; the Apple toolchain cross-compiles the
+Intel binary), Windows on Windows runners, Linux targets on Linux runners
+with cross toolchains where needed. Adding a target is one line in that
+file plus `dist generate` to refresh the workflow.
+
+## Build cache
+
+`cache-builds = true` makes every build job restore a `Swatinem/rust-cache`
+cache keyed by target, so only the `tirith` crate and the LTO link are
+compiled on a warm release. A version bump changes the cache key, but
+rust-cache falls back to the previous entry for the same target. Cold
+builds still work; the cache is an optimisation, not a requirement.
+Reasoning: [ADR-0009](../5-decisions/0009-release-build-cache-and-runners.md).
 
 ## Local checks
 
@@ -123,8 +135,11 @@ crate name, not the binary name.
 ## The landing page
 
 `docs/index.html` is served by GitHub Pages at
-<https://eabz.github.io/tirith/> (Pages source: branch `main`, folder
-`/docs`; `docs/.nojekyll` disables Jekyll). It carries the same install
+<https://eabz.github.io/tirith/docs/>. The Pages source is branch `main`,
+folder `/` (root), so the repository's `/index.html` is a redirect stub
+that forwards the site root to `docs/`; `.nojekyll` at the root and in
+`docs/` disables Jekyll. If the Pages source is ever switched to `/docs`,
+the stub becomes unused and can be deleted. The page carries the same install
 and client-setup commands as `README.md`,
 `docs/1-about/05-installation.md`, and
 `docs/2-examples/02-client-setup.md`, plus the version shown in its

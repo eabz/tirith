@@ -20,7 +20,7 @@ to different shapes. Tirith is a small daemon they all talk to: an agent
 claims files before editing, reads change notices before acting, and
 publishes the shape of an interface before either side implements it.
 
-It works with anything that speaks MCP over HTTP: Claude Code, Cursor,
+It works with anything that speaks MCP, over stdio or HTTP: Claude Code, Cursor,
 Codex, LangGraph, CrewAI, or a plain script. It is not a memory layer.
 
 > **Status: pre-alpha.** All primitives, the CLI, persistence, and the
@@ -45,6 +45,9 @@ With cargo (the package is `tirith-mcp`, the binary is `tirith`):
 ```bash
 cargo install tirith-mcp
 ```
+
+Already installed? `tirith update` replaces the binary in place with the
+latest release (`--check` only reports, `--to 0.2.0` pins).
 
 Prebuilt binaries for macOS, Linux, and Windows on x86_64 and ARM64 are on
 the [releases page](https://github.com/eabz/tirith/releases). More options
@@ -128,6 +131,9 @@ The full two-agent demo is [examples/demo.sh](examples/demo.sh).
 Every tool has a subcommand; the CLI uses the same MCP path agents do.
 
 ```bash
+tirith serve                               # run the repo's daemon by hand
+tirith stdio                               # per-session shim clients spawn; starts the daemon if needed
+tirith update                              # replace the binary with the latest release
 tirith status                              # counts and who holds what
 tirith claim | release | renew | claims
 tirith task     create | pull | update | list
@@ -145,7 +151,9 @@ outcomes exit with status 1.
 
 One daemon per repository, over streamable HTTP on localhost. MCP clients
 normally spawn a fresh server per session, which would give ten agents ten
-private states; Tirith is deliberately one shared process. State is held in
+private states; Tirith is deliberately one shared process. `tirith stdio`
+bridges each per-session client to that process, starting it if needed
+([ADR-0006](docs/5-decisions/0006-stdio-shim-starts-daemon.md)). State is held in
 memory and written through to JSON under `.tirith/` in your repository.
 Contracts, notices, and decisions are meant to be committed so the next
 session inherits them; claims and tasks are runtime state and gitignored.

@@ -13,7 +13,7 @@ order is obvious. Files inside a section are also numbered.
 | [6-agent-workflow/](6-agent-workflow/) | How agents work on this repo: Serena, memory layer, using Tirith on itself |
 | [7-release/](7-release/) | How releases are built and published (cargo-dist), targets, the installer shim |
 | [_static/images/](_static/images/) | Diagrams and screenshots referenced from the docs |
-| [index.html](index.html) | The public landing page at [eabz.github.io/tirith](https://eabz.github.io/tirith/): install, connect, verify. Served by GitHub Pages from this folder; `.nojekyll` keeps Jekyll off |
+| [index.html](index.html) | The public landing page at [eabz.github.io/tirith](https://eabz.github.io/tirith/): install, connect, verify. GitHub Pages serves the repository root, where `/index.html` forwards to this file; the `.nojekyll` files keep Jekyll off |
 
 ## Requirements for working on this repo
 

@@ -1,6 +1,9 @@
 # ADR-0007: A static landing page in `docs/`, served by GitHub Pages
 
-**Status:** Accepted, 2026-09-16
+**Status:** Accepted, 2026-09-16. Amended the same day: the Pages source
+was set to the repository root rather than `/docs`, so a redirect stub
+`/index.html` forwards the site root to `docs/`. The page itself stays in
+`docs/`; nothing else in this record changes.
 
 ## Context
 
