@@ -833,6 +833,9 @@ impl TirithServer {
     }
 }
 
+// The `tool_handler` macro generates async trait methods that return
+// immediately; that is rmcp's code, not ours, so silence the lint here.
+#[allow(unknown_lints, clippy::unused_async_trait_impl)]
 #[tool_handler]
 impl ServerHandler for TirithServer {
     fn get_info(&self) -> ServerConfig {
