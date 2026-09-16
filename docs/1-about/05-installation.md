@@ -93,9 +93,10 @@ cd tirith
 cargo install --path .
 ```
 
-Needs a stable Rust toolchain (1.90 or newer). There are no C
-dependencies: Tirith speaks plain HTTP on localhost, so no TLS library is
-compiled in.
+Needs a stable Rust toolchain (1.90 or newer); the repository's
+`rust-toolchain.toml` selects the stable channel, so rustup picks it
+up. There are no C dependencies: Tirith speaks plain HTTP on localhost,
+so no TLS library is compiled in.
 
 ## Updating
 

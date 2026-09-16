@@ -67,6 +67,9 @@ To publish by hand instead: `cargo publish` from the tagged commit.
 - `.github/workflows/publish-crates.yml`: the crates.io publish job,
   hand-written, called by `release.yml`.
 - `scripts/bump.sh`: version bump, commit, and tag.
+- `rust-toolchain.toml`: selects the stable channel, so the release
+  container that ships an old rustc still builds a crate whose
+  `rust-version` is newer ([ADR-0023](../5-decisions/0023-stable-toolchain-for-release-containers.md)).
 - `.github/workflows/release.yml`: generated. Regenerate, never edit.
 - `[profile.dist]` in `Cargo.toml`: the release profile the builds use
   (inherits `release`, plus thin LTO, one codegen unit, and stripped
@@ -86,8 +89,13 @@ aarch64-pc-windows-msvc   x86_64-pc-windows-msvc
 Both macOS targets build on the Apple Silicon runner (`macos-14`, set
 under `github-custom-runners`; the Apple toolchain cross-compiles the
 Intel binary), Windows on Windows runners, Linux targets on Linux runners
-with cross toolchains where needed. Adding a target is one line in that
-file plus `dist generate` to refresh the workflow.
+with cross toolchains where needed. `aarch64-pc-windows-msvc` has no
+GitHub runner; dist builds it on `ubuntu-22.04` inside the
+`messense/cargo-xwin` container, whose rustc is pinned at the version
+the image was built with. `rust-toolchain.toml` makes rustup install
+current stable there, so the job is not bound by the image's rustc.
+Adding a target is one line in that file plus `dist generate` to
+refresh the workflow.
 
 ## Build cache
 

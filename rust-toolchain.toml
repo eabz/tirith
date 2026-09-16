@@ -1,0 +1,7 @@
+# Selects the stable channel for every rustup on this repo, including the
+# release containers: cargo-dist builds `aarch64-pc-windows-msvc` inside
+# `messense/cargo-xwin`, whose base image pins an old rustc that is below
+# `rust-version` in Cargo.toml. rustup reads this file and installs stable
+# there before building. See docs/5-decisions/0023-stable-toolchain-for-release-containers.md.
+[toolchain]
+channel = "stable"
