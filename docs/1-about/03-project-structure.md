@@ -22,6 +22,7 @@ tirith/
 │   ├── server.rs        MCP tool surface (rmcp) and `start`.
 │   ├── dashboard.rs     Dashboard routes.
 │   ├── dashboard.html   The dashboard page, embedded at build time.
+│   ├── dashboard-logo.png  The logo the dashboard serves at /logo.png.
 │   ├── client.rs        MCP client for the CLI and tests.
 │   ├── stdio.rs         The per-session stdio shim.
 │   ├── state.rs         Shared in-memory state.
@@ -33,7 +34,8 @@ tirith/
 │   ├── contracts.rs     Contracts domain.
 │   ├── notices.rs       Change notices domain.
 │   └── decisions.rs     Decisions log domain.
-├── tests/               Integration tests (real server over localhost HTTP).
+├── tests/               Integration tests: the server over localhost HTTP,
+│                        the stdio shim over its pipes.
 ├── examples/
 │   └── demo.sh          Two agents, overlapping claims, second refused.
 ├── docs/                All documentation. See docs/README.md.
@@ -43,13 +45,14 @@ tirith/
 │   ├── 4-style/
 │   ├── 5-decisions/
 │   ├── 6-agent-workflow/
+│   ├── 7-release/
 │   └── _static/images/
 ├── .memory/             Basic Memory notes, agent-managed, committed.
 ├── .serena/             Serena project config and memories.
-├── .mcp.json            Claude Code project MCP servers (basic-memory).
-├── .cursor/mcp.json     Cursor MCP servers (basic-memory).
-└── .tirith/             Created at runtime in the *target* repo, and also
-                         here once Tirith coordinates its own development.
+├── .mcp.json            Claude Code project MCP servers (basic-memory, tirith stdio).
+├── .cursor/mcp.json     Cursor MCP servers (basic-memory, tirith stdio).
+└── .tirith/             Created at runtime in the *target* repo. Exists here
+                         too: Tirith coordinates its own development.
 ```
 
 ## Where things go
@@ -58,7 +61,7 @@ tirith/
 |---|---|
 | A new MCP tool | A method on `State` plus a domain function, then the input struct and `#[tool]` in `server.rs`, a subcommand in `cli.rs`, then the schema in `docs/1-about/04-primitives.md` |
 | A domain rule (overlap, expiry, dependency ordering) | The domain module, with a unit test in the same file |
-| A test that needs the HTTP server | `tests/` |
+| A test that needs the HTTP server or the stdio shim | `tests/` |
 | A usage example | `docs/2-examples/` and, if short, `README.md` |
 | A design decision | `docs/5-decisions/NNNN-title.md` |
 | A picture | `docs/_static/images/` |

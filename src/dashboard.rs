@@ -45,6 +45,17 @@ async fn index() -> Html<&'static str> {
     Html(include_str!("dashboard.html"))
 }
 
+/// The logo, embedded so the dashboard needs no files on disk.
+async fn logo() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("dashboard-logo.png").as_slice(),
+    )
+}
+
 async fn health() -> Json<Value> {
     Json(json!({ "ok": true, "version": VERSION }))
 }

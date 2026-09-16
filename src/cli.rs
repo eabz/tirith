@@ -16,6 +16,7 @@ use tirith::client;
 use tirith::server::{self, DEFAULT_BIND, ServeOptions};
 use tirith::stdio;
 use tirith::store::JsonStore;
+use tirith::update;
 
 const DEFAULT_URL: &str = "http://127.0.0.1:7477/mcp";
 
@@ -64,6 +65,15 @@ enum Command {
         /// Address to bind if the daemon has to be started.
         #[arg(long, default_value = DEFAULT_BIND)]
         bind: String,
+    },
+    /// Update tirith to the latest release (or a given version) in place.
+    Update {
+        /// Install this version instead of the latest, e.g. 0.2.0 or v0.2.0.
+        #[arg(long = "to", value_name = "VERSION")]
+        to: Option<String>,
+        /// Only report whether an update is available. Exits 1 if one is.
+        #[arg(long)]
+        check: bool,
     },
     /// Show daemon status and who holds what.
     Status,
@@ -263,6 +273,9 @@ pub(crate) async fn run() -> Result<ExitCode> {
     if let Command::Stdio { bind } = cli.command {
         return stdio_shim(bind, cli.root).await;
     }
+    if let Command::Update { to, check } = cli.command {
+        return self_update(to, check, &cli.root).await;
+    }
     let url = match cli.url {
         Some(url) => url,
         None => JsonStore::new(&cli.root)
@@ -277,7 +290,9 @@ pub(crate) async fn run() -> Result<ExitCode> {
         json: cli.json,
     };
     let (tool, arguments) = match cli.command {
-        Command::Serve { .. } | Command::Stdio { .. } => unreachable!("handled above"),
+        Command::Serve { .. } | Command::Stdio { .. } | Command::Update { .. } => {
+            unreachable!("handled above")
+        }
         Command::Tools => return tools(&remote).await,
         Command::Call { tool, arguments } => {
             let mut value: Value =
@@ -445,6 +460,55 @@ async fn stdio_shim(bind: String, root: PathBuf) -> Result<ExitCode> {
         .canonicalize()
         .with_context(|| format!("repository root {}", root.display()))?;
     stdio::run(root, bind).await?;
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn self_update(
+    version: Option<String>,
+    check: bool,
+    root: &std::path::Path,
+) -> Result<ExitCode> {
+    let current = server::VERSION;
+    let pinned = version.is_some();
+    let target = match version {
+        Some(v) => update::Release::from_tag(&v),
+        None => update::latest_release().await?,
+    };
+    let newer = update::compare(&target.version, current) == std::cmp::Ordering::Greater;
+    println!(
+        "installed {current}, {} {}",
+        if pinned { "requested" } else { "latest" },
+        target.version
+    );
+    if check {
+        return Ok(if newer {
+            println!("update available: tirith update");
+            ExitCode::FAILURE
+        } else {
+            println!("up to date");
+            ExitCode::SUCCESS
+        });
+    }
+    if !newer && !pinned {
+        println!("up to date");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let dir = update::install_dir()?;
+    println!("installing {} into {}", target.tag, dir.display());
+    update::install(&target.tag, &dir).await?;
+    println!("updated to {}", target.version);
+    if let Ok(Some(info)) = JsonStore::new(root).read_daemon_info() {
+        if info.version != target.version {
+            println!(
+                "note: the daemon for {} (pid {}) still runs {}; stop it with `kill {}` so the next session starts {}",
+                root.display(),
+                info.pid,
+                info.version,
+                info.pid,
+                target.version
+            );
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

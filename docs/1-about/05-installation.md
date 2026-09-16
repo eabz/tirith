@@ -87,10 +87,14 @@ The crate name `tirith` on crates.io belongs to an unrelated project, so
 
 ## After installing
 
+Register `tirith stdio` with your client, for example:
+
 ```bash
-cd /path/to/your/repo
-tirith serve
+claude mcp add tirith -- tirith stdio
 ```
 
-Then point your agents at `http://127.0.0.1:7477/mcp`; see
+The shim starts the repository's daemon on the first session and proxies
+to it afterwards. Clients that connect over HTTP instead need the daemon
+started by hand (`tirith serve` in the repository) and pointed at
+`http://127.0.0.1:7477/mcp`. Both setups, per client, are in
 [../2-examples/02-client-setup.md](../2-examples/02-client-setup.md).

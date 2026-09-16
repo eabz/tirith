@@ -58,7 +58,7 @@ a `tools/call` request and response:
 ```json
 { "status": "conflict",
   "conflicts": [ { "path": "src/auth/login.rs",
-                   "overlaps": "src/auth/",
+                   "overlaps": "src/auth",
                    "owner": "alice",
                    "reason": "refactor session handling",
                    "expires_at": "2026-09-15T18:20:00Z" } ] }

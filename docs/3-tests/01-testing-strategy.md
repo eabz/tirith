@@ -12,6 +12,7 @@ are tested as such. The transport is tested once, end to end.
 | State | `src/state.rs` tests | Atomicity of multi-path claims, lazy reaping, renew-on-activity | None |
 | Store | `src/store.rs` tests | Round-trip to a temp dir, atomic write survives a simulated crash, loading a corrupt file is an error, not a panic | tokio (for `spawn_blocking`) |
 | Integration | `tests/http_roundtrip.rs` | Start the real server on an ephemeral localhost port, drive it with `tirith::client`, assert on tool responses, restart it and check persistence, fetch the dashboard | tokio + localhost network |
+| Shim | `tests/stdio_shim.rs` | Spawn the built binary as `tirith stdio` the way a client would, speak JSON-RPC over its pipes, check it starts one daemon and that a second shim reuses it | tokio + localhost network + built binary |
 | Demo | `examples/demo.sh` | Human-readable acceptance for each milestone | Built binary |
 
 ## Rules
@@ -36,14 +37,14 @@ are tested as such. The transport is tested once, end to end.
 ```bash
 cargo test                       # everything
 cargo test --lib                 # unit and state tests only, fastest
-cargo test --test claims         # one integration file
+cargo test --test http_roundtrip # one integration file
 cargo test -- --nocapture        # see server logs
 ```
 
 CI runs, in order: `cargo fmt --check`, `cargo clippy --all-targets
 --all-features -- -D warnings`, `cargo test --all-features`, `cargo doc
 --no-deps` with `RUSTDOCFLAGS=-D warnings`, `cargo machete`, `cargo deny
-check`. Coverage via `cargo llvm-cov` is reported, not gated.
+check`. There is no coverage step.
 
 ## Coverage expectations
 

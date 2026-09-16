@@ -259,10 +259,27 @@ async fn dashboard_and_tool_list_are_served() {
     assert!(state["claims"].is_array());
     let page = reqwest_text(&handle.dashboard_url()).await;
     assert!(page.contains("<title>Tirith</title>"));
+    assert!(page.contains("/logo.png"));
+    let logo = raw_response(&format!("{}logo.png", handle.dashboard_url())).await;
+    let (headers, body) = logo.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("HTTP/1.1 200"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: image/png")
+    );
+    assert!(body.len() > 1000, "logo body is {} bytes", body.len());
     handle.shutdown().await.unwrap();
 }
 
 async fn reqwest_text(url: &str) -> String {
+    let response = raw_response(url).await;
+    let (_, body) = response.split_once("\r\n\r\n").unwrap();
+    body.to_owned()
+}
+
+/// The full HTTP/1.1 response, headers included, as lossy UTF-8.
+async fn raw_response(url: &str) -> String {
     let stream = tokio::net::TcpStream::connect(url_host(url)).await.unwrap();
     raw_get(stream, url).await
 }
@@ -295,7 +312,5 @@ async fn raw_get(mut stream: tokio::net::TcpStream, url: &str) -> String {
         .unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
-    let text = String::from_utf8_lossy(&response);
-    let (_, body) = text.split_once("\r\n\r\n").unwrap();
-    body.to_owned()
+    String::from_utf8_lossy(&response).into_owned()
 }

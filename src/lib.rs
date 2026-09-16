@@ -15,7 +15,8 @@
 //! - [`decisions`]: settled choices so nothing is decided twice.
 //!
 //! [`stdio`] is the shim MCP clients spawn per session; it starts the
-//! daemon when needed and proxies to it.
+//! daemon when needed and proxies to it. [`update`] replaces the running
+//! binary with a newer release.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -33,3 +34,4 @@ pub mod stdio;
 pub mod store;
 pub mod tasks;
 pub mod types;
+pub mod update;

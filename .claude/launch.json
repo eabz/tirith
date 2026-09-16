@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tirith-preview",
+      "runtimeExecutable": "./target/debug/tirith",
+      "runtimeArgs": ["serve", "--bind", "127.0.0.1:7478", "--root", "/private/tmp/claude-501/-Users-eabz-Documents-GitHub-tirith/6f15382c-161d-4e31-95ae-51e1ebdeaee1/scratchpad/previewrepo"],
+      "port": 7478
+    }
+  ]
+}

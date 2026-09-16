@@ -9,12 +9,11 @@ therefore a single long-running process per repository, and every agent
 connects to it over **streamable HTTP** on localhost.
 
 ```
-                     ┌──────────────────────────┐
-  Claude Code ──────▶│                          │
-  Cursor ───────────▶│   tirith serve           │──▶ .tirith/  (JSON)
-  LangGraph ────────▶│   http://127.0.0.1:7477  │
-  plain script ─────▶│                          │
-                     └──────────────────────────┘
+  Claude Code ──▶ tirith stdio ──┐
+  Cursor ───────▶ tirith stdio ──┤   ┌──────────────────────────┐
+                                 ├──▶│   tirith serve           │──▶ .tirith/  (JSON)
+  LangGraph ─────── HTTP ────────┤   │   http://127.0.0.1:7477  │
+  plain script ──── HTTP ────────┘   └──────────────────────────┘
 ```
 
 `tirith stdio` speaks stdio to the client and proxies to the daemon,
@@ -30,7 +29,8 @@ src/stdio.rs       `tirith stdio`: finds or starts the daemon, proxies stdio to 
 src/cli.rs         CLI (clap): serve, plus one subcommand per tool. Binary only.
 src/server.rs      MCP surface (rmcp): tool inputs, outcome formatting,
                    and `start`, which wires everything into one HTTP server.
-src/dashboard.rs   `/` (embedded dashboard.html) and `/api/state`.
+src/dashboard.rs   `/` (embedded dashboard.html), `/logo.png`, `/api/state`,
+                   `/api/health`.
 src/client.rs      MCP client used by the CLI and integration tests.
 src/state.rs       In-memory State behind a lock. All mutation goes through
                    its methods. Reaps expired leases and renews the caller's
@@ -90,6 +90,7 @@ JSON files under `.tirith/` in the target repository:
   .gitignore          written by tirith; ignores runtime/
   runtime/            gitignored
     daemon.json       mcp url, dashboard url, pid, started_at, version
+    serve.log         daemon output, when the stdio shim started it
     meta.json         snapshot sequence number
     claims.json
     tasks.json
@@ -112,9 +113,17 @@ domain modules. See [../5-decisions/0003-json-file-storage.md](../5-decisions/00
 ## Dashboard
 
 The same HTTP server serves a read-only dashboard at `/` and its data at
-`/api/state`. The page is a single embedded HTML file that polls every two
-seconds and shows agents, claims with lease countdowns, the task board,
-contracts with their current shape, change notices, and decisions.
+`/api/state`. The page is a single embedded HTML file with no external
+assets: it polls every two seconds and shows the Tirith logo, count tiles,
+agents, claims with lease progress bars, the task board with status
+filters, contracts with their current shape, change notices with who has
+acknowledged them, and decisions. A text filter narrows every table, and
+the page follows the system light or dark theme with a manual toggle. The
+logo is served from `/logo.png`, embedded from `src/dashboard-logo.png`
+(a 192px cut of `docs/_static/images/logo.jpeg`), and doubles as the
+favicon.
+`/api/health` answers as long as the daemon is up; the stdio shim probes it
+to decide whether the daemon recorded in `daemon.json` is still alive.
 
 ## Transport and port
 
