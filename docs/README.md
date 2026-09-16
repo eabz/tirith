@@ -11,6 +11,7 @@ order is obvious. Files inside a section are also numbered.
 | [4-style/](4-style/) | Rust rules agents must follow, the sources they come from, git and docs conventions |
 | [5-decisions/](5-decisions/) | Architecture decision records (ADRs). Settled. Supersede, do not silently re-decide |
 | [6-agent-workflow/](6-agent-workflow/) | How agents work on this repo: Serena, memory layer, using Tirith on itself |
+| [7-release/](7-release/) | How releases are built and published (cargo-dist), targets, the installer shim |
 | [_static/images/](_static/images/) | Diagrams and screenshots referenced from the docs |
 
 ## Requirements for working on this repo

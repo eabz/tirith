@@ -64,10 +64,27 @@ in the target repository. Contracts, notices, and decisions are meant to be
 committed so the next session inherits them. Claims and the task board are
 runtime state and are gitignored.
 
+## Install
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/eabz/tirith/main/install.sh | sh
+```
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/eabz/tirith/releases/latest/download/tirith-installer.ps1 | iex"
+```
+
+Prebuilt binaries for macOS (Apple Silicon, Intel), Linux (x86_64, ARM64,
+glibc and musl), and Windows (x86_64, ARM64) are on the
+[releases page](https://github.com/eabz/tirith/releases). Other options,
+including `cargo binstall` and building from source, are in
+[docs/1-about/05-installation.md](docs/1-about/05-installation.md).
+
 ## Quick start
 
 ```bash
-cargo install --path .
 cd /path/to/your/repo
 tirith serve            # MCP at http://127.0.0.1:7477/mcp, dashboard at http://127.0.0.1:7477/
 ```

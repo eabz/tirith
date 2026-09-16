@@ -25,3 +25,9 @@ Tirith 0.1.0 scaffolded in one session: all five primitives, JSON persistence, C
 
 ## Relations
 - follows [[Project kickoff 2026-09-15]]
+
+## Distribution (added later the same day)
+- [decision] cargo-dist 0.32 builds and publishes releases for 8 targets (macOS arm/x86, Linux arm/x86 gnu+musl, Windows arm/x86); config in dist-workspace.toml, workflow generated #release
+- [decision] `install.sh` at the repo root is a stable shim over the release asset `tirith-installer.sh`, so the README one-liner never changes #release
+- [lesson] The generated installer can be tested offline with `TIRITH_DOWNLOAD_URL` pointing at a local http.server over target/distrib and `TIRITH_UNMANAGED_INSTALL` for the target dir #release
+- [lesson] The crate name `tirith` on crates.io is taken by an unrelated terminal-security tool, so crates.io publishing needs a different package name #release
