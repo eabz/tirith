@@ -431,6 +431,8 @@ async fn main() -> Result<(), BoxError> {
         bind: "127.0.0.1:0".parse::<SocketAddr>()?,
         repo_root: dir.path().to_path_buf(),
         clock: None,
+
+        registry: None,
     })
     .await?;
     let url = handle.mcp_url();

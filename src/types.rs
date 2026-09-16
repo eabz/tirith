@@ -140,6 +140,10 @@ uuid_id!(
     /// Identifies a memory note across its revisions.
     MemoryId
 );
+uuid_id!(
+    /// Identifies an agent-to-agent message.
+    MessageId
+);
 
 /// Errors from normalizing a repository path.
 #[derive(Debug, Error, PartialEq, Eq)]

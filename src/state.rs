@@ -18,21 +18,22 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::claims::{Claim, ClaimBook, ClaimError, DEFAULT_TTL_SECS, Granted};
+use crate::claims::{Claim, ClaimBook, ClaimError, DEFAULT_TTL_SECS, Granted, LostLease, Reaped};
 use crate::clock::Clock;
 use crate::contracts::{
     Contract, ContractError, ContractKind, ContractRegistry, NewContract, Published,
 };
 use crate::decisions::{Decision, DecisionError, DecisionLog, NewDecision};
-use crate::memory::{
-    CLAIM_MEMORY_LIMIT, MemoryBook, MemoryError, MemoryNote, MemorySearch, MemoryWritten, NewMemory,
+use crate::memory::{MemoryBook, MemoryError, MemoryNote, MemorySearch, MemoryWritten, NewMemory};
+use crate::messages::{
+    BROADCAST_WINDOW, Inbox, Message, MessageBoard, MessageError, MessageFilter, NewMessage,
 };
 use crate::notices::{NewNotice, Notice, NoticeBoard, NoticeError, NoticeFilter, NoticeKind};
 use crate::store::LoadError;
 use crate::tasks::{NewTask, Task, TaskBoard, TaskError, TaskStatus};
 use crate::types::{
-    AgentId, ClaimId, ContractId, DecisionId, MemoryId, NoticeId, Page, PrefixError, RepoPath,
-    TaskId,
+    AgentId, ClaimId, ContractId, DecisionId, MemoryId, MessageId, NoticeId, Page, PrefixError,
+    RepoPath, TaskId,
 };
 
 /// Everything worth persisting, as plain values.
@@ -52,6 +53,9 @@ pub struct Snapshot {
     pub decisions: Vec<Decision>,
     /// All memory notes.
     pub memory: Vec<MemoryNote>,
+    /// Agent-to-agent messages still within retention (runtime only).
+    #[serde(default)]
+    pub messages: Vec<Message>,
     /// Files and lines the store skipped while loading. Never written.
     #[serde(default)]
     pub load_errors: Vec<LoadError>,
@@ -215,6 +219,8 @@ pub struct Delta {
     pub memory: Vec<MemoryNote>,
     /// Memory notes deleted since the last persist; their files are removed.
     pub memory_removed: Vec<MemoryId>,
+    /// Message log changes (runtime only).
+    pub messages: Log<Message>,
 }
 
 impl Delta {
@@ -229,6 +235,7 @@ impl Delta {
             decisions: Log::Rewritten(snapshot.decisions.clone()),
             memory: snapshot.memory.clone(),
             memory_removed: Vec::new(),
+            messages: Log::Rewritten(snapshot.messages.clone()),
         }
     }
 }
@@ -282,6 +289,52 @@ pub struct StatusReport {
 /// Default for [`State::set_task_orphan_secs`]: 30 minutes.
 pub const DEFAULT_TASK_ORPHAN_SECS: u64 = 1800;
 
+/// Rows shown per section of a claim brief (ADR-0014).
+pub const BRIEF_LIMIT: usize = 5;
+
+/// What a successful claim carries back about the claimed paths: one
+/// capped section per primitive, newest first. `more` counts the matching
+/// rows that were left out, so the caller knows whether to page with the
+/// list tools (ADR-0014).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Brief {
+    /// Unread notices not yet shown to the agent in a brief.
+    pub notices: Vec<Notice>,
+    /// Contracts consumed by the claimed paths.
+    pub contracts: Vec<Contract>,
+    /// Decisions affecting the claimed paths.
+    pub decisions: Vec<Decision>,
+    /// Memory notes about the claimed paths.
+    pub memory: Vec<MemoryNote>,
+    /// Rows left out of each section.
+    pub more: BriefMore,
+}
+
+/// Per-section counts of the rows a [`Brief`] left out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct BriefMore {
+    /// Unread, undelivered notices beyond [`BRIEF_LIMIT`].
+    pub notices: usize,
+    /// Contracts beyond [`BRIEF_LIMIT`].
+    pub contracts: usize,
+    /// Decisions beyond [`BRIEF_LIMIT`].
+    pub decisions: usize,
+    /// Memory notes beyond [`BRIEF_LIMIT`].
+    pub memory: usize,
+}
+
+/// Who held a path until its lease ended, told to the agent that claims
+/// it soon after (contract "Lost lease reporting", ADR-0015).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PreviousOwner {
+    /// The path just claimed.
+    pub path: RepoPath,
+    /// The agent whose lease on an overlapping path ended.
+    pub owner: AgentId,
+    /// When that lease ended.
+    pub reaped_at: DateTime<Utc>,
+}
+
 #[derive(Debug)]
 struct Inner {
     claims: ClaimBook,
@@ -300,6 +353,9 @@ struct Inner {
     memory_changed: ChangedIds<MemoryId>,
     notices_log: LogCursor,
     decisions_log: LogCursor,
+    /// Agent-to-agent messages and who has received what (ADR-0020).
+    messages: MessageBoard,
+    messages_log: LogCursor,
     /// Leases were renewed. Not a real change; folded into the next
     /// claims write instead of forcing one.
     touched: bool,
@@ -312,6 +368,12 @@ struct Inner {
     task_orphan: Duration,
     /// Tasks returned to `todo` from silent owners since start.
     tasks_orphaned: usize,
+    /// Leases that ended recently: reported once to their owner, and
+    /// visible to whoever claims the path next (ADR-0015). Not persisted.
+    reaped: Reaped,
+    /// Notices already shown to each agent in a brief, for the daemon's
+    /// lifetime. Not an acknowledgement and never persisted (ADR-0014).
+    delivered: BTreeMap<AgentId, BTreeSet<NoticeId>>,
 }
 
 impl Inner {
@@ -325,6 +387,7 @@ impl Inner {
                 .decisions_log
                 .is_dirty(self.decisions.decisions().len())
             || !self.memory_changed.is_empty()
+            || self.messages_log.is_dirty(self.messages.messages().len())
     }
 }
 
@@ -342,6 +405,14 @@ impl State {
     pub fn new(clock: Arc<dyn Clock>, snapshot: Snapshot) -> Self {
         let started_at = clock.now();
         let load_errors = snapshot.load_errors.clone();
+        // Messages past retention are dropped here; the file is rewritten
+        // to match on the next persist.
+        let loaded_messages = snapshot.messages.len();
+        let messages = MessageBoard::from_messages(snapshot.messages, started_at);
+        let mut messages_log = LogCursor::new(messages.messages().len());
+        if messages.messages().len() != loaded_messages {
+            messages_log.mark_rewrite();
+        }
         Self {
             inner: Mutex::new(Inner {
                 claims: ClaimBook::from_claims(snapshot.claims),
@@ -352,6 +423,8 @@ impl State {
                 decisions_log: LogCursor::new(snapshot.decisions.len()),
                 decisions: DecisionLog::from_decisions(snapshot.decisions),
                 memory: Arc::new(MemoryBook::from_notes(snapshot.memory)),
+                messages,
+                messages_log,
                 seq: snapshot.seq,
                 claims_dirty: false,
                 tasks_dirty: false,
@@ -363,6 +436,8 @@ impl State {
                     i64::try_from(DEFAULT_TASK_ORPHAN_SECS).unwrap_or(i64::MAX),
                 ),
                 tasks_orphaned: 0,
+                reaped: Reaped::default(),
+                delivered: BTreeMap::new(),
             }),
             clock,
             started_at,
@@ -405,7 +480,9 @@ impl State {
     ) -> R {
         let now = self.clock.now();
         let mut inner = self.lock();
-        if !inner.claims.reap(now).is_empty() {
+        let expired = inner.claims.reap(now);
+        if !expired.is_empty() {
+            inner.reaped.record(&expired, now);
             inner.claims_dirty = true;
         }
         if let Some(agent) = agent {
@@ -482,6 +559,7 @@ impl State {
             decisions: inner.decisions_log.take(inner.decisions.decisions()),
             memory: inner.memory_changed.take(inner.memory.notes(), |n| n.id),
             memory_removed: inner.memory_changed.take_removed(),
+            messages: inner.messages_log.take(inner.messages.messages()),
         })
     }
 
@@ -495,6 +573,49 @@ impl State {
         inner.notices_log.mark_rewrite();
         inner.decisions_log.mark_rewrite();
         inner.memory_changed.mark_all();
+        inner.messages_log.mark_rewrite();
+    }
+
+    /// Sends a message from `agent`. A broadcast (`to` = `*`) is addressed
+    /// to every agent seen within the last hour, minus the sender.
+    pub fn message_send(&self, agent: AgentId, new: NewMessage) -> Result<Message, MessageError> {
+        self.access(Some(&agent.clone()), |inner, now| {
+            let recent: Vec<AgentId> = inner
+                .last_seen
+                .iter()
+                .filter(|(_, seen)| now - **seen <= BROADCAST_WINDOW)
+                .map(|(a, _)| a.clone())
+                .collect();
+            inner.messages.send(agent, new, recent, now).cloned()
+        })
+    }
+
+    /// Newest `limit` messages `agent` sent or received, matching
+    /// `filter`, older than the cursor `before`.
+    pub fn messages_page(
+        &self,
+        agent: &AgentId,
+        filter: &MessageFilter,
+        before: Option<&(DateTime<Utc>, MessageId)>,
+        limit: usize,
+    ) -> Page<Message> {
+        self.access(Some(agent), |inner, _| {
+            inner
+                .messages
+                .list_page(agent, filter, before, limit)
+                .map(Clone::clone)
+        })
+    }
+
+    /// The messages waiting for `agent`, delivered once. Called by the
+    /// result assembly for every call, so it does not renew leases.
+    pub fn take_inbox(&self, agent: &AgentId) -> Inbox {
+        self.access(None, |inner, _| inner.messages.take_inbox(agent))
+    }
+
+    /// Resolves a message id or unique prefix.
+    pub fn resolve_message(&self, raw: &str) -> Result<MessageId, PrefixError> {
+        self.access(None, |inner, _| inner.messages.resolve_id(raw))
     }
 
     /// Claims paths for `agent`. See [`ClaimBook::claim`].
@@ -780,25 +901,92 @@ impl State {
             .collect()
     }
 
-    /// The newest notes concerning any of `paths`, deduplicated.
+    /// The brief a successful claim carries back (ADR-0014): the newest
+    /// unread and undelivered notices, contracts, decisions and memory
+    /// notes touching `paths`, each capped at [`BRIEF_LIMIT`].
     ///
-    /// This is what a successful claim carries back, so it is capped at
-    /// [`CLAIM_MEMORY_LIMIT`] however many notes match. A claim on a
-    /// directory can otherwise match every note in the repository.
-    pub fn memory_for_paths(&self, paths: &[RepoPath]) -> Vec<MemoryNote> {
-        let book = self.memory_book(None);
-        let mut seen = BTreeSet::new();
-        let mut found: Vec<&MemoryNote> = Vec::new();
-        for path in paths {
-            for note in book.for_path(path, None) {
-                if seen.insert(note.id) {
-                    found.push(note);
-                }
-            }
-        }
-        found.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        found.truncate(CLAIM_MEMORY_LIMIT);
-        found.into_iter().cloned().collect()
+    /// Notices returned are marked delivered to `agent` for the daemon's
+    /// lifetime, so the next brief on the same paths shows the next ones
+    /// instead of repeating these. Delivery is not an acknowledgement and
+    /// is never persisted.
+    pub fn brief(&self, agent: &AgentId, paths: &[RepoPath]) -> Brief {
+        self.access(None, |inner, _| {
+            let shown = inner.delivered.get(agent);
+            let mut notices = newest(
+                paths,
+                |path| {
+                    let filter = NoticeFilter {
+                        path: Some(path.clone()),
+                        since: None,
+                        unread_by: Some(agent.clone()),
+                    };
+                    inner.notices.list(&filter)
+                },
+                |n| n.id,
+                |n| n.published_at,
+            );
+            notices.retain(|n| !shown.is_some_and(|s| s.contains(&n.id)));
+            let contracts = newest(
+                paths,
+                |path| inner.contracts.list(Some(path), None),
+                |c| c.id,
+                |c| c.current.published_at,
+            );
+            let decisions = newest(
+                paths,
+                |path| inner.decisions.list(Some(path), None),
+                |d| d.id,
+                |d| d.recorded_at,
+            );
+            let memory = newest(
+                paths,
+                |path| inner.memory.for_path(path, None),
+                |m| m.id,
+                |m| m.updated_at,
+            );
+            let more = BriefMore {
+                notices: notices.len().saturating_sub(BRIEF_LIMIT),
+                contracts: contracts.len().saturating_sub(BRIEF_LIMIT),
+                decisions: decisions.len().saturating_sub(BRIEF_LIMIT),
+                memory: memory.len().saturating_sub(BRIEF_LIMIT),
+            };
+            let brief = Brief {
+                notices: capped(notices),
+                contracts: capped(contracts),
+                decisions: capped(decisions),
+                memory: capped(memory),
+                more,
+            };
+            inner
+                .delivered
+                .entry(agent.clone())
+                .or_default()
+                .extend(brief.notices.iter().map(|n| n.id));
+            brief
+        })
+    }
+
+    /// Leases `agent` lost since it was last told. Each is returned once;
+    /// the server attaches them to whatever response comes next.
+    pub fn take_lost(&self, agent: &AgentId) -> Vec<LostLease> {
+        self.access(None, |inner, _| inner.reaped.take_for(agent))
+    }
+
+    /// For each of `paths`, who held an overlapping path until recently,
+    /// if anyone did.
+    pub fn previous_owners(&self, paths: &[RepoPath]) -> Vec<PreviousOwner> {
+        self.access(None, |inner, _| {
+            paths
+                .iter()
+                .filter_map(|path| {
+                    inner.reaped.previous_owner(path).map(|lost| PreviousOwner {
+                        path: path.clone(),
+                        owner: lost.owner.clone(),
+                        reaped_at: lost.at,
+                    })
+                })
+                .collect()
+        })
     }
 
     /// Newest live claims, older than `before`, at most `limit`. With
@@ -982,8 +1170,38 @@ fn snapshot_of(inner: &Inner) -> Snapshot {
         notices: inner.notices.notices().to_vec(),
         decisions: inner.decisions.decisions().to_vec(),
         memory: inner.memory.notes().to_vec(),
+        messages: inner.messages.messages().to_vec(),
         load_errors: Vec::new(),
     }
+}
+
+/// Rows from `list` for every path, deduplicated by `id`, newest first.
+fn newest<'a, T, I, K>(
+    paths: &[RepoPath],
+    list: impl Fn(&RepoPath) -> Vec<&'a T>,
+    id: impl Fn(&T) -> I,
+    key: impl Fn(&T) -> K,
+) -> Vec<&'a T>
+where
+    I: Ord,
+    K: Ord,
+{
+    let mut seen = BTreeSet::new();
+    let mut rows: Vec<&'a T> = Vec::new();
+    for path in paths {
+        for row in list(path) {
+            if seen.insert(id(row)) {
+                rows.push(row);
+            }
+        }
+    }
+    rows.sort_by_key(|row| std::cmp::Reverse(key(row)));
+    rows
+}
+
+/// The first [`BRIEF_LIMIT`] rows, owned.
+fn capped<T: Clone>(rows: Vec<&T>) -> Vec<T> {
+    rows.into_iter().take(BRIEF_LIMIT).cloned().collect()
 }
 
 #[cfg(test)]

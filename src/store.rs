@@ -45,6 +45,8 @@ const TASKS_FILE: &str = "runtime/tasks.json";
 const META_FILE: &str = "runtime/meta.json";
 const DAEMON_FILE: &str = "runtime/daemon.json";
 const NOTICES_FILE: &str = "notices.jsonl";
+/// Agent-to-agent messages: runtime only, never committed (ADR-0020).
+const MESSAGES_FILE: &str = "runtime/messages.jsonl";
 const DECISIONS_FILE: &str = "decisions.jsonl";
 const GITIGNORE: &str = "# Written by tirith. Runtime state is local; everything else is meant to be committed.\nruntime/\n";
 
@@ -214,6 +216,7 @@ impl JsonStore {
             notices: self.read_log(NOTICES_FILE, &mut errors)?,
             decisions: self.read_log(DECISIONS_FILE, &mut errors)?,
             memory: self.load_memory(&mut errors)?,
+            messages: self.read_log(MESSAGES_FILE, &mut errors)?,
             load_errors: errors,
         })
     }
@@ -414,6 +417,7 @@ impl JsonStore {
         }
         self.write_log(NOTICES_FILE, &delta.notices, &mut dirs)?;
         self.write_log(DECISIONS_FILE, &delta.decisions, &mut dirs)?;
+        self.write_log(MESSAGES_FILE, &delta.messages, &mut dirs)?;
         sync_dirs(&dirs)?;
         // The sequence number goes last, after everything above is durable,
         // so a crash mid-apply never records progress that did not happen.
@@ -966,6 +970,7 @@ mod tests {
             )
             .unwrap();
         Snapshot {
+            messages: Vec::new(),
             seq: 7,
             claims: claims.claims().to_vec(),
             tasks: vec![],
@@ -1062,6 +1067,7 @@ mod tests {
         // A rewrite of the damaged log keeps the bad lines where they were.
         store
             .apply(&Delta {
+                messages: Log::Unchanged,
                 seq: 9,
                 notices: Log::Rewritten(loaded.notices.clone()),
                 ..Delta::default()
@@ -1090,6 +1096,7 @@ mod tests {
         fs::write(store.dir().join("contracts"), "in the way").unwrap();
         let err = store
             .apply(&Delta {
+                messages: Log::Unchanged,
                 seq: 8,
                 contracts: snapshot.contracts.clone(),
                 ..Delta::default()
@@ -1153,6 +1160,7 @@ mod tests {
             .unwrap();
         store
             .apply(&Delta {
+                messages: Log::Unchanged,
                 seq: 8,
                 notices: Log::Appended(notices[..2].to_vec()),
                 ..Delta::default()
@@ -1163,6 +1171,7 @@ mod tests {
         fs::write(&notices_path, text.trim_end()).unwrap();
         store
             .apply(&Delta {
+                messages: Log::Unchanged,
                 seq: 9,
                 notices: Log::Appended(notices[2..].to_vec()),
                 ..Delta::default()
@@ -1182,6 +1191,7 @@ mod tests {
 
         store
             .apply(&Delta {
+                messages: Log::Unchanged,
                 seq: 10,
                 notices: Log::Rewritten(notices[..1].to_vec()),
                 ..Delta::default()

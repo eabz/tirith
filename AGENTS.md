@@ -94,7 +94,10 @@ at `http://127.0.0.1:7477` if none is running (dashboard at
    another agent will consume.
 3. Publish a `notice` for every rename or signature change that affects
    callers outside the files you claimed.
-4. `release` your claims when done. Record settled choices with
+4. Talk to other agents through Tirith: `message_send` to an agent name
+   or `*`; replies arrive as `inbox` on your next call. Do not rely on
+   your client's own session messaging, which other clients cannot see.
+5. `release` your claims when done. Record settled choices with
    `decision_record`, and write what you learned about the paths you
    touched with `memory_write`.
 

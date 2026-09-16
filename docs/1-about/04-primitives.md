@@ -274,7 +274,7 @@ dense relation graph reaches every note in a few hops.
 | `kind` | string, optional | One of the kinds above |
 | `tag` | string, optional | Matches frontmatter tags and observation hashtags |
 | `since` | string, optional | RFC 3339; only notes updated at or after it |
-| `limit` | integer, optional | Default 20, clamped to 100 |
+| `limit` | integer, optional | Default 10, clamped to 50. Ten digest rows are about 2.3 KB, which keeps a search below a notice listing |
 
 Returns `ok` with `count`, `truncated`, and `notes`. Each row is a
 **digest**, never a whole note: `permalink`, `title`, `kind`, `paths`,
@@ -303,6 +303,29 @@ Returns `ok` with `removed` (a digest) or `not_found`. The note's file is
 deleted and does not come back on restart. A note holding a secret or a
 plainly wrong fact has to be retractable through the same path that wrote
 it; deleting the file by hand is undone by the next full rewrite.
+
+## Messages — Built
+
+Short notes between agents, for the coordination talk that used to go
+through a client's own chat: "take task X", "I released server.rs". They
+are runtime state in `.tirith/runtime/messages.jsonl`, never committed,
+and dropped after 24 hours. See
+[ADR-0020](../5-decisions/0020-agent-messages.md).
+
+| Tool | Purpose |
+|---|---|
+| `message_send` | `to` (an agent name, or `*` for every agent seen in the last hour), `text` (at most 1000 characters), optional `reply_to` (a message id or unique prefix) and `paths[]`. Returns `message` |
+| `message_list` | Your own conversations: messages you sent or received, newest first, paged (`limit`, `before`). Filter by `with` (the other agent), `since` (RFC 3339), or `unread` (to you, not yet received). Returns `count`, `total`, `truncated`, `next_before`, and `messages` |
+
+Delivery needs no tool. The recipient's next result, whatever it asked
+for, carries `inbox`: the newest five undelivered messages as
+`{id, from, text, at}` with `text` cut to 200 characters, plus
+`inbox_more` when more are waiting, and the text line starts with
+`warning: inbox: n;`. Each message is delivered once per daemon lifetime;
+after a restart anything still within retention is delivered again. A
+broadcast is addressed, at send time, to every agent that made a call in
+the previous hour, minus the sender; agents that show up later do not
+receive it. Nothing is attached when nothing is waiting.
 
 ## Status — Built
 

@@ -26,6 +26,8 @@ tirith/
 │   ├── dashboard-logo.png  The logo the dashboard serves at /logo.png.
 │   ├── client.rs        MCP client for the CLI and tests.
 │   ├── stdio.rs         The per-session stdio shim.
+│   ├── registry.rs      Per-user registry of running daemons.
+│   ├── tray.rs          macOS menu bar icon (feature `tray`, macOS only).
 │   ├── state.rs         Shared in-memory state.
 │   ├── store.rs         JSON persistence and the persister.
 │   ├── clock.rs         Injectable time.
@@ -35,8 +37,9 @@ tirith/
 │   ├── contracts.rs     Contracts domain.
 │   ├── notices.rs       Change notices domain.
 │   ├── decisions.rs     Decisions log domain.
-│   └── memory.rs        Memory notes domain, including the Markdown
-│                        file format notes are stored in.
+│   ├── memory.rs        Memory notes domain, including the Markdown
+│   │                    file format notes are stored in.
+│   └── messages.rs      Agent-to-agent messages (runtime only).
 ├── tests/               Integration tests: the server over localhost HTTP,
 │                        the stdio shim over its pipes.
 ├── examples/

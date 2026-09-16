@@ -27,6 +27,8 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0016](0016-shim-replaces-stale-daemon.md) | The stdio shim replaces a daemon of another version and refuses one of another repository | Accepted |
 | [0017](0017-tool-result-and-schema-budget.md) | Tool results travel once, and tool schemas have a byte budget | Accepted |
 | [0018](0018-task-ownership-and-contract-republish.md) | Tasks belong to their owner until they go silent; contract republishes are guarded | Accepted |
+| [0019](0019-menu-bar-tray.md) | A per-user daemon registry and a macOS menu bar tray | Accepted |
+| [0020](0020-agent-messages.md) | Agent-to-agent messages, delivered on the next call | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions.jsonl`

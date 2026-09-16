@@ -34,20 +34,22 @@ use tokio::task::JoinHandle;
 
 use crate::claims::ClaimError;
 use crate::clock::{Clock, SystemClock};
-use crate::contracts::{ContractError, ContractKind, NewContract};
+use crate::contracts::{Contract, ContractError, ContractKind, NewContract};
 use crate::dashboard::{self, DashboardContext};
-use crate::decisions::{DecisionError, NewDecision};
+use crate::decisions::{Decision, DecisionError, NewDecision};
 use crate::memory::{
     DEFAULT_SEARCH_LIMIT, MAX_CONTEXT_DEPTH, MAX_SEARCH_LIMIT, MemoryError, MemoryKind, MemoryNote,
     MemorySearch, NewMemory, Permalink,
 };
-use crate::notices::{NewNotice, NoticeError, NoticeFilter, NoticeKind};
-use crate::state::State;
+use crate::messages::{MessageError, MessageFilter, NewMessage};
+use crate::notices::{NewNotice, Notice, NoticeError, NoticeFilter, NoticeKind};
+use crate::registry::{DaemonEntry, Registry};
+use crate::state::{Brief, State};
 use crate::store::{DaemonInfo, JsonStore, Persister, StoreError};
 use crate::tasks::{NewTask, TaskError, TaskStatus};
 use crate::types::{
-    AgentId, ClaimId, ContractId, DecisionId, IdError, NoticeId, Page, PathError, PrefixError,
-    RepoPath, TaskId, clamp_limit, parse_paths,
+    AgentId, ClaimId, ContractId, DecisionId, IdError, MessageId, NoticeId, Page, PathError,
+    PrefixError, RepoPath, TaskId, clamp_limit, parse_paths,
 };
 
 /// Crate version reported to clients and the dashboard.
@@ -61,12 +63,13 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:7477";
 pub const SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Instructions sent to every MCP client on initialize.
-pub const INSTRUCTIONS: &str = "Tirith coordinates parallel coding agents working in one repository. \
-Pick a stable, unique `agent` name and pass it to every call. Before editing files, call `claim` \
-with the paths you will touch; if the status is `conflict`, do not edit those paths. Read `notice_list` \
-and `contract_list` for the paths you touch before acting. Publish a `contract_publish` before \
-implementing an interface another agent will consume, and `notice_publish` for renames or signature \
-changes that affect other files. Call `release` when done. Any call renews your claim leases.";
+pub const INSTRUCTIONS: &str = "Tirith coordinates parallel coding agents in one repository. Pick a \
+stable, unique `agent` name and pass it to every call. `claim` the paths you will edit before editing; \
+the ok reply carries a brief of the unread notices, contracts, decisions and memory notes for those \
+paths, so read it first. `conflict` means do not edit those paths. `contract_publish` before \
+implementing an interface another agent consumes; `notice_publish` for renames or signature changes \
+that affect other files; `release` when done. Any call renews your leases; a `lost` field means a \
+lease ended and you must claim again.";
 
 // ---------------------------------------------------------------------------
 // Tool inputs. Doc comments become schema descriptions.
@@ -84,6 +87,9 @@ pub struct ClaimInput {
     /// Lease length in seconds. Default 600, max 3600.
     #[serde(default)]
     pub ttl_secs: Option<u64>,
+    /// Attach the brief. Default true.
+    #[serde(default)]
+    pub brief: Option<bool>,
 }
 
 /// Input for `release`.
@@ -341,6 +347,45 @@ pub struct StatusInput {
     pub verbose: Option<bool>,
 }
 
+/// Input for `message_send`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MessageSendInput {
+    /// Your stable agent name.
+    pub agent: String,
+    /// The recipient's agent name, or `*` for everyone active in the last hour.
+    pub to: String,
+    /// The message, at most 1000 characters.
+    pub text: String,
+    /// The message this answers.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    /// Paths the message is about.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+}
+
+/// Input for `message_list`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MessageListInput {
+    /// Your stable agent name.
+    pub agent: String,
+    /// Only the conversation with this agent.
+    #[serde(default)]
+    pub with: Option<String>,
+    /// Only messages sent at or after this RFC 3339 instant.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Only messages to you that you have not received yet.
+    #[serde(default)]
+    pub unread: Option<bool>,
+    /// Rows to return; default 20, max 200.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Only rows older than this cursor.
+    #[serde(default)]
+    pub before: Option<String>,
+}
+
 /// Input for `memory_write`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemoryWriteInput {
@@ -408,7 +453,7 @@ pub struct MemorySearchInput {
     /// Only notes updated at or after this RFC 3339 timestamp.
     #[serde(default)]
     pub since: Option<String>,
-    /// How many to return. Default 20, max 100.
+    /// How many to return. Default 10, max 50.
     #[serde(default)]
     pub limit: Option<usize>,
 }
@@ -452,6 +497,106 @@ fn not_found(message: impl ToString) -> Value {
 /// whether to read it. Claim responses are polled and must stay small.
 fn memory_digest(note: &MemoryNote) -> Value {
     to_value(&note.digest())
+}
+
+/// A notice as a brief row: enough to decide whether to fetch it.
+fn notice_digest(notice: &Notice) -> Value {
+    compact(json!({
+        "id": notice.id,
+        "kind": notice.kind,
+        "summary": truncate(&notice.summary, BRIEF_SUMMARY_MAX),
+        "by": notice.published_by,
+    }))
+}
+
+/// A contract as a brief row; the body comes from `contract_get`.
+fn contract_digest(contract: &Contract) -> Value {
+    json!({
+        "name": contract.name,
+        "version": contract.current.version,
+        "kind": contract.kind,
+    })
+}
+
+/// A decision as a brief row.
+fn decision_digest(decision: &Decision) -> Value {
+    compact(json!({ "id": decision.id, "title": decision.title }))
+}
+
+/// `text` cut to `max` characters, with an ellipsis when it was longer.
+fn truncate(text: &str, max: usize) -> String {
+    let mut cut: String = text.chars().take(max).collect();
+    if cut.chars().count() < text.chars().count() {
+        cut.push('…');
+    }
+    cut
+}
+
+/// Adds the brief sections and `more` to an ok claim `value`, then drops
+/// the oldest rows of the largest section until the whole response fits
+/// in [`BRIEF_MAX_BYTES`] (ADR-0014). Empty sections are omitted.
+fn attach_brief(value: &Value, brief: &Brief) -> Value {
+    let mut sections: Vec<(&str, Vec<Value>, usize)> = vec![
+        (
+            "notices",
+            brief.notices.iter().map(notice_digest).collect(),
+            brief.more.notices,
+        ),
+        (
+            "contracts",
+            brief.contracts.iter().map(contract_digest).collect(),
+            brief.more.contracts,
+        ),
+        (
+            "decisions",
+            brief.decisions.iter().map(decision_digest).collect(),
+            brief.more.decisions,
+        ),
+        (
+            "memory",
+            brief.memory.iter().map(memory_digest).collect(),
+            brief.more.memory,
+        ),
+    ];
+    loop {
+        let rendered = render_brief(value, &sections);
+        if json_len(&rendered) <= BRIEF_MAX_BYTES {
+            return rendered;
+        }
+        let largest = sections
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, rows, _))| !rows.is_empty())
+            .max_by_key(|(_, (_, rows, _))| json_len(rows))
+            .map(|(i, _)| i);
+        let Some(i) = largest else {
+            return rendered;
+        };
+        sections[i].1.pop();
+        sections[i].2 += 1;
+    }
+}
+
+/// `base` plus every non-empty section and the `more` counts.
+fn render_brief(base: &Value, sections: &[(&str, Vec<Value>, usize)]) -> Value {
+    let mut value = base.clone();
+    if let Some(object) = value.as_object_mut() {
+        let mut more = serde_json::Map::new();
+        for (name, rows, left) in sections {
+            if !rows.is_empty() {
+                object.insert((*name).to_owned(), Value::Array(rows.clone()));
+            }
+            let left = u64::try_from(*left).unwrap_or(u64::MAX);
+            more.insert((*name).to_owned(), Value::from(left));
+        }
+        object.insert("more".to_owned(), Value::Object(more));
+    }
+    value
+}
+
+/// Serialized size in bytes; zero if it cannot be serialized.
+fn json_len<T: Serialize>(value: &T) -> usize {
+    serde_json::to_vec(value).map_or(0, |bytes| bytes.len())
 }
 
 fn to_value<T: Serialize>(value: &T) -> Value {
@@ -541,7 +686,8 @@ fn listing<T: Serialize, I: std::fmt::Display>(
 }
 
 /// Result keys whose array length is the natural summary of a listing.
-const LISTS: [&str; 7] = [
+const LISTS: [&str; 8] = [
+    "messages",
     "claims",
     "tasks",
     "contracts",
@@ -551,9 +697,19 @@ const LISTS: [&str; 7] = [
     "agents",
 ];
 /// Result keys holding the single item a mutation produced.
-const ITEMS: [&str; 5] = ["task", "contract", "notice", "decision", "note"];
+const ITEMS: [&str; 6] = ["task", "contract", "notice", "decision", "note", "message"];
 /// Longest text block a tool result carries, in characters.
 const SUMMARY_MAX: usize = 160;
+/// How much of a message the inbox piggyback carries; the rest is a
+/// `message_list` away.
+const INBOX_EXCERPT: usize = 200;
+
+/// Upper bound on a serialized `ok` claim response, brief included
+/// (ADR-0014).
+pub const BRIEF_MAX_BYTES: usize = 4096;
+
+/// Longest notice summary shown in a brief row.
+const BRIEF_SUMMARY_MAX: usize = 160;
 
 /// One line describing an outcome for clients that show only text. Never
 /// the JSON itself; the structured content carries that.
@@ -563,11 +719,31 @@ fn summary(outcome: &Value) -> String {
         format!("{status}: {message}")
     } else if let Some(paths) = outcome["new_paths"].as_array() {
         let renewed = outcome["renewed_paths"].as_array().map_or(0, Vec::len);
-        format!(
+        let mut line = format!(
             "{status}: claimed {} until {}",
             join_paths(paths, renewed),
             outcome["expires_at"].as_str().unwrap_or("?")
-        )
+        );
+        // The brief's row counts, so a text-only client knows there is
+        // something to read in the structured content.
+        let counts: Vec<String> = [
+            ("notices", "notices"),
+            ("contracts", "contracts"),
+            ("decisions", "decisions"),
+            ("memory", "notes"),
+        ]
+        .iter()
+        .filter_map(|(key, what)| {
+            outcome[key]
+                .as_array()
+                .map(|rows| format!("{} {what}", rows.len()))
+        })
+        .collect();
+        if !counts.is_empty() {
+            line.push_str("; brief: ");
+            line.push_str(&counts.join(", "));
+        }
+        line
     } else if let Some(paths) = outcome["released"].as_array() {
         format!("{status}: released {}", join_paths(paths, 0))
     } else if let Some(count) = outcome["count"].as_u64() {
@@ -779,6 +955,15 @@ impl From<DecisionError> for Value {
     }
 }
 
+impl From<MessageError> for Value {
+    fn from(e: MessageError) -> Self {
+        match e {
+            MessageError::NotFound(_) => not_found(e),
+            other => invalid(other),
+        }
+    }
+}
+
 impl From<MemoryError> for Value {
     fn from(e: MemoryError) -> Self {
         match e {
@@ -827,7 +1012,15 @@ impl TirithServer {
     /// The outcome travels once, as structured content. The text block is
     /// a one-line summary for clients that show only text; it is never the
     /// JSON again, which would double the tokens of every call.
-    async fn finish(&self, mut outcome: Value) -> Result<CallToolResult, McpError> {
+    ///
+    /// `agent` is the caller: if any lease it held has ended since it was
+    /// last told, the outcome gains `lost` and the text line a warning,
+    /// whatever tool was called (ADR-0015).
+    async fn finish(
+        &self,
+        agent: Option<&str>,
+        mut outcome: Value,
+    ) -> Result<CallToolResult, McpError> {
         let mut not_persisted = None;
         if self.state.is_dirty() {
             if let Err(error) = self.persister.flush().await {
@@ -835,16 +1028,54 @@ impl TirithServer {
                 not_persisted = Some(error.to_string());
             }
         }
+        let mut warnings = Vec::new();
         // The domain decision stands (it is what every other agent sees),
         // but the caller must know it may not survive a restart.
         if let Some(error) = &not_persisted {
             if let Value::Object(map) = &mut outcome {
                 map.insert("persist_error".into(), Value::String(error.clone()));
             }
+            warnings.push(format!("not persisted ({error})"));
         }
-        let text = match &not_persisted {
-            Some(error) => format!("warning: not persisted ({error}); {}", summary(&outcome)),
-            None => summary(&outcome),
+        // A lease that ended while the agent may still be editing is the
+        // one thing it must hear about regardless of what it asked.
+        if let Some(agent) = agent.and_then(|raw| AgentId::new(raw).ok()) {
+            let lost = self.state.take_lost(&agent);
+            if !lost.is_empty() {
+                warnings.push(format!("lost lease on {} path(s)", lost.len()));
+                if let Value::Object(map) = &mut outcome {
+                    map.insert("lost".into(), compact(to_value(&lost)));
+                }
+            }
+            // Messages from other agents ride on whatever was asked, once.
+            let inbox = self.state.take_inbox(&agent);
+            if !inbox.messages.is_empty() {
+                let waiting = inbox.messages.len() + inbox.more;
+                warnings.push(format!("inbox: {waiting}"));
+                if let Value::Object(map) = &mut outcome {
+                    let rows: Vec<Value> = inbox
+                        .messages
+                        .iter()
+                        .map(|m| {
+                            compact(json!({
+                                "id": m.id,
+                                "from": m.from,
+                                "text": m.text.chars().take(INBOX_EXCERPT).collect::<String>(),
+                                "at": m.at,
+                            }))
+                        })
+                        .collect();
+                    map.insert("inbox".into(), Value::Array(rows));
+                    if inbox.more > 0 {
+                        map.insert("inbox_more".into(), json!(inbox.more));
+                    }
+                }
+            }
+        }
+        let text = if warnings.is_empty() {
+            summary(&outcome)
+        } else {
+            format!("warning: {}; {}", warnings.join("; "), summary(&outcome))
         };
         let mut result = CallToolResult::structured(outcome);
         result.content = vec![ContentBlock::text(text)];
@@ -857,7 +1088,7 @@ impl TirithServer {
     /// Claim files or directories before editing them.
     #[tool(
         name = "claim",
-        description = "Claim paths before editing (a directory covers its contents); nothing is claimed on conflict. ttl_secs: default 600, max 3600."
+        description = "Claim paths before editing (a directory covers its contents); nothing is claimed on conflict. An ok reply briefs unread notices, contracts, decisions and memory notes. ttl_secs: default 600, max 3600."
     )]
     async fn claim(
         &self,
@@ -867,27 +1098,28 @@ impl TirithServer {
             let agent = agent(&input.agent)?;
             let paths = paths(&input.paths)?;
             let granted = self.state.claim(
-                agent,
+                agent.clone(),
                 paths.clone(),
                 input.reason.trim().to_owned(),
                 input.ttl_secs,
             )?;
-            // Knowledge about these paths reaches the agent that is about to
-            // edit them, without anyone having to search for it. Capped and
-            // excerpted so a directory claim cannot return the whole book.
-            let memory: Vec<Value> = self
-                .state
-                .memory_for_paths(&paths)
-                .iter()
-                .map(memory_digest)
-                .collect();
             let mut value = to_value(&granted);
-            if let Some(object) = value.as_object_mut() {
-                object.insert("memory".to_owned(), Value::Array(memory));
+            // Whoever lost these paths a moment ago may have left them
+            // half-edited; the new owner should know before touching them.
+            let previous = self.state.previous_owners(&granted.new_paths);
+            if !previous.is_empty() {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("previous_owner".to_owned(), compact(to_value(&previous)));
+                }
+            }
+            // The brief: what the agent needs to know about these paths,
+            // delivered with the claim instead of asked for in four calls.
+            if input.brief.unwrap_or(true) {
+                value = attach_brief(&value, &self.state.brief(&agent, &paths));
             }
             Ok(ok(value))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Release claims when done.
@@ -905,7 +1137,7 @@ impl TirithServer {
             let released = self.state.release(&agent, paths)?;
             Ok(ok(json!({ "agent": agent, "released": released })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Renew every lease you hold.
@@ -922,7 +1154,7 @@ impl TirithServer {
                 json!({ "agent": agent, "count": claims.len(), "expires_at": expires_at }),
             ))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// List live claims.
@@ -948,7 +1180,7 @@ impl TirithServer {
             );
             Ok(listing("claims", &page, |c| (c.claimed_at, c.id)))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Create a task.
@@ -981,7 +1213,7 @@ impl TirithServer {
             )?;
             Ok(ok(json!({ "task": task })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Pull the next unblocked task.
@@ -1000,7 +1232,7 @@ impl TirithServer {
                 None => with_status("none", json!({ "message": "no unblocked todo tasks" })),
             })
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Update a task's status.
@@ -1022,7 +1254,7 @@ impl TirithServer {
                 .task_update(agent, id, status, input.note, force)?;
             Ok(ok(json!({ "task": task })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// List tasks.
@@ -1048,7 +1280,7 @@ impl TirithServer {
             );
             Ok(listing("tasks", &page, |t| (t.updated_at, t.id)))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Publish an interface contract.
@@ -1080,7 +1312,7 @@ impl TirithServer {
                 "notice_id": notice.map(|n| n.id),
             })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Fetch a contract.
@@ -1099,7 +1331,7 @@ impl TirithServer {
                 None => ContractError::NotFound(input.name).into(),
             })
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// List contracts.
@@ -1131,7 +1363,7 @@ impl TirithServer {
                 (c.current.published_at, c.id)
             }))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Publish a change notice.
@@ -1164,7 +1396,7 @@ impl TirithServer {
             )?;
             Ok(ok(json!({ "notice": notice })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// List change notices.
@@ -1208,7 +1440,7 @@ impl TirithServer {
             );
             Ok(listing("notices", &page, |n| (n.published_at, n.id)))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Acknowledge a notice.
@@ -1226,7 +1458,7 @@ impl TirithServer {
             let notice = self.state.notice_ack(agent, id)?;
             Ok(ok(json!({ "notice": notice })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Record a decision.
@@ -1252,7 +1484,7 @@ impl TirithServer {
             )?;
             Ok(ok(json!({ "decision": decision })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// List decisions.
@@ -1281,7 +1513,7 @@ impl TirithServer {
             );
             Ok(listing("decisions", &page, |d| (d.recorded_at, d.id)))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Server status.
@@ -1333,7 +1565,7 @@ impl TirithServer {
             }
             Ok(ok(value))
         });
-        self.finish(outcome).await
+        self.finish(input.agent.as_deref(), outcome).await
     }
 
     /// Write a memory note.
@@ -1355,24 +1587,23 @@ impl TirithServer {
                 Some(raw) if !raw.is_empty() => Some(Permalink::parse(raw)?),
                 _ => None,
             };
-            let written = self.state.memory_write(
-                agent,
-                NewMemory {
-                    title: input.title,
-                    kind,
-                    body: input.body,
-                    paths: opt_paths(input.paths.as_ref())?,
-                    tags: input.tags.unwrap_or_default(),
-                    permalink,
-                    if_updated_at: input.if_updated_at.as_deref().map(timestamp).transpose()?,
-                },
-            )?;
+            let mut new = NewMemory::new(input.title, input.body)
+                .with_kind(kind)
+                .with_paths(opt_paths(input.paths.as_ref())?)
+                .with_tags(input.tags.unwrap_or_default());
+            if let Some(permalink) = permalink {
+                new = new.with_permalink(permalink);
+            }
+            if let Some(at) = input.if_updated_at.as_deref().map(timestamp).transpose()? {
+                new = new.with_if_updated_at(at);
+            }
+            let written = self.state.memory_write(agent, new)?;
             Ok(ok(json!({
                 "note": written.note,
                 "created": written.created,
             })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Read one memory note.
@@ -1402,13 +1633,13 @@ impl TirithServer {
             let related: Vec<Value> = related.iter().map(memory_digest).collect();
             Ok(ok(json!({ "note": note, "related": related })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Search memory notes.
     #[tool(
         name = "memory_search",
-        description = "Search notes, best first; no query lists the newest. limit: default 20, max 100."
+        description = "Search notes, best first; no query lists the newest. limit: default 10, max 50."
     )]
     async fn memory_search(
         &self,
@@ -1453,7 +1684,7 @@ impl TirithServer {
                 "notes": notes,
             })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
     }
 
     /// Delete a memory note.
@@ -1475,7 +1706,62 @@ impl TirithServer {
             };
             Ok(ok(json!({ "removed": memory_digest(&removed) })))
         });
-        self.finish(outcome).await
+        self.finish(Some(&input.agent), outcome).await
+    }
+
+    /// Send a message to another agent.
+    #[tool(
+        name = "message_send",
+        description = "Message an agent (to: name, or * for all active); delivered on their next call. text: max 1000 chars."
+    )]
+    async fn message_send(
+        &self,
+        Parameters(input): Parameters<MessageSendInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let outcome = run(|| {
+            let agent = agent(&input.agent)?;
+            let mut new =
+                NewMessage::new(input.to, input.text).with_paths(opt_paths(input.paths.as_ref())?);
+            if let Some(raw) = input
+                .reply_to
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+            {
+                new = new.with_reply_to(self.state.resolve_message(raw)?);
+            }
+            let message = self.state.message_send(agent, new)?;
+            Ok(ok(json!({ "message": compact(to_value(&message)) })))
+        });
+        self.finish(Some(&input.agent), outcome).await
+    }
+
+    /// List your messages.
+    #[tool(
+        name = "message_list",
+        description = "List your messages, newest first; filter by with, since, unread."
+    )]
+    async fn message_list(
+        &self,
+        Parameters(input): Parameters<MessageListInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let outcome = run(|| {
+            let agent = agent(&input.agent)?;
+            let filter = MessageFilter {
+                with: opt_agent(input.with.as_deref())?,
+                since: input.since.as_deref().map(timestamp).transpose()?,
+                unread: input.unread.unwrap_or(false),
+            };
+            let before = cursor(input.before.as_deref(), MessageId::parse, MessageId::nil())?;
+            let page = self.state.messages_page(
+                &agent,
+                &filter,
+                before.as_ref(),
+                clamp_limit(input.limit),
+            );
+            Ok(listing("messages", &page, |m| (m.at, m.id)))
+        });
+        self.finish(Some(&input.agent), outcome).await
     }
 }
 
@@ -1609,6 +1895,10 @@ pub struct ServeOptions {
     pub repo_root: PathBuf,
     /// The clock to use. `None` means the system clock.
     pub clock: Option<Arc<dyn Clock>>,
+    /// The per-user daemon registry to announce this daemon in, for the
+    /// menu bar tray (ADR-0019). `None` registers nowhere, which is what
+    /// tests want; `tirith serve` passes [`Registry::default_path`].
+    pub registry: Option<PathBuf>,
 }
 
 /// Why the daemon could not start or stop.
@@ -1640,6 +1930,7 @@ pub struct ServerHandle {
     state: Arc<State>,
     store: Arc<JsonStore>,
     persister: Arc<Persister>,
+    registry: Option<PathBuf>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), std::io::Error>>,
 }
@@ -1702,6 +1993,12 @@ impl ServerHandle {
         if ours {
             self.store.clear_daemon_info()?;
         }
+        if let Some(path) = &self.registry
+            && let Err(error) =
+                Registry::load(path).and_then(|mut r| r.unregister(std::process::id()))
+        {
+            tracing::warn!(%error, "could not leave the daemon registry");
+        }
         match result {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(ServeError::Server(e.to_string())),
@@ -1763,6 +2060,22 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
         version: VERSION.to_owned(),
     })?;
 
+    // Announce this daemon to the tray's registry. Best effort: a registry
+    // that cannot be written must not stop a daemon.
+    if let Some(path) = &options.registry {
+        let entry = DaemonEntry {
+            root: options.repo_root.clone(),
+            url: mcp_url(addr),
+            dashboard_url: dashboard_url(addr),
+            pid: std::process::id(),
+            version: VERSION.to_owned(),
+            started_at: state.started_at(),
+        };
+        if let Err(error) = Registry::load(path).and_then(|mut r| r.register(entry)) {
+            tracing::warn!(%error, "could not register in the daemon registry");
+        }
+    }
+
     let (tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -1777,6 +2090,7 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
         state,
         store,
         persister,
+        registry: options.registry,
         shutdown: Some(tx),
         task,
     })

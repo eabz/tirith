@@ -155,6 +155,30 @@ speaks the protocol, keeps the session, and prints compact text or
 tirith status          # daemon address, uptime, live claims
 ```
 
+## What responses carry
+
+Every tool result is `{ "status": ..., ... }` plus a one-line text
+summary. A few fields can appear on any result, so a client should read
+them wherever they show up:
+
+- **`lost`** on any result: `[{path, owner, at}]` for leases the caller
+  held that expired since its last call, with the text line prefixed
+  `warning: lost lease on N path(s)`. Stop editing those paths; someone
+  else may hold them now.
+- **`previous_owner`** on a successful `claim`: `[{path, owner,
+  reaped_at}]` when a path was reaped from another agent less than one
+  lease ago, so the file may be half-edited.
+- **The brief** on a successful `claim`: `notices`, `contracts`,
+  `decisions`, and `memory` for the claimed paths, five newest each as
+  compact rows, with `more` counts for the rest; empty sections are
+  omitted and the whole brief stays under 4 KB. Pass `brief: false` to
+  skip it. The demo in
+  [01-two-agents-demo.md](01-two-agents-demo.md) shows one.
+- **`load_errors`** in `status` and `/api/health`: files under `.tirith/`
+  the daemon could not load at start (a merge-conflict marker in a
+  committed log, an unparseable note). The daemon runs without them;
+  fix the file and restart to load it.
+
 ## The CLI
 
 Every tool has a subcommand. `--agent` (or `TIRITH_AGENT`) sets your name,

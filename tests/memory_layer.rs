@@ -63,30 +63,28 @@ fn seeded() -> MemoryBook {
     let now = chrono::Utc::now();
     book.write(
         agent("storage-claude"),
-        NewMemory {
-            title: "Persister writes are sequence-ordered".to_owned(),
-            kind: MemoryKind::Lesson,
-            body: "A snapshot older than the last written one is skipped.\n\n\
+        NewMemory::new(
+            "Persister writes are sequence-ordered".to_owned(),
+            "A snapshot older than the last written one is skipped.\n\n\
                    - [design] Writes go through spawn_blocking #storage\n\
                    - follows [[claim-leases-renew-on-any-call]]"
                 .to_owned(),
-            paths: vec![path("src/store.rs")],
-            tags: vec!["storage".to_owned()],
-            ..NewMemory::default()
-        },
+        )
+        .with_kind(MemoryKind::Lesson)
+        .with_paths(vec![path("src/store.rs")])
+        .with_tags(vec!["storage".to_owned()]),
         now,
     )
     .unwrap();
     book.write(
         agent("claude-scaffold"),
-        NewMemory {
-            title: "Claim leases renew on any call".to_owned(),
-            kind: MemoryKind::Fact,
-            body: "Any tool call by the owning agent renews all of its leases.".to_owned(),
-            paths: vec![path("src/claims.rs"), path("src/state.rs")],
-            tags: vec!["claims".to_owned()],
-            ..NewMemory::default()
-        },
+        NewMemory::new(
+            "Claim leases renew on any call".to_owned(),
+            "Any tool call by the owning agent renews all of its leases.".to_owned(),
+        )
+        .with_kind(MemoryKind::Fact)
+        .with_paths(vec![path("src/claims.rs"), path("src/state.rs")])
+        .with_tags(vec!["claims".to_owned()]),
         now,
     )
     .unwrap();
@@ -131,12 +129,11 @@ fn editing_a_note_rewrites_exactly_one_file() {
     let edited = book
         .write(
             agent("someone-else"),
-            NewMemory {
-                title: "Persister writes are sequence-ordered".to_owned(),
-                kind: MemoryKind::Lesson,
-                body: "Rewritten body.".to_owned(),
-                ..NewMemory::default()
-            },
+            NewMemory::new(
+                "Persister writes are sequence-ordered".to_owned(),
+                "Rewritten body.".to_owned(),
+            )
+            .with_kind(MemoryKind::Lesson),
             chrono::Utc::now(),
         )
         .unwrap();
@@ -264,11 +261,7 @@ fn notes_can_live_in_folders() {
     let flat = book
         .write(
             agent("a"),
-            NewMemory {
-                title: "Storage design".to_owned(),
-                body: "Body.".to_owned(),
-                ..NewMemory::default()
-            },
+            NewMemory::new("Storage design".to_owned(), "Body.".to_owned()),
             chrono::Utc::now(),
         )
         .unwrap()
@@ -303,12 +296,8 @@ fn notes_can_live_in_folders() {
     let updated = nested
         .write(
             agent("b"),
-            NewMemory {
-                title: "Pre-alpha build".to_owned(),
-                body: "Edited.".to_owned(),
-                permalink: Some(note.permalink.clone()),
-                ..NewMemory::default()
-            },
+            NewMemory::new("Pre-alpha build".to_owned(), "Edited.".to_owned())
+                .with_permalink(note.permalink.clone()),
             chrono::Utc::now(),
         )
         .unwrap();
@@ -337,6 +326,8 @@ mod mcp {
             bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             repo_root: root.to_path_buf(),
             clock: None,
+
+            registry: None,
         }
     }
 
@@ -563,14 +554,17 @@ mod mcp {
             assert!(row["title"].as_str().unwrap().starts_with("Note number"));
         }
 
-        // A claim on an unrelated path carries nothing.
+        // A claim on an unrelated path carries nothing: an empty brief
+        // section is omitted rather than sent as [] (ADR-0014).
         let elsewhere = call(
             &handle,
             "claim",
             json!({ "agent": "other", "paths": ["Cargo.toml"], "reason": "bump" }),
         )
         .await;
-        assert_eq!(elsewhere["memory"], json!([]));
+        assert_eq!(elsewhere["status"], "ok");
+        assert!(elsewhere.get("memory").is_none(), "{elsewhere}");
+        assert_eq!(elsewhere["more"]["memory"], 0);
 
         handle.shutdown().await.unwrap();
     }
@@ -657,6 +651,8 @@ mod mcp_v4 {
             bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             repo_root: root.to_path_buf(),
             clock: None,
+
+            registry: None,
         }
     }
 

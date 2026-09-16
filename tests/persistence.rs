@@ -22,6 +22,8 @@ fn options(root: &Path, clock: Option<Arc<ManualClock>>) -> ServeOptions {
         bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
         repo_root: root.to_path_buf(),
         clock: clock.map(|c| c as Arc<dyn Clock>),
+
+        registry: None,
     }
 }
 

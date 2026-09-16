@@ -90,6 +90,7 @@ convention it has to follow.
 | **Change notices** | "Renamed `X` to `Y`, these paths are affected." Dependents read them before acting and acknowledge when handled. |
 | **Decisions log** | Settled choices with rationale, so nothing is decided twice. |
 | **Memory notes** | Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and reachable by whoever claims the paths a note is about. |
+| **Messages** | Short notes between agents ("take task X", "server.rs is free"), delivered on the recipient's next call, so any MCP client can take part. Runtime only, never committed. |
 
 Claims and the task board are table stakes. Contracts and change notices are
 the reason Tirith exists: nothing else covers them today. Memory notes are
@@ -164,12 +165,21 @@ tirith contract publish | get | list
 tirith notice   publish | list | ack
 tirith decision record | list
 tirith memory   write | read | search | delete   # body from --body, --file, or stdin
+tirith message  send | list                # talk to other agents; inbox shows on any result
+tirith tray                                # macOS menu bar icon listing daemons
 tirith tools                               # list tools with descriptions
 tirith call <tool> '<json>'                # call any tool directly
 ```
 
 `--agent` sets your name, `--json` prints the raw result, and non-`ok`
 outcomes exit with status 1.
+
+## Menu bar
+
+On macOS, `tirith tray` shows a tower in the menu bar listing every Tirith
+daemon on the machine with its agent and claim counts; click one to open
+its dashboard, or stop it from the same menu. Details in
+[docs/1-about/05-installation.md](docs/1-about/05-installation.md).
 
 ## How it runs
 

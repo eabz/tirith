@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Two agents, one directory: a note left for whoever edits it next, an
-# overlapping claim refused until the first agent releases, and the note
-# found again by search.
+# overlapping claim refused until the first agent releases, and the claim
+# that succeeds carrying everything Bob needs to know about the path.
 set -euo pipefail
-cd "$(dirname "$0")/.." && cargo build --quiet && T="$PWD/target/debug/tirith"
+cd "$(dirname "$0")/.."
+# TIRITH_BIN=/path/to/tirith runs the demo against a prebuilt binary (a release).
+T="${TIRITH_BIN:-}"; [ -n "$T" ] || { cargo build --quiet && T="$PWD/target/debug/tirith"; }
 cd "$(mktemp -d)"
 "$T" serve --bind 127.0.0.1:0 >/dev/null 2>&1 & trap 'kill $!' EXIT
 until [ -f .tirith/runtime/daemon.json ]; do sleep 0.1; done   # the CLI reads the daemon's address from here
@@ -16,18 +18,27 @@ Tokens are opaque strings. Compare them, never parse them.
 - [lesson] the shape lives in the contract "POST /api/sessions", not in the code
 NOTE
 
-# A claim on the directory carries that note back. Bob's overlapping claim
-# is refused with the owner, reason, and expiry, until Alice releases.
+# Alice claims the directory; Bob's overlapping claim is refused with the
+# owner, reason, and expiry.
 "$T" claim --agent alice --reason "refactor session handling" src/auth/
 "$T" claim --agent bob   --reason "fix login redirect"        src/auth/login.rs || true
-"$T" claims --agent bob --path src/auth/        # lists your own claims plus any overlapping the path
-"$T" release --agent alice
-"$T" claim --agent bob   --reason "fix login redirect"        src/auth/login.rs
+"$T" claims --agent bob --path src/auth/        # your own claims plus any overlapping the path
 
-# Alice announces two changes that touch src/auth. Lists are bounded: Bob
-# asks for one row and gets a cursor for the rest.
+# While she holds it, Alice publishes the interface, announces two changes,
+# and records a decision, all against src/auth.
+"$T" contract publish --agent alice "POST /api/sessions" -k http \
+  -s '{"request":{"email":"string","password":"string"},"response":{"token":"string"}}' --consumer src/auth/login.rs
 "$T" notice publish --agent alice -k rename    "renamed session_id to token" --from session_id --to token --path src/auth/
 "$T" notice publish --agent alice -k signature "login() now returns Result<Session>" --path src/auth/login.rs
+"$T" decision record --agent alice "Tokens are opaque" -d "Clients compare tokens, never parse them" --path src/auth/
+"$T" release --agent alice
+
+# Bob's claim now succeeds and carries a brief: the newest notices,
+# contracts, decisions, and notes for the path, five each at most, with
+# `more` counts for the rest. Empty sections are left out.
+"$T" claim --agent bob --reason "fix login redirect" src/auth/login.rs
+
+# Lists are bounded: Bob asks for one row and gets a cursor for the rest.
 "$T" notice list --agent bob --path src/auth/ --unread --limit 1
 
 # Anyone can find the note by text and read it in full.

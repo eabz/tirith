@@ -21,7 +21,10 @@ use serde_json::{Value, json};
 use tirith::server::{ServeOptions, ServerHandle, start};
 
 /// `tools/list` for the whole tool surface, in serialized JSON chars.
-const TOOLS_LIST_MAX: usize = 7 * 1024;
+/// 7 KiB held 21 tools; `message_send` and `message_list` (ADR-0020) cost
+/// about 640 chars of schema between them, so the bound moved to 7,800.
+/// Raise it only for a real tool or parameter, never for prose.
+const TOOLS_LIST_MAX: usize = 7_800;
 /// Any single tool in `tools/list`.
 const TOOL_MAX: usize = 500;
 /// The text content block of any result.
@@ -53,6 +56,8 @@ impl Daemon {
             bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             repo_root: dir.path().to_path_buf(),
             clock: None,
+
+            registry: None,
         })
         .await
         .unwrap();

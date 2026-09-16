@@ -87,5 +87,19 @@ lto = "thin"
 strip = true
 codegen-units = 1
 
-[package.metadata.cargo-machete]
-ignored = []
+# The macOS menu bar tray (`tirith tray`, ADR-0019). All optional and
+# macOS-only; the `tray` feature turns them on and nothing else pulls them in.
+[target.'cfg(target_os = "macos")'.dependencies]
+# Status bar icon with a menu, over objc2; no window, no winit.
+tray-icon = { version = "0.25", optional = true }
+# The menu the tray shows (tray-icon's companion crate).
+muda = { version = "0.20", optional = true }
+# Safe AppKit bindings, already pulled by tray-icon: NSApplication's event pump.
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSResponder", "NSEvent", "NSRunningApplication"] }
+# Safe Foundation bindings, already pulled by tray-icon: NSDate and the run loop mode string.
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSDate", "NSString", "NSRunLoop", "NSObjCRuntime"] }
+
+[features]
+default = ["tray"]
+# `tirith tray`: the macOS menu bar icon. Compiles to nothing off macOS.
+tray = ["dep:tray-icon", "dep:muda", "dep:objc2-app-kit", "dep:objc2-foundation"]

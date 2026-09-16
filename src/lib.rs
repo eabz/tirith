@@ -29,11 +29,15 @@ pub mod contracts;
 pub mod dashboard;
 pub mod decisions;
 pub mod memory;
+pub mod messages;
 pub mod notices;
+pub mod registry;
 pub mod server;
 pub mod state;
 pub mod stdio;
 pub mod store;
 pub mod tasks;
+#[cfg(all(feature = "tray", target_os = "macos"))]
+pub mod tray;
 pub mod types;
 pub mod update;

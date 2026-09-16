@@ -44,10 +44,10 @@ pub const MAX_PERMALINK_DEPTH: usize = 8;
 ///
 /// Searching runs under the daemon's single state lock, so an unbounded
 /// search would make every other agent wait for it.
-pub const DEFAULT_SEARCH_LIMIT: usize = 20;
+pub const DEFAULT_SEARCH_LIMIT: usize = 10;
 
 /// The most results a single search may return.
-pub const MAX_SEARCH_LIMIT: usize = 100;
+pub const MAX_SEARCH_LIMIT: usize = 50;
 
 /// The most relation hops [`MemoryBook::context`] may be asked to walk.
 ///
@@ -542,6 +542,66 @@ pub struct NewMemory {
     /// write that would clobber someone else's work is refused with
     /// [`MemoryError::Conflict`] instead.
     pub if_updated_at: Option<DateTime<Utc>>,
+}
+
+impl NewMemory {
+    /// A note with the required fields; everything else is set with the
+    /// `with_*` methods, so a new optional field never breaks a caller.
+    ///
+    /// ```
+    /// use tirith::memory::{MemoryKind, NewMemory};
+    /// use tirith::types::RepoPath;
+    ///
+    /// let note = NewMemory::new("Leases renew on any call", "Any tool call renews every lease.")
+    ///     .with_kind(MemoryKind::Fact)
+    ///     .with_paths(vec![RepoPath::new("src/claims.rs").unwrap()])
+    ///     .with_tags(vec!["leases".into()]);
+    /// assert_eq!(note.kind, MemoryKind::Fact);
+    /// assert_eq!(note.paths.len(), 1);
+    /// ```
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Sets the kind; the default is [`MemoryKind::Note`].
+    #[must_use]
+    pub fn with_kind(mut self, kind: MemoryKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Sets the paths the note is about.
+    #[must_use]
+    pub fn with_paths(mut self, paths: Vec<RepoPath>) -> Self {
+        self.paths = paths;
+        self
+    }
+
+    /// Sets the tags.
+    #[must_use]
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    /// Targets an existing note instead of matching on the title.
+    #[must_use]
+    pub fn with_permalink(mut self, permalink: Permalink) -> Self {
+        self.permalink = Some(permalink);
+        self
+    }
+
+    /// Refuses the write unless the stored note was last updated at
+    /// `at`; see [`NewMemory::if_updated_at`].
+    #[must_use]
+    pub fn with_if_updated_at(mut self, at: DateTime<Utc>) -> Self {
+        self.if_updated_at = Some(at);
+        self
+    }
 }
 
 /// Filters for [`MemoryBook::search`].

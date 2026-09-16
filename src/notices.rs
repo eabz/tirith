@@ -2,7 +2,10 @@
 //!
 //! Dependents list notices for the paths they are about to touch before
 //! acting, then acknowledge the ones they have handled so `unread_by`
-//! filters stay meaningful.
+//! filters stay meaningful. Acknowledgements are their own append-only
+//! log ([`NoticeAck`], ADR-0021): a notice row is never rewritten after
+//! it is published, and the in-memory `acked_by` is rebuilt from the log
+//! on load.
 
 use std::fmt;
 use std::str::FromStr;
@@ -106,6 +109,19 @@ impl Notice {
     }
 }
 
+/// One acknowledgement: `agent` handled `notice_id` at `at`. Appended to
+/// its own runtime log so acking never rewrites the notices log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct NoticeAck {
+    /// The acknowledged notice.
+    pub notice_id: NoticeId,
+    /// Who handled it.
+    pub agent: AgentId,
+    /// When.
+    pub at: DateTime<Utc>,
+}
+
 /// Input for publishing a notice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewNotice {
@@ -150,16 +166,22 @@ pub enum NoticeError {
     UnknownKind(String),
 }
 
-/// All notices, oldest first.
+/// All notices, oldest first, plus the acknowledgement log in the order
+/// it was appended.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoticeBoard {
     notices: Vec<Notice>,
+    #[serde(default)]
+    acks: Vec<NoticeAck>,
 }
 
 impl NoticeBoard {
     /// Rebuilds a board from persisted notices.
     pub fn from_notices(notices: Vec<Notice>) -> Self {
-        Self { notices }
+        Self {
+            notices,
+            acks: Vec::new(),
+        }
     }
 
     /// All notices in publish order.
@@ -222,7 +244,34 @@ impl NoticeBoard {
         resolve_prefix("notice", self.notices.iter().map(|n| n.id), raw)
     }
 
-    /// Marks a notice as handled by `agent`. Acknowledging twice is fine.
+    /// Rebuilds a board from persisted notices and the acknowledgement
+    /// log, replaying each ack into the notice's `acked_by`. Acks for
+    /// notices that no longer exist are dropped.
+    pub fn from_parts(notices: Vec<Notice>, acks: Vec<NoticeAck>) -> Self {
+        let mut board = Self {
+            notices,
+            acks: Vec::with_capacity(acks.len()),
+        };
+        for ack in acks {
+            if let Some(notice) = board.notices.iter_mut().find(|n| n.id == ack.notice_id) {
+                if !notice.acked_by.contains(&ack.agent) {
+                    notice.acked_by.push(ack.agent.clone());
+                }
+                board.acks.push(ack);
+            }
+        }
+        board
+    }
+
+    /// The acknowledgement log, oldest first. The persister appends new
+    /// entries from here through a `LogCursor`.
+    pub fn acks(&self) -> &[NoticeAck] {
+        &self.acks
+    }
+
+    /// Marks a notice as handled by `agent` without recording when.
+    /// Acknowledging twice is fine. Prefer [`ack_at`](Self::ack_at), which
+    /// also appends to the log that survives a restart.
     pub fn ack(&mut self, agent: AgentId, id: NoticeId) -> Result<&Notice, NoticeError> {
         let notice = self
             .notices
@@ -231,6 +280,30 @@ impl NoticeBoard {
             .ok_or(NoticeError::NotFound(id))?;
         if !notice.acked_by.contains(&agent) {
             notice.acked_by.push(agent);
+        }
+        Ok(notice)
+    }
+
+    /// Marks a notice as handled by `agent` at `now` and appends the ack
+    /// to the log. A repeated ack changes nothing and appends nothing.
+    pub fn ack_at(
+        &mut self,
+        agent: AgentId,
+        id: NoticeId,
+        now: DateTime<Utc>,
+    ) -> Result<&Notice, NoticeError> {
+        let notice = self
+            .notices
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or(NoticeError::NotFound(id))?;
+        if !notice.acked_by.contains(&agent) {
+            notice.acked_by.push(agent.clone());
+            self.acks.push(NoticeAck {
+                notice_id: id,
+                agent,
+                at: now,
+            });
         }
         Ok(notice)
     }
@@ -350,5 +423,45 @@ mod tests {
             board.ack(agent("a"), ghost).err(),
             Some(NoticeError::NotFound(ghost))
         );
+    }
+
+    #[test]
+    fn acks_are_logged_once_and_replayed_on_load() {
+        let mut board = NoticeBoard::default();
+        let id = board
+            .publish(agent("alice"), rename(&["src/auth"]), t0())
+            .unwrap()
+            .id;
+        let later = t0() + Duration::seconds(5);
+        board.ack_at(agent("bob"), id, later).unwrap();
+        board.ack_at(agent("bob"), id, later).unwrap();
+        board.ack_at(agent("carol"), id, later).unwrap();
+        assert_eq!(board.acks().len(), 2, "one log entry per agent");
+        assert_eq!(board.acks()[0].agent, agent("bob"));
+        assert_eq!(board.acks()[0].at, later);
+
+        // What the store does on load: notice rows as published (no acks
+        // inside them) plus the ack log.
+        let mut rows = board.notices().to_vec();
+        for row in &mut rows {
+            row.acked_by.clear();
+        }
+        let reloaded = NoticeBoard::from_parts(rows, board.acks().to_vec());
+        assert_eq!(
+            reloaded.notices()[0].acked_by,
+            vec![agent("bob"), agent("carol")]
+        );
+        assert!(!reloaded.notices()[0].unread_by(&agent("bob")));
+        assert!(reloaded.notices()[0].unread_by(&agent("dave")));
+        assert_eq!(reloaded.acks().len(), 2);
+
+        // An ack for a notice that no longer exists is dropped, not kept.
+        let stray = NoticeAck {
+            notice_id: NoticeId::new(),
+            agent: agent("bob"),
+            at: later,
+        };
+        let pruned = NoticeBoard::from_parts(board.notices().to_vec(), vec![stray]);
+        assert!(pruned.acks().is_empty());
     }
 }

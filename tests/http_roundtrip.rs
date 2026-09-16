@@ -18,6 +18,8 @@ fn options(root: &Path, clock: Option<Arc<ManualClock>>) -> ServeOptions {
         bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
         repo_root: root.to_path_buf(),
         clock: clock.map(|c| c as Arc<dyn tirith::clock::Clock>),
+
+        registry: None,
     }
 }
 
@@ -451,6 +453,7 @@ async fn tool_results_carry_a_short_text_line_not_the_json() {
 }
 
 /// Bounds for `tool_list_stays_small`, in serialized JSON chars.
+/// 7,800 covers 23 tools after `message_send` and `message_list` (ADR-0020).
 /// Measured 2026-09-16: 10,445 for 17 tools before slimming (largest
 /// 1,040); about 6,100 for 20 tools after, with a floor of 4,170 if every
 /// description were removed. Lower them when the schemas shrink. Raised
@@ -460,7 +463,7 @@ async fn tool_results_carry_a_short_text_line_not_the_json() {
 // Raised from 6_656 for two real additions in the memory primitive: the
 // `memory_delete` tool and the `if_updated_at` input on `memory_write`.
 // Per ADR-0017, every raise names what it pays for.
-const TOOL_LIST_LIMIT: usize = 7_000;
+const TOOL_LIST_LIMIT: usize = 7_800;
 const TOOL_LIMIT: usize = 500;
 
 #[tokio::test]
@@ -862,4 +865,388 @@ async fn shutdown_leaves_another_daemons_record_alone() {
     let after: Value =
         serde_json::from_str(&std::fs::read_to_string(&daemon_json).unwrap()).unwrap();
     assert_eq!(after["pid"], std::process::id() + 1);
+}
+
+/// A daemon given a registry path announces itself there on start and
+/// leaves on shutdown, which is how the menu bar tray finds daemons.
+#[tokio::test]
+async fn a_daemon_registers_on_start_and_unregisters_on_shutdown() {
+    use tirith::registry::Registry;
+
+    let dir = tempfile::tempdir().unwrap();
+    let registry = dir.path().join("state/tirith/daemons.json");
+    let mut options = options(dir.path(), None);
+    options.registry = Some(registry.clone());
+    let handle = start(options).await.unwrap();
+    let entries = Registry::load(&registry).unwrap();
+    assert_eq!(entries.entries().len(), 1, "{entries:?}");
+    let entry = &entries.entries()[0];
+    assert_eq!(entry.pid, std::process::id());
+    assert_eq!(entry.root, dir.path());
+    assert_eq!(entry.dashboard_url, handle.dashboard_url());
+    handle.shutdown().await.unwrap();
+    assert!(Registry::load(&registry).unwrap().entries().is_empty());
+}
+
+/// ADR-0020: a message rides on the recipient's next result, once; a
+/// broadcast reaches the agents seen recently; listing pages; and the
+/// text limit is enforced.
+#[tokio::test]
+async fn messages_ride_on_the_next_result_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    // bob and carol are "seen" before the broadcast; dave is not.
+    call(&handle, "status", json!({ "agent": "bob" })).await;
+    call(&handle, "status", json!({ "agent": "carol" })).await;
+
+    let sent = call(
+        &handle,
+        "message_send",
+        json!({ "agent": "alice", "to": "bob", "text": "take task X", "paths": ["src/a.rs"] }),
+    )
+    .await;
+    assert_eq!(sent["status"], "ok", "{sent}");
+    assert_eq!(sent["message"]["to"], "bob");
+    assert_eq!(
+        sent["message"]["id"].as_str().unwrap().len(),
+        8,
+        "compact id"
+    );
+
+    // Delivered on bob's next call, whatever it is, exactly once.
+    let claim = call(
+        &handle,
+        "claim",
+        json!({ "agent": "bob", "paths": ["src/b.rs"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(claim["status"], "ok", "{claim}");
+    let inbox = claim["inbox"]
+        .as_array()
+        .expect("inbox on bob's next result");
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0]["from"], "alice");
+    assert_eq!(inbox[0]["text"], "take task X");
+    assert!(claim.get("inbox_more").is_none());
+    let again = call(&handle, "status", json!({ "agent": "bob" })).await;
+    assert!(again.get("inbox").is_none(), "not delivered twice: {again}");
+    // Nobody else sees it; alice sees her own message in her history only.
+    let carol = call(&handle, "status", json!({ "agent": "carol" })).await;
+    assert!(carol.get("inbox").is_none());
+    let mine = call(&handle, "message_list", json!({ "agent": "alice" })).await;
+    assert_eq!(mine["count"], 1, "{mine}");
+
+    // A broadcast reaches bob and carol (seen before it), not dave or alice.
+    call(
+        &handle,
+        "message_send",
+        json!({ "agent": "alice", "to": "*", "text": "server.rs is free" }),
+    )
+    .await;
+    for who in ["bob", "carol"] {
+        let next = call(&handle, "status", json!({ "agent": who })).await;
+        assert_eq!(
+            next["inbox"].as_array().map(Vec::len),
+            Some(1),
+            "{who}: {next}"
+        );
+    }
+    let dave = call(&handle, "status", json!({ "agent": "dave" })).await;
+    assert!(dave.get("inbox").is_none(), "{dave}");
+    let alice = call(&handle, "status", json!({ "agent": "alice" })).await;
+    assert!(alice.get("inbox").is_none(), "{alice}");
+
+    // Seven more to bob: the inbox carries five and counts the rest.
+    for i in 0..7 {
+        call(
+            &handle,
+            "message_send",
+            json!({ "agent": "alice", "to": "bob", "text": format!("m{i}") }),
+        )
+        .await;
+    }
+    let batch = call(&handle, "status", json!({ "agent": "bob" })).await;
+    assert_eq!(batch["inbox"].as_array().map(Vec::len), Some(5), "{batch}");
+    assert_eq!(batch["inbox_more"], 2);
+    assert_eq!(batch["inbox"][0]["text"], "m6", "newest first");
+
+    // Listing pages with a cursor and filters by conversation.
+    let page = call(
+        &handle,
+        "message_list",
+        json!({ "agent": "bob", "with": "alice", "limit": 4 }),
+    )
+    .await;
+    assert_eq!(page["count"], 4, "{page}");
+    assert_eq!(page["total"], 9, "1 direct + 1 broadcast + 7: {page}");
+    assert_eq!(page["truncated"], true);
+    let rest = call(
+        &handle,
+        "message_list",
+        json!({ "agent": "bob", "with": "alice", "limit": 10, "before": page["next_before"] }),
+    )
+    .await;
+    assert_eq!(rest["count"], 5, "{rest}");
+
+    // Too long is invalid; the text line stays short even with an inbox.
+    let long = "x".repeat(1001);
+    let refused = call(
+        &handle,
+        "message_send",
+        json!({ "agent": "alice", "to": "bob", "text": long }),
+    )
+    .await;
+    assert_eq!(refused["status"], "invalid", "{refused}");
+    handle.shutdown().await.unwrap();
+}
+
+/// A claim carries a brief: the newest five unread notices for the paths
+/// with `more` counting the rest, contracts and decisions the same way,
+/// and empty sections omitted. The next claim shows the next five without
+/// repeating one, delivery is not an ack, and `brief: false` returns the
+/// bare outcome (ADR-0014).
+#[tokio::test]
+async fn claim_briefs_unread_notices_five_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    for i in 0..40 {
+        call(
+            &handle,
+            "notice_publish",
+            json!({ "agent": "other", "kind": "behavior", "summary": format!("change {i}"),
+                "affected_paths": ["src/m/f.rs"] }),
+        )
+        .await;
+    }
+    call(
+        &handle,
+        "contract_publish",
+        json!({ "agent": "other", "name": "Widget", "kind": "function",
+            "shape": { "fn": "w()" }, "consumers": ["src/m"] }),
+    )
+    .await;
+    call(
+        &handle,
+        "decision_record",
+        json!({ "agent": "other", "title": "Use widgets", "decision": "yes",
+            "affects_paths": ["src/m"] }),
+    )
+    .await;
+
+    let first = call(
+        &handle,
+        "claim",
+        json!({ "agent": "me", "paths": ["src/m/f.rs"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(first["status"], "ok", "{first}");
+    let notices = first["notices"].as_array().unwrap();
+    assert_eq!(notices.len(), 5);
+    assert_eq!(notices[0]["summary"], "change 39", "newest first");
+    assert_eq!(notices[0]["id"].as_str().unwrap().len(), 8);
+    assert!(notices[0].get("acked_by").is_none());
+    assert_eq!(first["more"]["notices"], 35);
+    assert_eq!(first["contracts"][0]["name"], "Widget");
+    assert_eq!(first["contracts"][0]["version"], 1);
+    assert_eq!(first["more"]["contracts"], 0);
+    assert_eq!(first["decisions"][0]["title"], "Use widgets");
+    assert!(first.get("memory").is_none(), "empty sections are omitted");
+
+    let second = call(
+        &handle,
+        "claim",
+        json!({ "agent": "me", "paths": ["src/m/f.rs"], "reason": "r" }),
+    )
+    .await;
+    let again = second["notices"].as_array().unwrap();
+    assert_eq!(again.len(), 5);
+    assert_eq!(
+        again[0]["summary"], "change 34",
+        "the next five, not the same"
+    );
+    assert_eq!(second["more"]["notices"], 30);
+
+    let unread = call(
+        &handle,
+        "notice_list",
+        json!({ "agent": "me", "path": "src/m/f.rs", "unread": true }),
+    )
+    .await;
+    assert_eq!(unread["total"], 40, "delivered is not acked");
+
+    let bare = call(
+        &handle,
+        "claim",
+        json!({ "agent": "me", "paths": ["src/m/f.rs"], "reason": "r", "brief": false }),
+    )
+    .await;
+    assert_eq!(bare["status"], "ok");
+    for key in ["notices", "contracts", "decisions", "memory", "more"] {
+        assert!(bare.get(key).is_none(), "{key} present without brief");
+    }
+    let refused = call(
+        &handle,
+        "claim",
+        json!({ "agent": "someone", "paths": ["src/m/f.rs"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(refused["status"], "conflict");
+    assert!(refused.get("more").is_none(), "conflicts carry no brief");
+    handle.shutdown().await.unwrap();
+}
+
+/// However much matches, the whole `ok` claim response stays under
+/// `BRIEF_MAX_BYTES`: the oldest rows of the largest section are dropped
+/// and its `more` count raised, so nothing is silently lost.
+#[tokio::test]
+async fn claim_brief_stays_under_the_byte_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    for i in 0..40 {
+        call(
+            &handle,
+            "notice_publish",
+            json!({ "agent": "other", "kind": "signature",
+                "summary": format!("{i:03} {}", "s".repeat(157)),
+                "affected_paths": ["src/m/f.rs"] }),
+        )
+        .await;
+        call(
+            &handle,
+            "decision_record",
+            json!({ "agent": "other", "title": format!("Decision {i:03} {}", "t".repeat(100)),
+                "decision": "yes", "affects_paths": ["src/m"] }),
+        )
+        .await;
+    }
+    for i in 0..20 {
+        call(
+            &handle,
+            "contract_publish",
+            json!({ "agent": "other", "name": format!("Contract {i:03} {}", "n".repeat(80)),
+                "kind": "function", "shape": { "fn": "f()" }, "consumers": ["src/m"] }),
+        )
+        .await;
+        call(
+            &handle,
+            "memory_write",
+            json!({ "agent": "other", "title": format!("Note {i:03} {}", "w".repeat(80)),
+                "body": "b".repeat(400), "paths": ["src/m"] }),
+        )
+        .await;
+    }
+    let claim = call(
+        &handle,
+        "claim",
+        json!({ "agent": "me", "paths": ["src/m/f.rs"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(claim["status"], "ok", "{claim}");
+    let bytes = serde_json::to_vec(&claim).unwrap().len();
+    assert!(bytes <= tirith::server::BRIEF_MAX_BYTES, "{bytes} bytes");
+    for (section, seeded) in [
+        ("notices", 40),
+        ("decisions", 40),
+        ("contracts", 20),
+        ("memory", 20),
+    ] {
+        let shown = claim[section].as_array().map_or(0, Vec::len);
+        let more = claim["more"][section].as_u64().unwrap();
+        assert_eq!(
+            shown as u64 + more,
+            seeded,
+            "{section}: {shown} shown, {more} more"
+        );
+        assert!(shown <= 5, "{section} shows {shown}");
+    }
+    assert!(claim["notices"].as_array().is_some_and(|n| !n.is_empty()));
+    handle.shutdown().await.unwrap();
+}
+
+/// A lease that ended is reported once, on the owner's next call whatever
+/// the tool, with a warning prefix on the text line; whoever claims the
+/// path soon after learns who held it (ADR-0015).
+#[tokio::test]
+async fn a_lost_lease_is_reported_once_and_names_the_previous_owner() {
+    use rmcp::model::CallToolRequestParams;
+
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(ManualClock::new(
+        Utc.with_ymd_and_hms(2026, 9, 16, 3, 0, 0).unwrap(),
+    ));
+    let handle = start(options(dir.path(), Some(clock.clone())))
+        .await
+        .unwrap();
+    call(
+        &handle,
+        "claim",
+        json!({ "agent": "alice", "paths": ["a"], "reason": "r", "ttl_secs": 30 }),
+    )
+    .await;
+    clock.advance(Duration::seconds(31));
+
+    let client = raw_client(&handle.mcp_url()).await;
+    let arguments = json!({ "agent": "alice" }).as_object().cloned().unwrap();
+    let result = client
+        .call_tool(CallToolRequestParams::new("claims_list").with_arguments(arguments))
+        .await
+        .unwrap();
+    let structured = result.structured_content.as_ref().unwrap();
+    assert_eq!(structured["lost"][0]["path"], "a", "{structured}");
+    assert_eq!(structured["lost"][0]["owner"], "alice");
+    let text = result.content[0].as_text().unwrap().text.as_str();
+    assert!(
+        text.starts_with("warning: lost lease on 1 path(s); ok:"),
+        "{text}"
+    );
+    let _ = client.cancel().await;
+
+    let again = call(&handle, "claims_list", json!({ "agent": "alice" })).await;
+    assert!(again.get("lost").is_none(), "reported once: {again}");
+
+    let bob = call(
+        &handle,
+        "claim",
+        json!({ "agent": "bob", "paths": ["a"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(bob["status"], "ok");
+    assert_eq!(bob["previous_owner"][0]["owner"], "alice", "{bob}");
+    assert_eq!(bob["previous_owner"][0]["path"], "a");
+    handle.shutdown().await.unwrap();
+}
+
+/// Activity renews a lease only up to four TTLs from when it was claimed;
+/// after that it ends like any other and the owner sees it in `lost`.
+#[tokio::test]
+async fn activity_cannot_extend_a_lease_past_four_ttls() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(ManualClock::new(
+        Utc.with_ymd_and_hms(2026, 9, 16, 3, 0, 0).unwrap(),
+    ));
+    let handle = start(options(dir.path(), Some(clock.clone())))
+        .await
+        .unwrap();
+    call(
+        &handle,
+        "claim",
+        json!({ "agent": "alice", "paths": ["a"], "reason": "r", "ttl_secs": 30 }),
+    )
+    .await;
+    for _ in 0..4 {
+        clock.advance(Duration::seconds(25));
+        let renewed = call(&handle, "claims_list", json!({ "agent": "alice" })).await;
+        assert!(renewed.get("lost").is_none(), "still held: {renewed}");
+    }
+    clock.advance(Duration::seconds(25));
+    let after = call(&handle, "claims_list", json!({ "agent": "alice" })).await;
+    assert_eq!(after["lost"][0]["path"], "a", "125 s > 4 x 30 s: {after}");
+    let bob = call(
+        &handle,
+        "claim",
+        json!({ "agent": "bob", "paths": ["a"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(bob["status"], "ok");
+    handle.shutdown().await.unwrap();
 }

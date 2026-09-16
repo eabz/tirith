@@ -88,6 +88,9 @@ enum Command {
         /// task returns to todo (0 disables).
         #[arg(long, default_value_t = tirith::state::DEFAULT_TASK_ORPHAN_SECS)]
         task_orphan_secs: u64,
+        /// Do not start the menu bar tray (macOS) alongside this daemon.
+        #[arg(long)]
+        no_tray: bool,
     },
     /// Serve MCP over stdin/stdout for clients that spawn servers themselves,
     /// starting the repository's daemon if none is running.
@@ -96,6 +99,10 @@ enum Command {
         #[arg(long, default_value = DEFAULT_BIND)]
         bind: String,
     },
+    /// Show a menu bar icon listing every Tirith daemon on this machine;
+    /// clicking a daemon opens its dashboard. Stays until Quit.
+    #[cfg(all(feature = "tray", target_os = "macos"))]
+    Tray,
     /// Update tirith to the latest release (or a given version) in place.
     Update {
         /// Install this version instead of the latest, e.g. 0.2.0 or v0.2.0.
@@ -158,6 +165,11 @@ enum Command {
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
+    },
+    /// Messages to and from other agents, delivered on their next call.
+    Message {
+        #[command(subcommand)]
+        command: MessageCommand,
     },
     /// List the tools the daemon exposes.
     Tools,
@@ -278,6 +290,9 @@ enum NoticeCommand {
         /// Only notices you have not acknowledged.
         #[arg(long)]
         unread: bool,
+        /// Every notice, not only those on the paths you hold.
+        #[arg(long)]
+        all: bool,
         #[command(flatten)]
         page: Page,
     },
@@ -369,6 +384,37 @@ enum MemoryCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum MessageCommand {
+    /// Send a message; it reaches the recipient on their next tool call.
+    Send {
+        /// An agent name, or `*` for every agent active in the last hour.
+        to: String,
+        /// The message, at most 1000 characters.
+        text: String,
+        /// The message this answers (id or unique prefix).
+        #[arg(long)]
+        reply_to: Option<String>,
+        /// Paths the message is about.
+        #[arg(long = "path")]
+        paths: Vec<String>,
+    },
+    /// List your messages, newest first.
+    List {
+        /// Only the conversation with this agent.
+        #[arg(long)]
+        with: Option<String>,
+        /// RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Only messages to you that you have not received yet.
+        #[arg(long)]
+        unread: bool,
+        #[command(flatten)]
+        page: Page,
+    },
+}
+
 /// Common options every remote command needs.
 #[derive(Debug, Args)]
 struct Remote {
@@ -383,15 +429,24 @@ pub(crate) async fn run() -> Result<ExitCode> {
     if let Command::Serve {
         bind,
         task_orphan_secs,
+        no_tray,
     } = cli.command
     {
-        return serve(bind, task_orphan_secs, cli.root).await;
+        return serve(bind, task_orphan_secs, no_tray, cli.root).await;
     }
     if let Command::Stdio { bind } = cli.command {
         return stdio_shim(bind, cli.root).await;
     }
     if let Command::Update { to, check } = cli.command {
         return self_update(to, check, &cli.root).await;
+    }
+    #[cfg(all(feature = "tray", target_os = "macos"))]
+    if let Command::Tray = cli.command {
+        // The tray owns the main thread; run it on a plain thread's worth
+        // of stack outside the async runtime's control.
+        return tokio::task::block_in_place(tirith::tray::run)
+            .map(|()| ExitCode::SUCCESS)
+            .map_err(anyhow::Error::from);
     }
     let url = match cli.url {
         Some(url) => url,
@@ -410,6 +465,8 @@ pub(crate) async fn run() -> Result<ExitCode> {
         Command::Serve { .. } | Command::Stdio { .. } | Command::Update { .. } => {
             unreachable!("handled above")
         }
+        #[cfg(all(feature = "tray", target_os = "macos"))]
+        Command::Tray => unreachable!("handled above"),
         Command::Tools => return tools(&remote).await,
         Command::Call { tool, arguments } => {
             let mut value: Value =
@@ -440,6 +497,7 @@ pub(crate) async fn run() -> Result<ExitCode> {
         Command::Notice { command } => notice_call(command),
         Command::Decision { command } => decision_call(command),
         Command::Memory { command } => memory_call(command)?,
+        Command::Message { command } => message_call(command),
     };
     call(&remote, &tool, arguments).await
 }
@@ -524,11 +582,12 @@ fn notice_call(command: NoticeCommand) -> (String, Value) {
             path,
             since,
             unread,
+            all,
             page,
         } => (
             "notice_list".to_owned(),
             merge(
-                json!({ "path": path, "since": since, "unread": unread }),
+                json!({ "path": path, "since": since, "unread": unread, "all": all }),
                 page.args(),
             ),
         ),
@@ -600,6 +659,32 @@ fn memory_call(command: MemoryCommand) -> Result<(String, Value)> {
     })
 }
 
+fn message_call(command: MessageCommand) -> (String, Value) {
+    match command {
+        MessageCommand::Send {
+            to,
+            text,
+            reply_to,
+            paths,
+        } => (
+            "message_send".to_owned(),
+            json!({ "to": to, "text": text, "reply_to": reply_to, "paths": paths }),
+        ),
+        MessageCommand::List {
+            with,
+            since,
+            unread,
+            page,
+        } => (
+            "message_list".to_owned(),
+            merge(
+                json!({ "with": with, "since": since, "unread": unread }),
+                page.args(),
+            ),
+        ),
+    }
+}
+
 fn read_stdin() -> Result<String> {
     let body =
         std::io::read_to_string(std::io::stdin()).context("reading the note body from stdin")?;
@@ -609,7 +694,12 @@ fn read_stdin() -> Result<String> {
     Ok(body)
 }
 
-async fn serve(bind: SocketAddr, task_orphan_secs: u64, root: PathBuf) -> Result<ExitCode> {
+async fn serve(
+    bind: SocketAddr,
+    task_orphan_secs: u64,
+    no_tray: bool,
+    root: PathBuf,
+) -> Result<ExitCode> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -620,13 +710,29 @@ async fn serve(bind: SocketAddr, task_orphan_secs: u64, root: PathBuf) -> Result
     let root = root
         .canonicalize()
         .with_context(|| format!("repository root {}", root.display()))?;
+    // Announce the daemon for the menu bar tray; a machine without a
+    // resolvable state directory just runs without one.
+    let registry = match tirith::registry::Registry::default_path() {
+        Ok(path) => Some(path),
+        Err(error) => {
+            eprintln!("warning: {error}; the tray will not see this daemon");
+            None
+        }
+    };
     let handle = server::start(ServeOptions {
         bind,
         repo_root: root.clone(),
         clock: None,
+        registry,
     })
     .await?;
     handle.set_task_orphan_secs(task_orphan_secs);
+    #[cfg(all(feature = "tray", target_os = "macos"))]
+    if !no_tray && let Err(error) = tirith::tray::launch_if_absent() {
+        eprintln!("warning: could not start the menu bar tray: {error}");
+    }
+    #[cfg(not(all(feature = "tray", target_os = "macos")))]
+    let _ = no_tray;
     println!("tirith {} serving {}", server::VERSION, root.display());
     println!("  mcp       {}", handle.mcp_url());
     println!("  dashboard {}", handle.dashboard_url());
@@ -751,7 +857,18 @@ async fn call(remote: &Remote, tool: &str, mut arguments: Value) -> Result<ExitC
     if remote.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("{}", render(tool, &remote.agent, &result));
+        let mut lines = vec![render(tool, &remote.agent, &result)];
+        // Messages from other agents ride on any result; show them after it.
+        if let Some(inbox) = result["inbox"].as_array().filter(|m| !m.is_empty()) {
+            lines.push("inbox:".to_owned());
+            lines.extend(inbox.iter().map(|m| format!("  {}", message_line(m))));
+            if let Some(more) = result["inbox_more"].as_u64() {
+                lines.push(format!(
+                    "  …{more} more, run `tirith message list --unread`"
+                ));
+            }
+        }
+        println!("{}", lines.join("\n"));
     }
     let status = result["status"].as_str().unwrap_or("");
     Ok(if matches!(status, "ok" | "none") {
@@ -809,7 +926,42 @@ fn pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_default()
 }
 
+/// One block of brief rows under a `name:` heading, omitted when empty.
+fn section(out: &mut Vec<String>, name: &str, rows: &Value, line: impl Fn(&Value) -> String) {
+    if let Some(rows) = rows.as_array().filter(|r| !r.is_empty()) {
+        out.push(format!("{name}:"));
+        out.extend(rows.iter().map(|r| format!("  {}", line(r))));
+    }
+}
+
+/// Renders a tool result for a human, with the `lost` leases any result
+/// may carry (ADR-0015) as warning lines above it.
 fn render(tool: &str, agent: &str, v: &Value) -> String {
+    let body = render_result(tool, agent, v);
+    let lost: Vec<String> = v["lost"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|l| {
+            let holder = l["now_held_by"]
+                .as_str()
+                .map(|o| format!(" (now {o})"))
+                .unwrap_or_default();
+            format!(
+                "warning: lost lease on {}{holder} at {}; stop editing it",
+                s(&l["path"]),
+                when(&l["at"])
+            )
+        })
+        .collect();
+    if lost.is_empty() {
+        body
+    } else {
+        format!("{}\n{body}", lost.join("\n"))
+    }
+}
+
+fn render_result(tool: &str, agent: &str, v: &Value) -> String {
     let status = s(&v["status"]);
     match (tool, status) {
         ("claim", "ok") => {
@@ -826,10 +978,45 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
                 "ok       {agent}  {paths}  expires {}",
                 when(&v["expires_at"])
             )];
-            // Notes about the paths just claimed: what to know before editing.
-            if let Some(notes) = v["memory"].as_array().filter(|n| !n.is_empty()) {
-                out.push("memory:".to_owned());
-                out.extend(notes.iter().map(|n| format!("  {}", memory_line(n))));
+            let absorbed = strs(&v["absorbed_paths"]);
+            if !absorbed.is_empty() {
+                out.push(format!("absorbed {absorbed}"));
+            }
+            // Someone lost this path recently: it may be half-edited.
+            for p in v["previous_owner"].as_array().into_iter().flatten() {
+                out.push(format!(
+                    "previous owner {} on {} until {}",
+                    s(&p["owner"]),
+                    s(&p["path"]),
+                    when(&p["reaped_at"])
+                ));
+            }
+            // The brief: what to know before editing, five newest per section.
+            section(&mut out, "notices", &v["notices"], |n| {
+                format!(
+                    "{} {:<9} {}  by {}",
+                    short(&n["id"]),
+                    s(&n["kind"]),
+                    s(&n["summary"]),
+                    s(&n["by"])
+                )
+            });
+            section(&mut out, "contracts", &v["contracts"], |c| {
+                format!("{}  v{} {}", s(&c["name"]), c["version"], s(&c["kind"]))
+            });
+            section(&mut out, "decisions", &v["decisions"], |d| {
+                format!("{} {}", short(&d["id"]), s(&d["title"]))
+            });
+            section(&mut out, "memory", &v["memory"], memory_line);
+            if let Some(more) = v["more"].as_object() {
+                let rest: Vec<String> = more
+                    .iter()
+                    .filter(|(_, n)| n.as_u64().unwrap_or(0) > 0)
+                    .map(|(k, n)| format!("{k} {n}"))
+                    .collect();
+                if !rest.is_empty() {
+                    out.push(format!("more: {}", rest.join("  ")));
+                }
             }
             out.join("\n")
         }
@@ -937,6 +1124,8 @@ fn render(tool: &str, agent: &str, v: &Value) -> String {
             format!("{verb:<8} {}", memory_line(&v["note"]))
         }
         ("memory_delete", "ok") => format!("deleted  {}", memory_line(&v["removed"])),
+        ("message_send", "ok") => format!("sent     {}", message_line(&v["message"])),
+        ("message_list", "ok") => page(v, "messages", "no messages", message_line),
         ("memory_read", "ok") => {
             let mut out = vec![memory_full(&v["note"])];
             if let Some(related) = v["related"].as_array().filter(|r| !r.is_empty()) {
@@ -1083,6 +1272,28 @@ fn memory_full(n: &Value) -> String {
     out.push(String::new());
     out.push(s(&n["body"]).trim_end().to_owned());
     out.join("\n")
+}
+
+/// One line per message: id, when, from, to, and the text on one line.
+fn message_line(m: &Value) -> String {
+    let text: String = s(&m["text"])
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    let to = if s(&m["to"]).is_empty() {
+        "me"
+    } else {
+        s(&m["to"])
+    };
+    format!(
+        "{} {} {} -> {}: {text}",
+        short(&m["id"]),
+        when(&m["at"]),
+        s(&m["from"]),
+        to
+    )
 }
 
 /// The first non-empty, non-heading line of a body, cut to 160 characters.

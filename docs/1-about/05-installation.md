@@ -116,6 +116,24 @@ The crate name `tirith` on crates.io belongs to an unrelated project, so
 `cargo install tirith` installs something else. Tirith's package is
 `tirith-mcp`; only the binary is named `tirith`.
 
+## Menu bar (macOS)
+
+`tirith tray` puts a tower icon in the menu bar that lists every Tirith
+daemon running on this machine, one row per repository with its agent and
+claim counts, refreshed every five seconds. Clicking a row opens that
+daemon's dashboard; `Stop <repo>` shuts the daemon down cleanly; `Quit
+tray` removes the icon. With exactly one daemon a left-click on the icon
+opens its dashboard directly. Daemons find each other through a per-user
+registry at `~/Library/Application Support/tirith/daemons.json`
+(`$XDG_STATE_HOME/tirith/daemons.json` on other systems), which every
+daemon writes on start; a crashed daemon drops off the menu within one
+refresh. `tirith serve` (and so the stdio shim, which runs it) starts the tray the
+first time a daemon comes up, unless it is already running or `--no-tray`
+was given; it stays until you choose Quit. The tray is built in by default
+on macOS (cargo feature `tray`) and compiles to nothing elsewhere; there
+is no tray on Windows or Linux.
+Design: [ADR-0019](../5-decisions/0019-menu-bar-tray.md).
+
 ## After installing
 
 Register `tirith stdio` with your client, for example:

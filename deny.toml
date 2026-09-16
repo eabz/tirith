@@ -2,7 +2,14 @@
 all-features = true
 
 [advisories]
-ignore = []
+ignore = [
+  # proc-macro-error is unmaintained. It reaches the lockfile only through
+  # gtk, the Linux backend of tray-icon; Tirith depends on tray-icon on macOS
+  # only (ADR-0019), so no shipped binary contains it. cargo-deny still walks
+  # the Linux branch because the dependency is feature-activated. Drop this
+  # when tray-icon moves off gtk3 or Tirith grows a Linux tray of its own.
+  { id = "RUSTSEC-2024-0370", reason = "Linux-only transitive dependency of a macOS-only crate; never compiled" },
+]
 
 [licenses]
 allow = [

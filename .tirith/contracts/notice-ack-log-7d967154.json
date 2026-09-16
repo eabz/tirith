@@ -1,0 +1,42 @@
+{
+  "id": "7d967154-b982-4601-8614-42bff2a6c1f6",
+  "name": "Notice ack log",
+  "kind": "type",
+  "consumers": [
+    "src/state.rs",
+    "src/store.rs",
+    "tests/persistence.rs",
+    "src/dashboard.rs"
+  ],
+  "current": {
+    "version": 1,
+    "shape": {
+      "notices.rs (done)": {
+        "NoticeAck": "pub struct NoticeAck { notice_id: NoticeId, agent: AgentId, at: DateTime<Utc> } (Serialize/Deserialize)",
+        "NoticeBoard::ack_at": "fn ack_at(&mut self, agent, id, now) -> Result<&Notice, NoticeError>  // appends one NoticeAck the first time; ack(agent, id) still exists and does not log",
+        "NoticeBoard::acks": "fn acks(&self) -> &[NoticeAck]  // oldest first, for LogCursor::take",
+        "NoticeBoard::from_parts": "fn from_parts(notices: Vec<Notice>, acks: Vec<NoticeAck>) -> NoticeBoard  // replays acks into acked_by, drops acks for unknown notices"
+      },
+      "state.rs (to do)": {
+        "Delta": "gains `notice_acks: Log<NoticeAck>`; Delta::full uses Log::Rewritten; take_dirty uses inner.acks_log.take(inner.notices.acks())",
+        "Inner": "gains `acks_log: LogCursor` initialised with LogCursor::new(snapshot.notice_acks.len())",
+        "Snapshot": "gains `notice_acks: Vec<NoticeAck>`; snapshot_of copies inner.notices.acks()",
+        "State::notice_ack": "calls inner.notices.ack_at(agent, id, now) and REMOVES the inner.notices_log.mark_rewrite() line; touch/renew unchanged",
+        "is_dirty / mark_all_dirty": "include acks_log like notices_log"
+      },
+      "store.rs (to do)": {
+        "NOTICE_ACKS_FILE": "\"runtime/notice_acks.jsonl\"",
+        "apply": "self.write_log(NOTICE_ACKS_FILE, &delta.notice_acks, &mut dirs)? (runtime tier: keep sync_all like the other runtime logs, or Lazy; either is acceptable)",
+        "load": "notice_acks: self.read_log(NOTICE_ACKS_FILE, &mut errors)? (tolerant, like the others); the board is built with NoticeBoard::from_parts(notices, notice_acks)"
+      },
+      "tests (to do)": {
+        "persistence": "ack, restart, notice_list unread for that agent no longer shows it; notices.jsonl byte-identical before and after the ack",
+        "state": "an ack leaves delta.notices Unchanged and delta.notice_acks Appended(1); a second ack by the same agent appends nothing"
+      }
+    },
+    "notes": "ADR-0021 written at docs/5-decisions/0021-notice-acks-log.md (README row still needed; README is held by ci-speedup). The wiring is the same LogCursor pattern the messages primitive is adding right now, so it belongs in that window.",
+    "published_by": "head-dev-fable",
+    "published_at": "2026-09-16T03:40:00.632625Z"
+  },
+  "history": []
+}

@@ -11,66 +11,36 @@
     "src/dashboard.html",
     "src/cli.rs",
     "docs/1-about/04-primitives.md",
-    "tests/budgets.rs"
+    "tests/budgets.rs",
+    "tests/memory_layer.rs"
   ],
   "current": {
-    "version": 4,
+    "version": 6,
     "shape": {
-      "MemoryDigest": {
-        "fields": "permalink, title, kind, paths, tags, updated_at, excerpt (160 chars, headings and blank lines stripped)",
-        "never": "body, observations, relations",
-        "used_by": "memory_search rows (+score), memory_read.related, claim brief memory rows, memory_delete.removed"
-      },
-      "budget": {
-        "TOOL_LIST_LIMIT": 7000,
-        "per_tool_max_chars": 500
+      "change_from_v5": {
+        "claim.memory": "omitted when empty; present only when at least one note concerns the claimed paths"
       },
       "claim_integration": {
         "cap": "CLAIM_MEMORY_LIMIT 5",
-        "row": "MemoryDigest (now includes tags)"
+        "row": "MemoryDigest",
+        "when_empty": "key absent, per Brief on claim v1"
       },
       "constants": {
         "CLAIM_MEMORY_EXCERPT": 160,
         "CLAIM_MEMORY_LIMIT": 5,
-        "DEFAULT_SEARCH_LIMIT": 20,
+        "DEFAULT_SEARCH_LIMIT": 10,
         "MAX_CONTEXT_DEPTH": 3,
         "MAX_PERMALINK_DEPTH": 8,
         "MAX_PERMALINK_LEN": 120,
         "MAX_RELATED": 20,
-        "MAX_SEARCH_LIMIT": 100,
+        "MAX_SEARCH_LIMIT": 50,
         "MAX_TITLE_LEN": 120
       },
-      "state": {
-        "memory": "Inner.memory: Arc<MemoryBook>; fn memory_book(agent) -> Arc<MemoryBook> via access; reads score outside the lock; writes Arc::make_mut",
-        "memory_delete": "fn memory_delete(&self, agent: &AgentId, name: &str) -> Option<MemoryNote>; marks ChangedIds::remove"
-      },
-      "tools": {
-        "memory_delete": {
-          "in": "agent, name (permalink | id | exact title)",
-          "out": "ok {removed: digest} | not_found",
-          "storage": "file unlinked via Delta.memory_removed; gone after restart"
-        },
-        "memory_read": {
-          "errors": "not_found; invalid when depth > 3",
-          "in": "agent, name, depth? 0..=3",
-          "out": "ok {note (full body), related: [digest] max 20}"
-        },
-        "memory_search": {
-          "in": "agent, query?, path?, kind?, tag?, since?, limit? default 20 max 100",
-          "out": "ok {count, truncated, notes: [digest + score]}",
-          "semantics": "ranked by score with a query, newest-first without; substring matching (lease finds leases); stop words and terms under 3 chars dropped unless the whole query is such; per-field hit cap of 3 so repetition does not rank"
-        },
-        "memory_write": {
-          "conflict": "status conflict {permalink, updated_at, message} when if_updated_at != stored updated_at",
-          "errors": "invalid on empty title/body, unknown kind, bad permalink, bad tag (control chars, :, [, ]); not_found when an explicit permalink does not exist",
-          "in": "agent, title, body, kind?, paths[]?, tags[]?, permalink?, if_updated_at? (RFC 3339)",
-          "out": "ok {note (full), created}"
-        }
-      }
+      "everything_else": "as v5"
     },
-    "notes": "v4, SHIPPED and tested over a real daemon. Four changes from v3, all driven by head-dev-fable's audit and benchmark. (1) Listings carry digests, never bodies: memory_search rows and memory_read's `related` rows are MemoryDigest {permalink, title, kind, paths, tags, updated_at, excerpt} plus `score` on search rows; only memory_read's `note` has a body. The claim brief's `memory` rows are the same type, so they now include `tags` (claude-token-diet: the claim section of 04-primitives.md says so). (2) memory_write takes `if_updated_at`; a stale value is status `conflict` with `permalink` and the real `updated_at`, the same status shape a refused claim uses. (3) New tool memory_delete {agent, name} returning ok {removed: digest} or not_found; the file is unlinked via Delta.memory_removed (persistence seam v3) and stays gone across restart. (4) Reads no longer hold the State lock while scoring: Inner holds Arc<MemoryBook>, reads take a pointer clone through `access` (leases still renew) and score after releasing; writes use Arc::make_mut. Public State signatures unchanged. Also: `related` is capped at MAX_RELATED (20) and comes from a reverse-relation index instead of a scan. Limits stay 20/100 (head-dev-fable confirmed; 10/50 was only for body-carrying rows). Schema budget: memory_write's description and if_updated_at doc were trimmed to keep every tool under 500 chars; tests/http_roundtrip.rs TOOL_LIST_LIMIT raised 6_656 -> 7_000 with a comment naming memory_delete and if_updated_at, per ADR-0017.",
+    "notes": "v6: one clarification, no behaviour change on the memory tools themselves. On an ok `claim` response, the `memory` section is OMITTED when no note concerns the claimed paths, rather than sent as an empty array. This follows contract \"Brief on claim\" v1 (claude-token-diet) and the compact-row rule of no empty arrays; earlier versions of this contract read as if `memory` were always present, and tests/memory_layer.rs now asserts absence rather than an empty array. When present it is still at most CLAIM_MEMORY_LIMIT (5) digests, never a body. Also confirmed landed since v5: both literal limit strings in src/server.rs now read default 10, max 50, matching the constants. Everything else in v5 stands.",
     "published_by": "claude-memory-layer",
-    "published_at": "2026-09-16T02:59:21.318369Z"
+    "published_at": "2026-09-16T03:08:12.240479Z"
   },
   "history": [
     {
@@ -245,6 +215,89 @@
       "notes": "v3 is the SHIPPED shape: the three tools are registered on the server and tested over a real daemon. Changes from v2, all in the tool responses: memory_search returns {count, truncated, notes[]} where each row is the note plus a `score` field, instead of results[{note, score}]; this matches the list convention storage-claude is standardising in tasks 89b35cb6/e3e652b1, so that work does not have to touch memory code. limit defaults to 20 and clamps to 100. memory_read takes depth 0..=3 and returns invalid above that. claim now carries `memory`, at most 5 notes, each {permalink, title, kind, paths, updated_at, excerpt}, never a body. All three tools go through the existing `finish` and the ok/not_found/invalid helpers, so task e3e652b1 stays a single-place change. Note for whoever standardises listing: memory_search results are ranked by score, NOT newest-first, so types::Page::newest_first cannot be used on them as it would re-sort and destroy the ranking; build Page{items, total} directly if you want uniform fields.",
       "published_by": "claude-memory-layer",
       "published_at": "2026-09-16T02:09:40.852998Z"
+    },
+    {
+      "version": 4,
+      "shape": {
+        "MemoryDigest": {
+          "fields": "permalink, title, kind, paths, tags, updated_at, excerpt (160 chars, headings and blank lines stripped)",
+          "never": "body, observations, relations",
+          "used_by": "memory_search rows (+score), memory_read.related, claim brief memory rows, memory_delete.removed"
+        },
+        "budget": {
+          "TOOL_LIST_LIMIT": 7000,
+          "per_tool_max_chars": 500
+        },
+        "claim_integration": {
+          "cap": "CLAIM_MEMORY_LIMIT 5",
+          "row": "MemoryDigest (now includes tags)"
+        },
+        "constants": {
+          "CLAIM_MEMORY_EXCERPT": 160,
+          "CLAIM_MEMORY_LIMIT": 5,
+          "DEFAULT_SEARCH_LIMIT": 20,
+          "MAX_CONTEXT_DEPTH": 3,
+          "MAX_PERMALINK_DEPTH": 8,
+          "MAX_PERMALINK_LEN": 120,
+          "MAX_RELATED": 20,
+          "MAX_SEARCH_LIMIT": 100,
+          "MAX_TITLE_LEN": 120
+        },
+        "state": {
+          "memory": "Inner.memory: Arc<MemoryBook>; fn memory_book(agent) -> Arc<MemoryBook> via access; reads score outside the lock; writes Arc::make_mut",
+          "memory_delete": "fn memory_delete(&self, agent: &AgentId, name: &str) -> Option<MemoryNote>; marks ChangedIds::remove"
+        },
+        "tools": {
+          "memory_delete": {
+            "in": "agent, name (permalink | id | exact title)",
+            "out": "ok {removed: digest} | not_found",
+            "storage": "file unlinked via Delta.memory_removed; gone after restart"
+          },
+          "memory_read": {
+            "errors": "not_found; invalid when depth > 3",
+            "in": "agent, name, depth? 0..=3",
+            "out": "ok {note (full body), related: [digest] max 20}"
+          },
+          "memory_search": {
+            "in": "agent, query?, path?, kind?, tag?, since?, limit? default 20 max 100",
+            "out": "ok {count, truncated, notes: [digest + score]}",
+            "semantics": "ranked by score with a query, newest-first without; substring matching (lease finds leases); stop words and terms under 3 chars dropped unless the whole query is such; per-field hit cap of 3 so repetition does not rank"
+          },
+          "memory_write": {
+            "conflict": "status conflict {permalink, updated_at, message} when if_updated_at != stored updated_at",
+            "errors": "invalid on empty title/body, unknown kind, bad permalink, bad tag (control chars, :, [, ]); not_found when an explicit permalink does not exist",
+            "in": "agent, title, body, kind?, paths[]?, tags[]?, permalink?, if_updated_at? (RFC 3339)",
+            "out": "ok {note (full), created}"
+          }
+        }
+      },
+      "notes": "v4, SHIPPED and tested over a real daemon. Four changes from v3, all driven by head-dev-fable's audit and benchmark. (1) Listings carry digests, never bodies: memory_search rows and memory_read's `related` rows are MemoryDigest {permalink, title, kind, paths, tags, updated_at, excerpt} plus `score` on search rows; only memory_read's `note` has a body. The claim brief's `memory` rows are the same type, so they now include `tags` (claude-token-diet: the claim section of 04-primitives.md says so). (2) memory_write takes `if_updated_at`; a stale value is status `conflict` with `permalink` and the real `updated_at`, the same status shape a refused claim uses. (3) New tool memory_delete {agent, name} returning ok {removed: digest} or not_found; the file is unlinked via Delta.memory_removed (persistence seam v3) and stays gone across restart. (4) Reads no longer hold the State lock while scoring: Inner holds Arc<MemoryBook>, reads take a pointer clone through `access` (leases still renew) and score after releasing; writes use Arc::make_mut. Public State signatures unchanged. Also: `related` is capped at MAX_RELATED (20) and comes from a reverse-relation index instead of a scan. Limits stay 20/100 (head-dev-fable confirmed; 10/50 was only for body-carrying rows). Schema budget: memory_write's description and if_updated_at doc were trimmed to keep every tool under 500 chars; tests/http_roundtrip.rs TOOL_LIST_LIMIT raised 6_656 -> 7_000 with a comment naming memory_delete and if_updated_at, per ADR-0017.",
+      "published_by": "claude-memory-layer",
+      "published_at": "2026-09-16T02:59:21.318369Z"
+    },
+    {
+      "version": 5,
+      "shape": {
+        "change_from_v4": {
+          "memory_search.limit": "default 10 (was 20), max 50 (was 100)"
+        },
+        "constants": {
+          "CLAIM_MEMORY_EXCERPT": 160,
+          "CLAIM_MEMORY_LIMIT": 5,
+          "DEFAULT_SEARCH_LIMIT": 10,
+          "MAX_CONTEXT_DEPTH": 3,
+          "MAX_PERMALINK_DEPTH": 8,
+          "MAX_PERMALINK_LEN": 120,
+          "MAX_RELATED": 20,
+          "MAX_SEARCH_LIMIT": 50,
+          "MAX_TITLE_LEN": 120
+        },
+        "everything_else": "as v4: digest rows on search and related, if_updated_at with conflict, memory_delete, Arc<MemoryBook> read path",
+        "pending_in_server_rs": "the two literal '20, max 100' strings, owned by claude-token-diet's window"
+      },
+      "notes": "v5: one change from v4. memory_search `limit` now defaults to 10 and clamps to 50 (was 20 and 100). Decided by head-dev-fable on token grounds once the latency argument was settled: ten digest rows are about 2.3 KB, which keeps a search response below a notice listing, as ADR-0013 wants; at 20 it was the largest response in the system at 4.7 KB. Behavior is live as soon as this lands because the constants DEFAULT_SEARCH_LIMIT and MAX_SEARCH_LIMIT live in src/memory.rs and server.rs imports them. Two LITERAL strings in src/server.rs still say \"default 20, max 100\" and are wrong until claude-token-diet updates them in its current window, which I have asked for by message rather than reopening the file: the `limit` field doc on MemorySearchInput (line ~416) and the memory_search tool description (line ~1566). Everything else in v4 stands.",
+      "published_by": "claude-memory-layer",
+      "published_at": "2026-09-16T03:05:28.685232Z"
     }
   ]
 }

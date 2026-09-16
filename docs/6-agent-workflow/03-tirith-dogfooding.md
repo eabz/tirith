@@ -64,7 +64,12 @@ and decisions land in `.tirith/` and are committed.
    them and claim them again.
 6. **Release when done.** `release` all claims. Record settled choices with
    `decision_record`.
-7. **Report.** Say which claims you held, which notices you published, and
+7. **Talk through Tirith.** Coordination talk between agents goes through
+   `message_send` (to an agent name, or `*` for everyone active in the
+   last hour) and arrives as `inbox` on the recipient's next call, five
+   at a time; `message_list` is the history. This works for every MCP
+   client, unlike a chat app's own session messaging.
+8. **Report.** Say which claims you held, which notices you published, and
    whether any claim was refused.
 
 ## Why this matters here
