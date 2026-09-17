@@ -1476,7 +1476,8 @@ mod tests {
         assert!(lines[0].starts_with("lead: boss"), "{lines:?}");
         assert!(lines[1].starts_with("#2 "), "{lines:?}");
         assert!(
-            lines[1].ends_with("escalation_raised w: queued for the human; rule: human:credentials"),
+            lines[1]
+                .ends_with("escalation_raised w: queued for the human; rule: human:credentials"),
             "{lines:?}"
         );
         assert!(

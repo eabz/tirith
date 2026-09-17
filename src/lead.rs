@@ -498,7 +498,7 @@ impl LeadPolicy {
         match (&task.state, note.map(str::trim).filter(|n| !n.is_empty())) {
             (TaskState::Blocked { .. }, Some(note)) => {
                 self.raise(
-                    Escalation::new(Trigger::TaskBlocked, agent.clone(), note).with_task(task.id),
+                    &Escalation::new(Trigger::TaskBlocked, agent.clone(), note).with_task(task.id),
                 );
             }
             (TaskState::Blocked { .. }, None) => {}
@@ -542,7 +542,7 @@ impl LeadPolicy {
         )
         .with_paths(message.paths.clone());
         if human_rule(&escalation.rule_text()).is_some() {
-            self.raise(escalation);
+            self.raise(&escalation);
         }
     }
 
@@ -594,7 +594,7 @@ impl LeadPolicy {
                 held_by.join(", ")
             },
         );
-        self.raise(Escalation::new(Trigger::ClaimsRefused, agent.clone(), text).with_paths(key));
+        self.raise(&Escalation::new(Trigger::ClaimsRefused, agent.clone(), text).with_paths(key));
     }
 
     /// A claim by `agent` on `paths` was granted: it answers an escalation
@@ -631,7 +631,7 @@ impl LeadPolicy {
     /// told; anything else goes to the lead's inbox. With no lead, or when
     /// the lead is the agent escalating, it goes to the human queue. Called
     /// by the triggers above; public for a stop hook.
-    pub fn raise(&self, escalation: Escalation) {
+    pub fn raise(&self, escalation: &Escalation) {
         let text: String = escalation.text.chars().take(ESCALATION_TEXT_MAX).collect();
         let worker = &escalation.agent;
         let lead = self.state.lead().filter(|l| l.agent != *worker);
@@ -651,8 +651,7 @@ impl LeadPolicy {
         let quote = clip(&text);
         let rule = human_rule(&escalation.rule_text()).map(|rule| format!("human:{rule}"));
         let mut delivered = Vec::new();
-        let mut entry =
-            NewEntry::new(LeadEvent::EscalationRaised, "").with_agent(worker.clone());
+        let mut entry = NewEntry::new(LeadEvent::EscalationRaised, "").with_agent(worker.clone());
         let (route, action) = match (rule, &lead) {
             (None, Some(lead)) => {
                 let told = self.tell(
@@ -1145,8 +1144,11 @@ mod tests {
     fn log_rows_get_increasing_ids_and_outcomes_later() {
         let mut log = LeadLog::default();
         let first = log.append(
-            NewEntry::new(LeadEvent::ClaimGranted, "granted 2 new and 0 renewed path(s)")
-                .with_candidates(["src/a.rs".to_owned(), "src/b.rs".to_owned()]),
+            NewEntry::new(
+                LeadEvent::ClaimGranted,
+                "granted 2 new and 0 renewed path(s)",
+            )
+            .with_candidates(["src/a.rs".to_owned(), "src/b.rs".to_owned()]),
             t0(),
             7,
         );
@@ -1181,7 +1183,6 @@ mod tests {
         assert!(row["outcome"].is_null());
         let back: LeadEntry = serde_json::from_value(row).unwrap();
         assert_eq!(back, log.entries()[0]);
-
     }
 
     #[test]
@@ -1319,11 +1320,14 @@ mod tests {
             assert!(started.elapsed() >= Duration::from_millis(150));
         }
 
-
         #[test]
         fn a_notice_is_pushed_to_same_path_and_nested_holders_and_logged() {
             let (policy, state) = policy();
-            for (who, p) in [("same", "src/auth"), ("inner", "src/auth/token.rs"), ("away", "docs")] {
+            for (who, p) in [
+                ("same", "src/auth"),
+                ("inner", "src/db/pool.rs"),
+                ("away", "docs"),
+            ] {
                 state
                     .claim(agent(who), vec![path(p)], "r".into(), None)
                     .unwrap();
@@ -1335,7 +1339,7 @@ mod tests {
                         crate::notices::NoticeKind::Behavior,
                         "tokens refresh async",
                     )
-                    .with_affected_paths(vec![path("src/auth")]),
+                    .with_affected_paths(vec![path("src/auth"), path("src/db")]),
                 )
                 .unwrap();
             policy.notice_published(&notice);
@@ -1348,13 +1352,20 @@ mod tests {
             let rows = state.lead_log(5, Some(LeadEvent::NoticePublished));
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].candidates, ["inner", "same"]);
-            assert_eq!(rows[0].details.as_ref().unwrap()["pushed"], json!(["inner", "same"]));
+            assert_eq!(
+                rows[0].details.as_ref().unwrap()["pushed"],
+                json!(["inner", "same"])
+            );
         }
 
         #[test]
         fn escalations_go_to_the_lead_or_the_human_queue() {
             let (policy, state) = policy();
-            policy.raise(Escalation::new(Trigger::TaskBlocked, agent("w"), "which order?"));
+            policy.raise(&Escalation::new(
+                Trigger::TaskBlocked,
+                agent("w"),
+                "which order?",
+            ));
             let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
             assert_eq!(row.rule.as_deref(), Some("no_lead"));
             assert_eq!(row.details.as_ref().unwrap()["route"], "human");
@@ -1362,12 +1373,20 @@ mod tests {
             state
                 .claim(agent("boss"), vec![path(LEAD_PATH)], "swarm".into(), None)
                 .unwrap();
-            policy.raise(Escalation::new(Trigger::TaskBlocked, agent("w"), "which order?"));
+            policy.raise(&Escalation::new(
+                Trigger::TaskBlocked,
+                agent("w"),
+                "which order?",
+            ));
             let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
             assert_eq!(row.details.as_ref().unwrap()["route"], "lead");
             assert_eq!(row.details.as_ref().unwrap()["delivered"], json!(["lead"]));
 
-            policy.raise(Escalation::new(Trigger::TaskBlocked, agent("w"), "need the API key"));
+            policy.raise(&Escalation::new(
+                Trigger::TaskBlocked,
+                agent("w"),
+                "need the API key",
+            ));
             let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
             assert_eq!(row.rule.as_deref(), Some("human:credentials"));
             assert_eq!(
@@ -1376,7 +1395,11 @@ mod tests {
             );
 
             // The lead escalating itself has nobody else to ask.
-            policy.raise(Escalation::new(Trigger::TaskBlocked, agent("boss"), "stuck"));
+            policy.raise(&Escalation::new(
+                Trigger::TaskBlocked,
+                agent("boss"),
+                "stuck",
+            ));
             let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
             assert_eq!(row.details.as_ref().unwrap()["route"], "human");
             assert_eq!(state.take_inbox(&agent("boss")).messages.len(), 2);
@@ -1387,7 +1410,7 @@ mod tests {
     #[test]
     fn human_rules_match_phrases_at_word_boundaries() {
         for (text, rule) in [
-            ("need a working AI_GATEWAY_API_KEY", "credentials"),
+            ("need a working STRIPE_API_KEY", "credentials"),
             ("add the new key to .env", "credentials"),
             ("someone ran sudo cargo install", "permissions"),
             ("can you grant my token repo:admin?", "permissions"),
@@ -1456,4 +1479,3 @@ mod tests {
         }
     }
 }
-

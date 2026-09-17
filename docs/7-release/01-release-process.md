@@ -88,15 +88,11 @@ aarch64-pc-windows-msvc   x86_64-pc-windows-msvc
 
 Both macOS targets build on the Apple Silicon runner (`macos-14`, set
 under `github-custom-runners`; the Apple toolchain cross-compiles the
-Intel binary), Windows on Windows runners, Linux targets on Linux runners
-with cross toolchains where needed. `aarch64-pc-windows-msvc` is set to
-`windows-2022` under `github-custom-runners` and cross-compiled there with
-MSVC and the image's LLVM. dist's default for it, `ubuntu-22.04` inside
-the `messense/cargo-xwin` container, cannot build `ring` (the `jev`
-feature's TLS crypto): ring invokes plain `clang` for Windows ARM, and
-clang rejects the `/imsvc` include flags cargo-xwin passes (v1.0.3
-failed this way). GitHub Actions runs job containers only on Linux, so a
-Windows build is always a Windows runner, never a container.
+Intel binary), `x86_64-pc-windows-msvc` on a Windows runner, and Linux
+targets on Linux runners with cross toolchains where needed.
+`aarch64-pc-windows-msvc` uses dist's default, `ubuntu-22.04` inside the
+`messense/cargo-xwin` container
+([ADR-0023](../5-decisions/0023-stable-toolchain-for-release-containers.md)).
 Adding a target is one line in that file plus `dist generate` to
 refresh the workflow.
 

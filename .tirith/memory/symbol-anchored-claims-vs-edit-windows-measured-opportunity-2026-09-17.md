@@ -22,7 +22,7 @@ updated_at: 2026-09-17T04:17:25Z
 
 Task 06e67391, ADR-0029 (Proposed), contract "Symbol-anchored claims" v1.
 
-- [method] Replayed every shared-file write (python str.replace heredocs, Write/Edit tools, sed -i) from the 12 worker transcripts of jevlab e2e r2/r3 x off/jev against each run's base commit in timestamp order; all 12 final shared files matched byte for byte (73 edits). Changed lines mapped to Python symbols with ast. Claim holds/refusals from coord_full.jsonl. Scripts: lead-session scratchpad claims-symbols/{extract,replay,symbols,measure,measure_combo}.py (session-local).
+- [method] Replayed every shared-file write (python str.replace heredocs, Write/Edit tools, sed -i) from the 12 worker transcripts of the e2e benchmark rounds r2/r3 (two arms each) against each run's base commit in timestamp order; all 12 final shared files matched byte for byte (73 edits). Changed lines mapped to Python symbols with ast. Claim holds/refusals from coord_full.jsonl. Scripts: lead-session scratchpad claims-symbols/{extract,replay,symbols,measure,measure_combo}.py (session-local).
 - [fact] Edits touched imports 53, Config fields 24, __all__ 24, build_pipeline 24, Config.from_env 12, new helpers 5. Every feature task edits build_pipeline, so symbol anchors cannot separate them.
 - [fact] 79 holds on shared files, median 44 s, 4187 s total, 122 s of edit commands inside. Read->write gap quartiles 9/13/18 s.
 - [fact] 48 refusal episodes: 0 disjoint symbols, 20 append-only overlap, 21 same symbol, 7 holder never edited. 57% of episode wait was retry slack (file already free).

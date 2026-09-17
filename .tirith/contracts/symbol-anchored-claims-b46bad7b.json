@@ -8,7 +8,7 @@
     "src/state.rs",
     "docs/1-about/04-primitives.md",
     "AGENTS.md",
-    "examples/jev_e2e",
+    "examples/e2e",
     "docs/5-decisions/0029-symbol-anchored-claims.md"
   ],
   "current": {
@@ -104,7 +104,7 @@
         "write_lease": "none"
       }
     },
-    "notes": "v1 by claims-symbols, task 06e67391, ADR-0029 (Proposed). NOT implemented: gated on the bench-symbols e2e arm (anchors+edit windows must cut agent-blocked time >=20% vs edit windows alone, no lost writes, no extra failing test runs). Measured on 4 jevlab e2e runs (73 replayed edits): agent-blocked 2762 s today; file+wait_secs 1331; anchors 2410 (+wait 1097); edit windows(-20/+30 s)+wait 112; anchors+windows+wait 63. Pure prototype (19 tests, clippy pedantic clean) in the lead session scratchpad: claims-symbols/anchors-proto/src/lib.rs. Old daemons treat f#X as an unrelated path (fails open).",
+    "notes": "v1 by claims-symbols, task 06e67391, ADR-0029 (Proposed). NOT implemented: gated on the bench-symbols e2e arm (anchors+edit windows must cut agent-blocked time >=20% vs edit windows alone, no lost writes, no extra failing test runs). Measured on 4 e2e runs (73 replayed edits): agent-blocked 2762 s today; file+wait_secs 1331; anchors 2410 (+wait 1097); edit windows(-20/+30 s)+wait 112; anchors+windows+wait 63. Pure prototype (19 tests, clippy pedantic clean) in the lead session scratchpad: claims-symbols/anchors-proto/src/lib.rs. Old daemons treat f#X as an unrelated path (fails open).",
     "published_by": "claims-symbols",
     "published_at": "2026-09-17T04:17:07.785764Z"
   },

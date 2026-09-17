@@ -24,7 +24,3 @@ publish-jobs = ["./publish-crates"]
 # cross-compiles both Mac targets and the arm runner is about twice as fast.
 [dist.github-custom-runners]
 x86_64-apple-darwin = "macos-14"
-# ring (the jev feature's TLS crypto) calls plain clang for Windows ARM, which
-# rejects the /imsvc flags cargo-xwin injects on the Linux runner dist picks
-# by default. A Windows host builds it with MSVC and the image's LLVM instead.
-aarch64-pc-windows-msvc = "windows-2022"

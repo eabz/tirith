@@ -1428,7 +1428,7 @@ async fn a_notice_reaches_affected_holders_at_once_and_is_not_briefed_again() {
     let handle = start(options(dir.path(), None)).await.unwrap();
     for (agent, path) in [
         ("bob", "src/auth"),
-        ("dave", "src/auth/token.rs"),
+        ("dave", "src/db/pool.rs"),
         ("carol", "src/billing"),
     ] {
         let out = call(
@@ -1442,7 +1442,7 @@ async fn a_notice_reaches_affected_holders_at_once_and_is_not_briefed_again() {
     let out = call(
         &handle,
         "notice_publish",
-        json!({ "agent": "alice", "kind": "behavior", "summary": "token refresh is async", "affected_paths": ["src/auth/token.rs"] }),
+        json!({ "agent": "alice", "kind": "behavior", "summary": "token refresh is async", "affected_paths": ["src/auth/token.rs", "src/db"] }),
     )
     .await;
     assert_eq!(out["status"], "ok", "{out}");
@@ -1463,14 +1463,11 @@ async fn a_notice_reaches_affected_holders_at_once_and_is_not_briefed_again() {
         json!({ "agent": "bob", "paths": ["src/auth/token.rs"], "reason": "more" }),
     )
     .await;
-    assert_eq!(again["status"], "conflict", "dave holds the file: {again}");
-    let again = call(
-        &handle,
-        "claim",
-        json!({ "agent": "bob", "paths": ["src/auth/session.rs"], "reason": "more" }),
-    )
-    .await;
     assert_eq!(again["status"], "ok", "{again}");
+    assert!(
+        again["notices"].as_array().is_none_or(Vec::is_empty),
+        "{again}"
+    );
     let unread = call(
         &handle,
         "notice_list",
@@ -1479,10 +1476,7 @@ async fn a_notice_reaches_affected_holders_at_once_and_is_not_briefed_again() {
     .await;
     assert_eq!(unread["count"], 0, "{unread}");
 
-    let url = format!(
-        "{}api/lead?event=notice_published",
-        handle.dashboard_url()
-    );
+    let url = format!("{}api/lead?event=notice_published", handle.dashboard_url());
     let log = reqwest_get(&url).await;
     assert_eq!(log["count"], 1, "{log}");
     let row = &log["entries"][0];

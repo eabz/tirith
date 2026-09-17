@@ -256,7 +256,7 @@ const SECTIONS = ['needs', 'agents', 'claims', 'tasks', 'contracts', 'notices', 
 const LABELS = { needs: 'Needs you', agents: 'Agents', claims: 'Claims', tasks: 'Tasks', contracts: 'Contracts', notices: 'Notices', decisions: 'Decisions', memory: 'Memory' };
 const MEMORY_KINDS = ['fact', 'lesson', 'gotcha', 'handoff', 'research', 'note'];
 const EMPTY = {
-  needs: 'Nothing needs you. Escalations the lead policy routes to the human (credentials, permissions, spending, irreversible steps, or what only you can decide) show up here, most agents blocked first.',
+  needs: 'Nothing needs you. Escalations the lead policy routes to the human (credentials, permissions, spending, irreversible steps, what only you can decide, or anything raised while nobody holds .tirith/lead) show up here, most agents blocked first.',
   agents: 'No agents have called in yet. Any tool call registers the calling agent here.',
   claims: 'No active claims. Agents call <code>claim</code> before editing files.',
   tasks: 'The board is empty. Create work with <code>task_create</code>.',
@@ -438,7 +438,7 @@ function render(d) {
 
   fill('needs', ['waiting', 'blocks', 'from', 'task', 'what', 'why here'],
     needs.map(x => [ago(x.at), whoList(x.blocked_agents), who(x.agent), x.task ? short(x.task) : '<span class="dim">—</span>',
-      clamp(x.text, 'nh:' + x.id), `<span class="tag kind">${esc(x.rule || 'judged')}</span> <span class="dim">${esc(x.trigger || '')}</span>`]));
+      clamp(x.text, 'nh:' + x.id), `<span class="tag kind">${esc(x.rule || '-')}</span> <span class="dim">${esc(x.trigger || '')}</span>`]));
 
   fill('agents', ['agent', 'holds', 'lease ends', 'tasks in progress'],
     d.agents.map(a => [who(a.agent), paths(a.paths), a.expires_at ? until(a.expires_at) : '<span class="dim">no claims</span>', `<span class="num">${a.tasks_in_progress}</span>`]));

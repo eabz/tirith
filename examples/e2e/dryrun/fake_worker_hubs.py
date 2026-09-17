@@ -72,7 +72,9 @@ def splice(current, reference, symbols):
 
 
 def write_atomic(path, text):
-    tmp = path.with_name(path.name + ".fake-tmp")
+    # One temporary name per process: with symbol claims two workers may
+    # write the same file at once.
+    tmp = path.with_name("%s.fake-tmp-%d" % (path.name, os.getpid()))
     tmp.write_text(text)
     os.replace(tmp, path)
 
