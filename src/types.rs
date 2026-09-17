@@ -157,14 +157,37 @@ pub enum PathError {
     /// The path contained a `..` segment.
     #[error("path must not contain '..': {0:?}")]
     Traversal(String),
+    /// A `#` was followed by no usable symbol anchor (ADR-0029).
+    #[error("symbol anchor after '#' is empty: {0:?}")]
+    EmptyAnchor(String),
+    /// An anchor segment was empty (`A::`, `a..b`) or contained whitespace.
+    #[error("symbol anchor has an empty or spaced segment: {0:?}")]
+    BadAnchorSegment(String),
+    /// The path was written as a directory (trailing `/`), which has no
+    /// symbols to anchor.
+    #[error("a directory cannot carry a symbol anchor: {0:?}")]
+    AnchorOnDirectory(String),
 }
 
-/// A normalized path relative to the repository root.
+/// A normalized path relative to the repository root, optionally anchored
+/// to a symbol inside the file.
 ///
 /// Normalization removes `./`, duplicate and trailing slashes, and converts
 /// backslashes. A path covers itself and everything beneath it, so
 /// `src/auth` overlaps `src/auth/login.rs` but not `src/authz`. See
 /// ADR-0005.
+///
+/// A path may carry a symbol anchor after the first `#`
+/// (`src/state.rs#State::brief`, ADR-0029, experimental). Anchor segments
+/// may be separated by `::`, `.` or `/`; they are stored with `::`. Generic
+/// arguments (`Store<T>`) and a Go receiver (`(*Server).Handle`) are
+/// dropped. Only the syntax is checked, never that the symbol exists.
+///
+/// Two comparisons exist. [`overlaps`](Self::overlaps) ignores anchors and
+/// answers "same file or directory tree": briefs, notices, contracts,
+/// decisions and memory match that way. [`claim_overlaps`](Self::claim_overlaps)
+/// is the claim rule: anchors in one file overlap only when equal or
+/// nested.
 ///
 /// ```
 /// use tirith::types::RepoPath;
@@ -174,57 +197,191 @@ pub enum PathError {
 /// assert_eq!(dir.as_str(), "src/auth");
 /// assert!(dir.overlaps(&file));
 /// assert!(!dir.overlaps(&RepoPath::new("src/authz/x.rs").unwrap()));
+///
+/// let brief = RepoPath::new("src/state.rs#State.brief").unwrap();
+/// let claim = RepoPath::new("src/state.rs#State::claim").unwrap();
+/// assert_eq!(brief.as_str(), "src/state.rs#State::brief");
+/// assert!(!brief.claim_overlaps(&claim));
+/// assert!(brief.overlaps(&claim));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RepoPath(String);
 
+/// Separator between anchor segments in the stored form.
+const ANCHOR_SEP: &str = "::";
+
 impl RepoPath {
-    /// Normalizes `raw`, rejecting absolute paths and `..` segments.
+    /// Normalizes `raw`, rejecting absolute paths, `..` segments, and
+    /// malformed symbol anchors.
     pub fn new(raw: &str) -> Result<Self, PathError> {
-        let cleaned = raw.trim().replace('\\', "/");
-        if cleaned.is_empty() {
-            return Err(PathError::Empty);
+        let trimmed = raw.trim();
+        let (path_raw, anchor_raw) = match trimmed.split_once('#') {
+            Some((path, anchor)) => (path, Some(anchor)),
+            None => (trimmed, None),
+        };
+        let path = normalize_path(path_raw, raw)?;
+        let Some(anchor_raw) = anchor_raw else {
+            return Ok(Self(path));
+        };
+        let written = path_raw.trim_end();
+        if written.ends_with('/') || written.ends_with('\\') {
+            return Err(PathError::AnchorOnDirectory(raw.to_owned()));
         }
-        let looks_absolute = cleaned.starts_with('/')
-            || cleaned
-                .as_bytes()
-                .get(1)
-                .is_some_and(|b| *b == b':' && cleaned.as_bytes()[0].is_ascii_alphabetic());
-        if looks_absolute {
-            return Err(PathError::Absolute(raw.to_owned()));
-        }
-        let mut segments = Vec::new();
-        for segment in cleaned.split('/') {
-            match segment {
-                "" | "." => {}
-                ".." => return Err(PathError::Traversal(raw.to_owned())),
-                other => segments.push(other),
-            }
-        }
-        if segments.is_empty() {
-            return Err(PathError::Empty);
-        }
-        Ok(Self(segments.join("/")))
+        let segments = parse_anchor(anchor_raw, raw)?;
+        Ok(Self(format!("{path}#{}", segments.join(ANCHOR_SEP))))
     }
 
-    /// The normalized path as a string slice.
+    /// The normalized path as a string slice, anchor included.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Whether the two paths cover a common file: equal, or one is an
-    /// ancestor directory of the other.
-    pub fn overlaps(&self, other: &Self) -> bool {
-        self == other || self.is_ancestor_of(other) || other.is_ancestor_of(self)
+    /// The path without its anchor.
+    pub fn file(&self) -> &str {
+        self.0
+            .split_once('#')
+            .map_or(self.0.as_str(), |(path, _)| path)
     }
 
-    /// Whether `self` is a strict ancestor directory of `other`.
-    pub fn is_ancestor_of(&self, other: &Self) -> bool {
-        other.0.len() > self.0.len()
-            && other.0.starts_with(&self.0)
-            && other.0.as_bytes()[self.0.len()] == b'/'
+    /// The symbol anchor in stored form (`State::brief`), if any.
+    pub fn anchor(&self) -> Option<&str> {
+        self.0.split_once('#').map(|(_, anchor)| anchor)
     }
+
+    /// Whether the two paths cover a common file, ignoring anchors: equal,
+    /// or one is an ancestor directory of the other.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        paths_overlap(self.file(), other.file())
+    }
+
+    /// Whether claims on the two targets conflict (ADR-0029): their paths
+    /// overlap, and either side has no anchor, or the paths differ (a file
+    /// and a directory named alike, which a real tree cannot have), or one
+    /// anchor equals or encloses the other by whole segments, compared
+    /// ASCII case-insensitively.
+    pub fn claim_overlaps(&self, other: &Self) -> bool {
+        if !self.overlaps(other) {
+            return false;
+        }
+        match (self.anchor(), other.anchor()) {
+            (Some(a), Some(b)) if self.file() == other.file() => a
+                .split(ANCHOR_SEP)
+                .zip(b.split(ANCHOR_SEP))
+                .all(|(x, y)| x.eq_ignore_ascii_case(y)),
+            _ => true,
+        }
+    }
+
+    /// Whether a claim on `self` already covers everything `other` names:
+    /// `other` is the same path or lies beneath it, and when `self` is
+    /// anchored, `other` is in the same file under an equal or enclosed
+    /// anchor. An agent's own covered targets are renewed, not added.
+    pub fn covers(&self, other: &Self) -> bool {
+        match self.anchor() {
+            None => self.file() == other.file() || is_ancestor(self.file(), other.file()),
+            Some(held) => {
+                self.file() == other.file()
+                    && other.anchor().is_some_and(|target| {
+                        let held: Vec<&str> = held.split(ANCHOR_SEP).collect();
+                        let target: Vec<&str> = target.split(ANCHOR_SEP).collect();
+                        held.len() <= target.len()
+                            && held
+                                .iter()
+                                .zip(&target)
+                                .all(|(x, y)| x.eq_ignore_ascii_case(y))
+                    })
+            }
+        }
+    }
+
+    /// Whether `self` is a strict ancestor directory of `other`, comparing
+    /// paths only.
+    pub fn is_ancestor_of(&self, other: &Self) -> bool {
+        is_ancestor(self.file(), other.file())
+    }
+}
+
+/// ADR-0005 on bare path strings: equal, or one is an ancestor of the other.
+fn paths_overlap(a: &str, b: &str) -> bool {
+    a == b || is_ancestor(a, b) || is_ancestor(b, a)
+}
+
+/// Whether `dir` is a strict ancestor directory of `path`.
+fn is_ancestor(dir: &str, path: &str) -> bool {
+    path.len() > dir.len() && path.starts_with(dir) && path.as_bytes()[dir.len()] == b'/'
+}
+
+/// Forward slashes, no empty or `.` segments, no absolute paths, no `..`.
+fn normalize_path(path: &str, raw: &str) -> Result<String, PathError> {
+    let cleaned = path.trim().replace('\\', "/");
+    if cleaned.is_empty() {
+        return Err(PathError::Empty);
+    }
+    let looks_absolute = cleaned.starts_with('/')
+        || cleaned
+            .as_bytes()
+            .get(1)
+            .is_some_and(|b| *b == b':' && cleaned.as_bytes()[0].is_ascii_alphabetic());
+    if looks_absolute {
+        return Err(PathError::Absolute(raw.to_owned()));
+    }
+    let mut segments = Vec::new();
+    for segment in cleaned.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => return Err(PathError::Traversal(raw.to_owned())),
+            other => segments.push(other),
+        }
+    }
+    if segments.is_empty() {
+        return Err(PathError::Empty);
+    }
+    Ok(segments.join("/"))
+}
+
+/// Splits an anchor on `::`, `.` or `/`, after dropping generic arguments
+/// and a Go receiver's parentheses and `*`.
+fn parse_anchor(anchor: &str, raw: &str) -> Result<Vec<String>, PathError> {
+    let stripped = strip_generics(anchor.trim());
+    let receiverless: String = if stripped.starts_with('(') {
+        stripped
+            .chars()
+            .filter(|c| !matches!(c, '(' | ')' | '*'))
+            .collect()
+    } else {
+        stripped
+    };
+    if receiverless.trim().is_empty() {
+        return Err(PathError::EmptyAnchor(raw.to_owned()));
+    }
+    let unified = receiverless.replace(ANCHOR_SEP, "/").replace('.', "/");
+    unified
+        .split('/')
+        .map(|segment| {
+            let segment = segment.trim();
+            if segment.is_empty() || segment.chars().any(char::is_whitespace) {
+                Err(PathError::BadAnchorSegment(raw.to_owned()))
+            } else {
+                Ok(segment.to_owned())
+            }
+        })
+        .collect()
+}
+
+/// Removes every `<...>` group, nested or not; an unbalanced `>` is kept.
+fn strip_generics(anchor: &str) -> String {
+    let mut depth = 0usize;
+    let mut out = String::with_capacity(anchor.len());
+    for c in anchor.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 impl fmt::Display for RepoPath {
@@ -461,6 +618,286 @@ mod tests {
         assert!(!auth.overlaps(&authz));
         assert!(src.overlaps(&login));
         assert!(auth.overlaps(&auth));
+    }
+
+    // --- ADR-0029: symbol anchors (ported from the claims-symbols prototype) ---
+
+    /// Claim overlap, asserted symmetric.
+    fn ov(a: &str, b: &str) -> bool {
+        let (a, b) = (RepoPath::new(a).unwrap(), RepoPath::new(b).unwrap());
+        let forward = a.claim_overlaps(&b);
+        assert_eq!(
+            forward,
+            b.claim_overlaps(&a),
+            "must be symmetric: {a} / {b}"
+        );
+        forward
+    }
+
+    fn norm(raw: &str) -> String {
+        RepoPath::new(raw).unwrap().to_string()
+    }
+
+    #[test]
+    fn plain_paths_keep_their_normalization_and_have_no_anchor() {
+        assert_eq!(norm("./src//auth/"), "src/auth");
+        assert_eq!(norm("src\\state.rs"), "src/state.rs");
+        let plain = RepoPath::new("src/state.rs").unwrap();
+        assert_eq!(plain.anchor(), None);
+        assert_eq!(plain.file(), "src/state.rs");
+    }
+
+    #[test]
+    fn anchor_separators_normalize_to_double_colon() {
+        assert_eq!(
+            norm("src/state.rs#State::brief"),
+            "src/state.rs#State::brief"
+        );
+        assert_eq!(
+            norm("app/config.py#Config.from_env"),
+            "app/config.py#Config::from_env"
+        );
+        assert_eq!(
+            norm("src/state.rs#State/brief"),
+            "src/state.rs#State::brief"
+        );
+        assert_eq!(
+            norm(" ./src/state.rs # State :: brief "),
+            "src/state.rs#State::brief"
+        );
+    }
+
+    #[test]
+    fn go_receivers_and_generics_are_stripped() {
+        assert_eq!(
+            norm("pkg/server.go#(*Server).Handle"),
+            "pkg/server.go#Server::Handle"
+        );
+        assert_eq!(
+            norm("pkg/server.go#(Server).Handle"),
+            "pkg/server.go#Server::Handle"
+        );
+        assert_eq!(
+            norm("src/store.rs#Store<T>::load"),
+            "src/store.rs#Store::load"
+        );
+        assert_eq!(norm("src/a.ts#Cache<Map<K, V>>.get"), "src/a.ts#Cache::get");
+    }
+
+    #[test]
+    fn only_the_first_hash_separates_the_anchor() {
+        let target = RepoPath::new("src/counter.ts#Counter.#count").unwrap();
+        assert_eq!(target.file(), "src/counter.ts");
+        assert_eq!(target.anchor(), Some("Counter::#count"));
+    }
+
+    #[test]
+    fn invalid_anchors_are_rejected() {
+        assert_eq!(RepoPath::new("#State"), Err(PathError::Empty));
+        assert!(matches!(
+            RepoPath::new("/etc/passwd#x"),
+            Err(PathError::Absolute(_))
+        ));
+        assert!(matches!(
+            RepoPath::new("C:/x.rs#A"),
+            Err(PathError::Absolute(_))
+        ));
+        assert!(matches!(
+            RepoPath::new("../x.rs#A"),
+            Err(PathError::Traversal(_))
+        ));
+        for empty in ["src/state.rs#", "src/state.rs#  ", "src/state.rs#<T>"] {
+            assert!(
+                matches!(RepoPath::new(empty), Err(PathError::EmptyAnchor(_))),
+                "{empty}"
+            );
+        }
+        for bad in [
+            "src/state.rs#State::",
+            "src/state.rs#::brief",
+            "src/a.py#Config..x",
+            "src/a.rs#impl Foo",
+        ] {
+            assert!(
+                matches!(RepoPath::new(bad), Err(PathError::BadAnchorSegment(_))),
+                "{bad}"
+            );
+        }
+        assert!(matches!(
+            RepoPath::new("src/#State"),
+            Err(PathError::AnchorOnDirectory(_))
+        ));
+    }
+
+    #[test]
+    fn plain_paths_follow_adr_0005() {
+        assert!(ov("src/state.rs", "src/state.rs"));
+        assert!(ov("src/", "src/state.rs"));
+        assert!(ov("src/auth", "src/auth/login.rs"));
+        assert!(!ov("src/auth/", "src/authz/login.rs"));
+        assert!(!ov("src/state.rs", "src/server.rs"));
+    }
+
+    #[test]
+    fn a_file_claim_overlaps_every_anchor_in_the_file() {
+        assert!(ov("src/state.rs", "src/state.rs#State::brief"));
+        assert!(ov("app/router.py", "app/router.py#build_pipeline"));
+    }
+
+    #[test]
+    fn a_directory_claim_overlaps_anchors_below_it() {
+        assert!(ov("src/", "src/state.rs#State::brief"));
+        assert!(ov(
+            "app/middlewares/",
+            "app/middlewares/__init__.py#__all__"
+        ));
+    }
+
+    #[test]
+    fn anchors_never_reach_other_files() {
+        assert!(!ov("src/server.rs", "src/state.rs#State::brief"));
+        assert!(!ov("src/state.rs#State", "src/state_test.rs#State"));
+        assert!(!ov("src/auth/", "src/authz.rs#Login"));
+        assert!(!ov("src/state.rs#State", "src/server.rs#State"));
+    }
+
+    #[test]
+    fn equal_anchors_overlap() {
+        assert!(ov(
+            "app/router.py#build_pipeline",
+            "app/router.py#build_pipeline"
+        ));
+        assert!(ov("src/state.rs#State::brief", "src/state.rs#State.brief"));
+    }
+
+    #[test]
+    fn enclosing_anchors_overlap() {
+        assert!(ov("app/config.py#Config", "app/config.py#Config::from_env"));
+        assert!(ov("src/state.rs#State", "src/state.rs#State::brief::inner"));
+    }
+
+    #[test]
+    fn sibling_anchors_do_not_overlap() {
+        assert!(!ov(
+            "app/config.py#Config::from_env",
+            "app/config.py#Config::rate_limit_burst"
+        ));
+        assert!(!ov(
+            "src/state.rs#State::brief",
+            "src/state.rs#State::claim"
+        ));
+        assert!(!ov("src/state.rs#State", "src/state.rs#Claims"));
+    }
+
+    #[test]
+    fn new_members_are_siblings_of_each_other() {
+        assert!(!ov(
+            "app/config.py#Config::access_log",
+            "app/config.py#Config::gzip_min_size"
+        ));
+        assert!(ov(
+            "app/config.py#Config",
+            "app/config.py#Config::access_log"
+        ));
+    }
+
+    #[test]
+    fn segment_prefixes_are_whole_segments() {
+        assert!(!ov("src/state.rs#State", "src/state.rs#StateView"));
+        assert!(!ov(
+            "src/state.rs#State::brief",
+            "src/state.rs#State::brief_page"
+        ));
+    }
+
+    #[test]
+    fn anchors_compare_case_insensitively() {
+        assert!(ov("pkg/server.go#Server", "pkg/server.go#server"));
+        assert!(ov(
+            "pkg/server.go#(*Server).Handle",
+            "pkg/server.go#server.handle"
+        ));
+    }
+
+    #[test]
+    fn the_same_name_in_different_containers_does_not_overlap() {
+        assert!(!ov(
+            "src/types.rs#RepoPath::fmt",
+            "src/types.rs#AgentId::fmt"
+        ));
+        assert!(ov(
+            "src/types.rs#RepoPath::fmt",
+            "src/types.rs#RepoPath::fmt"
+        ));
+    }
+
+    #[test]
+    fn anchored_paths_that_nest_are_treated_as_overlapping() {
+        // Not a real tree (a file cannot also be a directory); stay safe.
+        assert!(ov("src/auth#Login", "src/auth/login.rs#Login"));
+    }
+
+    #[test]
+    fn e2e_feature_tasks_share_only_build_pipeline_and_from_env() {
+        let rate_limit = [
+            "app/config.py#Config::rate_limit_per_second",
+            "app/config.py#Config::rate_limit_burst",
+            "app/config.py#Config::from_env",
+            "app/router.py#build_pipeline",
+        ];
+        let access_log = [
+            "app/config.py#Config::access_log",
+            "app/router.py#build_pipeline",
+        ];
+        let cors = [
+            "app/config.py#Config::cors_allowed_origins",
+            "app/config.py#Config::from_env",
+            "app/router.py#build_pipeline",
+        ];
+        let clash = |a: &[&str], b: &[&str]| -> Vec<String> {
+            let mut hits: Vec<String> = a
+                .iter()
+                .filter(|x| b.iter().any(|y| ov(x, y)))
+                .map(|x| (*x).to_owned())
+                .collect();
+            hits.dedup();
+            hits
+        };
+        assert_eq!(
+            clash(&rate_limit, &access_log),
+            ["app/router.py#build_pipeline"]
+        );
+        assert_eq!(
+            clash(&rate_limit, &cors),
+            [
+                "app/config.py#Config::from_env",
+                "app/router.py#build_pipeline"
+            ]
+        );
+    }
+
+    #[test]
+    fn file_level_overlap_ignores_anchors() {
+        let brief = RepoPath::new("app/router.py#build_pipeline").unwrap();
+        let other = RepoPath::new("app/router.py#Router::add").unwrap();
+        let dir = RepoPath::new("app").unwrap();
+        assert!(brief.overlaps(&other));
+        assert!(dir.overlaps(&brief));
+        assert!(!brief.is_ancestor_of(&other));
+        assert!(dir.is_ancestor_of(&brief));
+    }
+
+    #[test]
+    fn covers_decides_renewal_and_absorption() {
+        let p = |raw: &str| RepoPath::new(raw).unwrap();
+        assert!(p("src").covers(&p("src/state.rs#State")));
+        assert!(p("src/state.rs").covers(&p("src/state.rs#State")));
+        assert!(p("src/state.rs#State").covers(&p("src/state.rs#state::brief")));
+        assert!(p("src/state.rs#State").covers(&p("src/state.rs#State")));
+        assert!(!p("src/state.rs#State::brief").covers(&p("src/state.rs#State")));
+        assert!(!p("src/state.rs#State").covers(&p("src/state.rs")));
+        assert!(!p("src/state.rs#State").covers(&p("src/state.rs#StateView")));
+        assert!(!p("src/auth#X").covers(&p("src/auth/x.rs#X")));
     }
 
     #[test]

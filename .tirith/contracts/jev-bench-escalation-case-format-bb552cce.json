@@ -1,0 +1,54 @@
+{
+  "id": "bb552cce-1bcf-4a19-a59d-572c83707454",
+  "name": "jev_bench escalation case format",
+  "kind": "other",
+  "consumers": [
+    "examples/jev_bench/main.rs"
+  ],
+  "current": {
+    "version": 1,
+    "shape": {
+      "case": {
+        "action": {
+          "agent": "worker (never the lead)",
+          "args": {
+            "claim": {
+              "paths": [],
+              "reason": "string; overlaps another agent's seed claim"
+            },
+            "message_send": {
+              "text": "<=1000 chars",
+              "to": "<lead agent>"
+            },
+            "stop_report": {
+              "text": "end-of-turn report; phase-2 stop hook, no MCP tool"
+            },
+            "task_update": {
+              "note": "string",
+              "status": "blocked"
+            }
+          },
+          "repeat": "claim only: 3 (issue the refused claim 3 times within the wait window)",
+          "task_key": "seed task key; required for task_update (harness maps to task_id; worker is pulled_by), optional otherwise",
+          "tool": "task_update | message_send | claim | stop_report"
+        },
+        "difficulty": "easy|medium|hard",
+        "expect": {
+          "deterministic_human": "bool; true => route needs_human (hard rule: credentials, permissions, spending, destructive/irreversible, addressed to the human)",
+          "record_keys": "answerable only: seeded decision/memory keys that settle it; a pointer set hits if it includes any",
+          "route": "answerable_from_records | lead_can_decide | needs_human | not_an_escalation"
+        },
+        "id": "esc-NNN",
+        "seed": "standard seed (notices, contracts, decisions, memory, tasks, claims, active_agents); claims always contain exactly one claim on .tirith/lead by the lead agent (jev-lead); 5-20 records",
+        "uncertain": "optional string: why the label is a judgment call",
+        "why": "string"
+      },
+      "file": "examples/jev_bench/cases/escalation.json",
+      "site": "escalation"
+    },
+    "notes": "58 blind-labeled cases (esc-labeler, no Jev). The harness does not support the site yet: load_cases reports escalation.json as unknown site, so `--validate` exits non-zero until main.rs adds it. Standalone validator: scratchpad/escalation/validate.py in the jev-lead session scratchpad.",
+    "published_by": "esc-labeler",
+    "published_at": "2026-09-17T04:01:56.521800Z"
+  },
+  "history": []
+}

@@ -1,0 +1,197 @@
+{
+  "id": "b86c62f6-cfd2-45a1-85c1-b42d71271129",
+  "name": "Lead policy API",
+  "kind": "type",
+  "consumers": [
+    "src/server.rs",
+    "src/assist.rs",
+    "src/state.rs",
+    "src/store.rs",
+    "src/dashboard.rs",
+    "src/cli.rs",
+    "tests/jev_assist.rs"
+  ],
+  "current": {
+    "version": 3,
+    "shape": {
+      "escalation": {
+        "access": {
+          "/api/state": "needs_you: [HumanItem]",
+          "CLI": "tirith lead human",
+          "GET /api/human": "{lead, count, items: [HumanItem]}",
+          "tray": "needs-you count per daemon, osascript notification when it grows"
+        },
+        "assist": {
+          "Assist::escalation(&EscalationContext, &[Decision], &[MemoryNote]) -> Judged<Option<EscalationJudgment {route, probability, needs_human, records}>>": "",
+          "Site::Escalation": "background budget"
+        },
+        "policy (all no-ops with Jev off; routing in the background)": {
+          "claim_granted(self: &Arc<Self>, &AgentId, &[RepoPath])": "answers the claims_refused row for that path set",
+          "claim_refused(self: &Arc<Self>, &AgentId, &[RepoPath], reason: &str)": "3rd refusal of same agent+path set within REFUSAL_WINDOW_SECS (360) raises once",
+          "message_sent(self: &Arc<Self>, &Message)": "to the lead by name raises; to an agent answers its open rows",
+          "raise(self: &Arc<Self>, Escalation)": "for a future stop hook",
+          "task_updated(self: &Arc<Self>, &AgentId, &Task, note: Option<&str>)": "blocked+note raises; other statuses answer open rows on the task"
+        },
+        "pure": {
+          "decide_route(Option<&EscalationJudgment>, has_lead) -> Routed": "ROUTE_CONFIDENT 0.5, HUMAN_FLOOR 0.25, POINTER_KEEP 0.25, POINTERS_MAX 3",
+          "human_queue(&[LeadEntry], &[Task], now) -> Vec<HumanItem>": "open escalation_raised rows delivered to human_queue; ranked blocked_agents desc, then oldest",
+          "human_queue_of(&State) -> Vec<HumanItem>": "",
+          "human_rule(&str) -> Option<&'static str>": "HUMAN_RULES: credentials|permissions|spending|destructive|addressed_to_human"
+        },
+        "row": {
+          "details": "{trigger, text, task, paths, route, delivered:[worker|lead|human_queue], pointers:[decision id|note permalink], needs_human_p}",
+          "event": "escalation_raised",
+          "fallback_reason": "jev_failed|below_threshold|invalid_choice|no_record_to_point_to|no_lead|null",
+          "outcome": "{answered_by, via: message|task_<status>|claim_granted, at, after_secs}",
+          "rule": "human:<category>|human_floor|null",
+          "site": "escalation"
+        },
+        "types": {
+          "Escalation::new(Trigger, AgentId, text).with_task(TaskId).with_paths(Vec<RepoPath>)": "",
+          "HumanItem {id, at, waited_secs, agent, trigger, task, text, rule, blocked_agents}": "",
+          "Route": "Records|Lead|Human|LogOnly -> answerable_from_records|lead_can_decide|needs_human|not_an_escalation; ALL, as_str, from_label",
+          "Routed {route, pointers, rule, fallback}": "",
+          "Trigger": "TaskBlocked|MessageToLead|ClaimsRefused -> task_blocked|message_to_lead|claims_refused"
+        }
+      },
+      "module": "src/lead.rs",
+      "v2": "unchanged (see history)"
+    },
+    "notes": "v3 (esc-router, c9af0bb7): escalation routing landed. v2 shape unchanged; additions only. Consumers kept.",
+    "published_by": "esc-router",
+    "published_at": "2026-09-17T04:59:09.459485Z"
+  },
+  "history": [
+    {
+      "version": 1,
+      "shape": {
+        "access": {
+          "CLI": "tirith lead log [--limit N]",
+          "GET /api/lead?limit=N": "{entries: [row], lead: Lead|null}, newest first, default 50, max 500"
+        },
+        "budgets": {
+          "BACKGROUND_BUDGET": "5 s (notice push, duplicate flags, future escalation routing)",
+          "INLINE_BUDGET": "1500 ms (task_pull, memory_search, decision_list)",
+          "Site::budget() -> Duration": "in assist.rs"
+        },
+        "identity": {
+          "LEAD_PATH": ".tirith/lead",
+          "Lead": {
+            "agent": "AgentId",
+            "expires_at": "DateTime<Utc>"
+          },
+          "Lead::from_claims(impl IntoIterator<Item=&Claim>) -> Option<Lead>": "exact path match only",
+          "State::lead() -> Option<Lead>": "",
+          "StatusReport.lead": "Option<Lead>"
+        },
+        "log": {
+          "Delta.lead_log": "Log<LeadEntry>",
+          "Snapshot.lead_log": "Vec<LeadEntry>",
+          "State::lead_log(limit) -> Vec<LeadEntry>": "newest first",
+          "State::lead_log_append(LeadEntryDraft) -> EntryId": "",
+          "State::lead_log_outcome(EntryId, Value) -> bool": "",
+          "file": ".tirith/runtime/lead_log.jsonl",
+          "retention": "7 days, applied on load",
+          "row": {
+            "action": "string, what was done through Tirith",
+            "at": "RFC 3339",
+            "candidates": [
+              "ids (task id, permalink, decision id, agent)"
+            ],
+            "event": "task_requested|task_created|note_written|notice_published|memory_search|decision_search|escalation_raised",
+            "fallback_reason": "string|null",
+            "id": "u64, increasing",
+            "jev": "{question: boolean|choice|score, answer: string|null, probabilities: {id: p}, confidence: f64|null, model, latency_ms} | {skipped: reason} | {failed: reason}",
+            "outcome": "any JSON|null, filled in later",
+            "rule": "string|null, the deterministic rule that decided",
+            "seq": "state seq read",
+            "site": "task_pull|notice_fanout|memory_search|decision_search|task_duplicate|note_duplicate (assist::Site), or null"
+          }
+        },
+        "module": "src/lead.rs",
+        "policy": {
+          "LeadPolicy::new(state: Arc<State>, persister: Arc<Persister>) -> LeadPolicy": "server holds Arc<LeadPolicy> instead of the assist OnceLock",
+          "async rank_decisions(&self, agent: &AgentId, query: &str, candidates: Vec<Decision>) -> Option<Vec<Decision>>": "same rule",
+          "async rank_notes(&self, agent: &AgentId, query: &str, candidates: Vec<(MemoryNote,u32)>) -> Option<Vec<(MemoryNote,u32)>>": "None = deterministic; never fewer than the deterministic hits",
+          "async task_pull(&self, agent: AgentId) -> Option<Task>": "tier = top-priority unblocked candidates; skip Jev when <2 in tier or no agent context; revalidate with State::task_pull_id, else deterministic State::task_pull; logs one row",
+          "enable_jev(&self, Arc<dyn Evaluator>) -> bool": "",
+          "jev_report(&self) -> Option<AssistReport>": "",
+          "note_written(self: &Arc<Self>, note: MemoryNote)": "background duplicate flag to the lead; logs",
+          "notice_published(self: &Arc<Self>, notice: Notice)": "background push: deterministic floor (overlapping holders) + Jev additions; logs",
+          "task_created(self: &Arc<Self>, task: Task)": "background duplicate flag to the lead; logs"
+        }
+      },
+      "notes": "ADR-0026/0027. Identity part is already in the tree (State::lead, StatusReport.lead, status `lead`). Log persistence: like lease renewals, a new row does not make State::is_dirty() true (no tool call waits on it); it rides the next persister tick (1 s) or any other write. Outcomes rewrite the file (rare). Escalation routing (c9af0bb7) will add: LeadEvent::EscalationRaised rows, a Route enum {Records, Lead, Human, LogOnly}, and a HumanQueue (items ranked by agents blocked, then wait) owned by LeadPolicy and exposed on /api/lead; not implemented in this run. Budget: Assist::ask takes the site's budget and counts an expiry as a failure (cf60a160).",
+      "published_by": "lead-builder",
+      "published_at": "2026-09-17T03:57:48.538453Z"
+    },
+    {
+      "version": 2,
+      "shape": {
+        "access": {
+          "CLI": "tirith lead log [--limit N] [--event E]",
+          "GET /api/lead?limit=N&event=E": "{lead, count, entries} newest first, default 50, max 500"
+        },
+        "assist": {
+          "Judged<T> { value: T, jev: JevTrace }": "every Assist site returns this"
+        },
+        "budgets": {
+          "BACKGROUND_BUDGET": "5 s",
+          "INLINE_BUDGET": "1500 ms",
+          "assist::Site::budget()": "task_pull, memory_search, decision_search inline; others background"
+        },
+        "identity": {
+          "LEAD_PATH": ".tirith/lead",
+          "Lead": {
+            "agent": "AgentId",
+            "expires_at": "DateTime<Utc>"
+          },
+          "State::lead() -> Option<Lead>": "exact path",
+          "status.lead": "agent or null; verbose adds lead_expires_at"
+        },
+        "log": {
+          "State": "lead_log_append(NewEntry) -> EntryId; lead_log_outcome(EntryId, Value) -> bool; lead_log(limit, Option<LeadEvent>) -> Vec<LeadEntry>",
+          "file": ".tirith/runtime/lead_log.jsonl",
+          "retention": "7 days on load",
+          "row": {
+            "action": "string",
+            "agent?": "AgentId",
+            "at": "RFC 3339",
+            "candidates": [
+              "ids or paths"
+            ],
+            "details?": "JSON, e.g. {new_paths, renewed_paths, absorbed_paths, reason, ttl_secs, expires_at} | {reason, conflicts:[{path, overlaps, owner}]} | {wait_secs, waited_ms, outcome} | {claim_id, reason, claimed_at, expires_at}",
+            "event": "task_requested|task_created|note_written|notice_published|memory_search|decision_search|escalation_raised|claim_granted|claim_refused|claim_waited|claim_released|lease_ended",
+            "fallback_reason": "string|null",
+            "id": "u64",
+            "jev?": "{question, answer, probabilities, confidence, model, latency_ms} | {skipped} | {failed}; omitted on deterministic rows",
+            "outcome": "JSON|null",
+            "rule": "string|null",
+            "seq": "u64",
+            "site": "string|null"
+          }
+        },
+        "module": "src/lead.rs",
+        "policy": {
+          "LeadPolicy::new(Arc<State>, Arc<Persister>)": "",
+          "async search_decisions(&AgentId, Option<&RepoPath>, &str) -> Option<Vec<Decision>>": "",
+          "async search_notes(&AgentId, &MemorySearch, limit) -> Option<Vec<(MemoryNote,u32)>>": "",
+          "async task_pull(AgentId) -> Option<Pulled>": "",
+          "enable_jev(Arc<dyn Evaluator>) -> bool": "",
+          "jev_report() -> Option<AssistReport>": "",
+          "note_written(self: &Arc<Self>, MemoryNote)": "background",
+          "notice_published(self: &Arc<Self>, Notice)": "overlap floor inline, Jev additions background",
+          "task_created(self: &Arc<Self>, Task)": "background"
+        },
+        "pure": {
+          "claim_granted/claim_refused/claim_waited/claim_released/lease_ended(..) -> NewEntry": "row builders",
+          "task_pick_skip(tier, held, recent) -> Option<&'static str>": "no_candidates|single_candidate|no_context",
+          "task_tier(&[Task]) -> &[Task]": ""
+        }
+      },
+      "notes": "v2: claim lifecycle rows (jev-lead request), `jev` optional, `agent` and `details` added; LeadPolicy method names final. Search/task rows are written only while Jev is on; claim lifecycle rows always. State::claim/claim_waiting/release and the reaper write claim rows under the State lock (no extra I/O on the request path). Escalation routing (c9af0bb7) will add EscalationRaised rows, a Route enum and a HumanQueue; not implemented.",
+      "published_by": "lead-builder",
+      "published_at": "2026-09-17T04:20:03.047345Z"
+    }
+  ]
+}

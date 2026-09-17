@@ -11,7 +11,9 @@ are tested as such. The transport is tested once, end to end.
 | Unit | `#[cfg(test)] mod tests` in each domain module | Overlap rules, lease expiry with a manual clock, path normalization, task dependency resolution, contract versioning | None |
 | State | `src/state.rs` tests | Atomicity of multi-path claims, lazy reaping, renew-on-activity, which primitives a delta carries, renewals folded into the next delta | None |
 | Store | `src/store.rs` tests | Round-trip to a temp dir, deltas append or rewrite only their own files, the persister coalesces bursts and flushes, reports and recovers from a failed write, loading a corrupt file is an error, not a panic | tokio (for `spawn_blocking`) |
-| Integration | `tests/http_roundtrip.rs` | Start the real server on an ephemeral localhost port, drive it with `tirith::client`: refusal and release, restart, lease expiry, the task/contract/notice flow, paging and id prefixes, task ownership and contract republish guards, lost leases and the four-TTL cap, briefs, messages, shutdown with an open SSE stream, the daemon registry, the dashboard, and the two budgets also pinned in `tests/budgets.rs` | tokio + localhost network |
+| Integration | `tests/http_roundtrip.rs` | Start the real server on an ephemeral localhost port, drive it with `tirith::client`: refusal and release, restart, lease expiry, the task/contract/notice flow, paging and id prefixes, task ownership and contract republish guards, claim-aware `task_pull` and its `wait_secs` wait, lost leases and the four-TTL cap, briefs, messages, shutdown with an open SSE stream, the daemon registry, the dashboard, and the two budgets also pinned in `tests/budgets.rs` | tokio + localhost network |
+| Escalations | `tests/lead_escalation.rs` | The deterministic lead policy (ADR-0027) through a real daemon: each trigger (blocked task, third refusal of a claim, a message to the lead that matches a human rule), routing to the lead or the human queue with and without a lead, the human queue's ranking, and the outcome filled in when an escalation is answered | tokio + localhost network |
+| Anchored claims | `tests/anchored_claims.rs` | Experimental `path#Symbol` claims (ADR-0029) through a real daemon: conflicts with the file and enclosing symbols only, `wait_secs` waking on an anchor release, a whole-file waiter not queued ahead of new anchors (today's behavior), `task_pull` holds, and briefs matching on the file | tokio + localhost network |
 | Budgets | `tests/budgets.rs` | One test per row of the ADR-0013 table against a daemon seeded with 300 claims, notices and decisions: `tools/list` size, status-line text blocks, 20 compact rows with a cursor, `status`, `claims_list`, `renew`, brief, and search rows without bodies | tokio + localhost network |
 | Persistence | `tests/persistence.rs` | The legacy decisions.jsonl importing into one file per decision, fifty agents claiming at once, reads that do not rewrite logs, lease renewals reaching disk by shutdown, seen marks that never rewrite the notice log, a bad line reported instead of stopping the daemon, a failed write reported on the response, everything surviving a restart | tokio + localhost network |
 | Memory | `tests/memory_layer.rs` | One Markdown file per note round-tripped through a directory, an edit rewriting exactly one file, hand-written and corrupt files, folders in permalinks, and every note the repository ships in `.tirith/memory/` parsing; then the memory tools through the daemon: write, read, search bounds, relations, a claim carrying its notes, a restart | tokio (+ localhost network for the tool half) |
@@ -79,6 +81,8 @@ this table is `examples/swarm_bench.rs`.
 
 ```bash
 scripts/check.sh                 # the whole chain, one line per step
+scripts/check.sh --quick         # unit tests, then doctests; edit loop only
+cargo test 2>&1 | scripts/check.sh --digest   # digest any cargo output
 cargo test                       # everything
 cargo test --lib                 # unit and state tests only, fastest
 cargo test --test http_roundtrip # one integration file
@@ -90,7 +94,19 @@ same order CI runs: `cargo fmt --check`, `cargo clippy --all-targets
 --all-features -- -D warnings`, `cargo test --all-features`, `cargo doc
 --no-deps` with `RUSTDOCFLAGS=-D warnings`, `cargo machete`, `cargo deny
 check`; it also fails if a test left a `tirith serve` daemon running.
-There is no coverage step.
+There is no coverage step. Each step's raw output goes to
+`target/check-<step>.log`. A failing clippy, test, or doc step prints a
+digest under its `FAIL` line: the first panic per location with its
+assertion message (`left`/`right`), the first compiler error per message
+with the other locations on one line, and the failed tests per target. If
+nothing parses it prints the last 40 lines of the log instead.
+
+`--quick` runs `cargo test --lib`, then `cargo test --doc`, and stops at
+the first failure. The unit and doc tests take a couple of seconds after an
+incremental build and caught 10 of the 11 mutants the whole suite detected
+in the 2026-09-16 verification probe; the integration targets caught one
+more and take 20 s or more. Use it while editing; the full chain is still
+the definition of done.
 
 ## Coverage expectations
 

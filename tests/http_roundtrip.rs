@@ -12,6 +12,8 @@ use std::sync::Arc;
 use chrono::{Duration, TimeZone, Utc};
 use common::{call, options};
 use raw_client::raw_client;
+use rmcp::model::{CallToolRequest, CallToolRequestParams, ClientRequest};
+use rmcp::service::PeerRequestOptions;
 use serde_json::{Value, json};
 use tirith::client::list_tools;
 use tirith::clock::ManualClock;
@@ -450,11 +452,26 @@ async fn id_prefixes_are_accepted_and_ambiguity_is_refused() {
 async fn status_stays_small_without_verbose_and_unread_defaults_to_held_paths() {
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
+    // Published before anyone holds the paths, and claimed without a
+    // brief, so neither a push nor a brief delivers them before the unread
+    // listings below.
+    call(
+        &handle,
+        "notice_publish",
+        json!({ "agent": "a2", "kind": "rename", "summary": "about m1", "affected_paths": ["src/m1/f.rs"] }),
+    )
+    .await;
+    call(
+        &handle,
+        "notice_publish",
+        json!({ "agent": "a2", "kind": "rename", "summary": "about m7", "affected_paths": ["src/m7"] }),
+    )
+    .await;
     for i in 0..300 {
         let claimed = call(
             &handle,
             "claim",
-            json!({ "agent": format!("a{i}"), "paths": [format!("src/m{i}")], "reason": "r" }),
+            json!({ "agent": format!("a{i}"), "paths": [format!("src/m{i}")], "reason": "r", "brief": false }),
         )
         .await;
         assert_eq!(claimed["status"], "ok");
@@ -478,18 +495,6 @@ async fn status_stays_small_without_verbose_and_unread_defaults_to_held_paths() 
     assert!(renewed["claims"].is_null(), "renew no longer echoes claims");
     assert!(renewed["expires_at"].is_string());
 
-    call(
-        &handle,
-        "notice_publish",
-        json!({ "agent": "a2", "kind": "rename", "summary": "about m1", "affected_paths": ["src/m1/f.rs"] }),
-    )
-    .await;
-    call(
-        &handle,
-        "notice_publish",
-        json!({ "agent": "a2", "kind": "rename", "summary": "about m7", "affected_paths": ["src/m7"] }),
-    )
-    .await;
     let mine = call(
         &handle,
         "notice_list",
@@ -1125,5 +1130,364 @@ async fn activity_cannot_extend_a_lease_past_four_ttls() {
     )
     .await;
     assert_eq!(bob["status"], "ok");
+    handle.shutdown().await.unwrap();
+}
+
+/// ADR-0027: the lead is whoever holds the reserved `.tirith/lead` claim.
+/// `status` names it, and it is gone after a release or when the lease ends.
+#[tokio::test]
+async fn status_reports_the_holder_of_the_lead_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(ManualClock::new(
+        Utc.with_ymd_and_hms(2026, 9, 17, 3, 0, 0).unwrap(),
+    ));
+    let handle = start(options(dir.path(), Some(clock.clone())))
+        .await
+        .unwrap();
+    let status = call(&handle, "status", json!({})).await;
+    assert!(status["lead"].is_null(), "no lead yet: {status}");
+
+    let lead_claim =
+        json!({ "agent": "boss", "paths": [".tirith/lead"], "reason": "swarm", "ttl_secs": 30 });
+    let claimed = call(&handle, "claim", lead_claim.clone()).await;
+    assert_eq!(claimed["status"], "ok", "{claimed}");
+    let refused = call(
+        &handle,
+        "claim",
+        json!({ "agent": "worker", "paths": [".tirith/lead"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(refused["status"], "conflict", "one lead at a time");
+    let status = call(&handle, "status", json!({ "verbose": true })).await;
+    assert_eq!(status["lead"], "boss", "{status}");
+    assert!(status["lead_expires_at"].is_string(), "{status}");
+
+    call(&handle, "release", json!({ "agent": "boss" })).await;
+    let status = call(&handle, "status", json!({})).await;
+    assert!(status["lead"].is_null(), "released: {status}");
+
+    call(&handle, "claim", lead_claim).await;
+    assert_eq!(call(&handle, "status", json!({})).await["lead"], "boss");
+    clock.advance(Duration::seconds(31));
+    let status = call(&handle, "status", json!({})).await;
+    assert!(status["lead"].is_null(), "expired: {status}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_claim_with_wait_secs_is_granted_when_the_holder_releases() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let alice = call(
+        &handle,
+        "claim",
+        json!({ "agent": "alice", "paths": ["src/auth"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(alice["status"], "ok");
+
+    let started = std::time::Instant::now();
+    let release_later = async {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        call(&handle, "release", json!({ "agent": "alice" })).await
+    };
+    let wait = call(
+        &handle,
+        "claim",
+        json!({ "agent": "bob", "paths": ["src/auth/login.rs"], "reason": "r", "wait_secs": 30 }),
+    );
+    let (released, bob) = tokio::join!(release_later, wait);
+    let waited = started.elapsed();
+    assert_eq!(released["status"], "ok");
+    assert_eq!(bob["status"], "ok", "{bob}");
+    assert!(
+        waited >= std::time::Duration::from_millis(900)
+            && waited < std::time::Duration::from_secs(5),
+        "waited {waited:?}"
+    );
+
+    // Without anyone releasing, a short wait ends in the usual conflict.
+    let carol = call(
+        &handle,
+        "claim",
+        json!({ "agent": "carol", "paths": ["src/auth"], "reason": "r", "wait_secs": 1 }),
+    )
+    .await;
+    assert_eq!(carol["status"], "conflict");
+    assert_eq!(carol["conflicts"][0]["owner"], "bob");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_claim_with_wait_secs_is_granted_when_the_lease_expires() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    call(
+        &handle,
+        "claim",
+        json!({ "agent": "alice", "paths": ["a"], "reason": "r", "ttl_secs": 1 }),
+    )
+    .await;
+    let started = std::time::Instant::now();
+    // Nobody calls while bob waits, so only the expiry timer can wake him.
+    let bob = call(
+        &handle,
+        "claim",
+        json!({ "agent": "bob", "paths": ["a"], "reason": "r", "wait_secs": 30 }),
+    )
+    .await;
+    assert_eq!(bob["status"], "ok", "{bob}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_task_pull_with_wait_secs_takes_a_task_created_while_it_waits() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let started = std::time::Instant::now();
+    let create_later = async {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        call(
+            &handle,
+            "task_create",
+            json!({ "agent": "planner", "title": "late work" }),
+        )
+        .await
+    };
+    // Above the 120 s cap: clamped like claim's wait_secs, not refused.
+    let wait = call(
+        &handle,
+        "task_pull",
+        json!({ "agent": "bob", "wait_secs": 600 }),
+    );
+    let (created, bob) = tokio::join!(create_later, wait);
+    let waited = started.elapsed();
+    assert_eq!(created["status"], "ok");
+    assert_eq!(bob["status"], "ok", "{bob}");
+    assert_eq!(bob["task"]["title"], "late work");
+    assert_eq!(bob["task"]["status"], "in_progress");
+    assert!(
+        waited >= std::time::Duration::from_millis(900)
+            && waited < std::time::Duration::from_secs(5),
+        "waited {waited:?}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_task_pull_with_wait_secs_wakes_when_a_dependency_is_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let first = call(
+        &handle,
+        "task_create",
+        json!({ "agent": "planner", "title": "server side" }),
+    )
+    .await;
+    let first_id = first["task"]["id"].as_str().unwrap().to_owned();
+    call(
+        &handle,
+        "task_create",
+        json!({ "agent": "planner", "title": "client side", "depends_on": [first_id] }),
+    )
+    .await;
+    let alice = call(&handle, "task_pull", json!({ "agent": "alice" })).await;
+    assert_eq!(alice["task"]["title"], "server side");
+
+    let started = std::time::Instant::now();
+    let finish_later = async {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        call(
+            &handle,
+            "task_update",
+            json!({ "agent": "alice", "task_id": first_id, "status": "done" }),
+        )
+        .await
+    };
+    let wait = call(
+        &handle,
+        "task_pull",
+        json!({ "agent": "bob", "wait_secs": 30 }),
+    );
+    let (done, bob) = tokio::join!(finish_later, wait);
+    let waited = started.elapsed();
+    assert_eq!(done["status"], "ok");
+    assert_eq!(bob["task"]["title"], "client side", "{bob}");
+    assert!(
+        waited >= std::time::Duration::from_millis(900)
+            && waited < std::time::Duration::from_secs(5),
+        "waited {waited:?}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_task_pull_with_wait_secs_wakes_when_the_claim_on_its_paths_is_released() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    call(
+        &handle,
+        "claim",
+        json!({ "agent": "alice", "paths": ["src/auth"], "reason": "r" }),
+    )
+    .await;
+    call(
+        &handle,
+        "task_create",
+        json!({ "agent": "planner", "title": "fix login", "paths": ["src/auth/login.rs"] }),
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let release_later = async {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        call(&handle, "release", json!({ "agent": "alice" })).await
+    };
+    let wait = call(
+        &handle,
+        "task_pull",
+        json!({ "agent": "bob", "wait_secs": 30 }),
+    );
+    let (released, bob) = tokio::join!(release_later, wait);
+    let waited = started.elapsed();
+    assert_eq!(released["status"], "ok");
+    assert_eq!(bob["task"]["title"], "fix login", "{bob}");
+    assert!(bob.get("waiting_on").is_none(), "free once released: {bob}");
+    assert!(
+        waited >= std::time::Duration::from_millis(900)
+            && waited < std::time::Duration::from_secs(5),
+        "waited {waited:?}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_task_pull_with_wait_secs_returns_none_when_the_wait_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let started = std::time::Instant::now();
+    let bob = call(
+        &handle,
+        "task_pull",
+        json!({ "agent": "bob", "wait_secs": 1 }),
+    )
+    .await;
+    let waited = started.elapsed();
+    assert_eq!(bob["status"], "none", "{bob}");
+    assert!(
+        waited >= std::time::Duration::from_secs(1) && waited < std::time::Duration::from_secs(3),
+        "waited {waited:?}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_waiting_task_pull_that_is_cancelled_assigns_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    // The client cancels the request, as an interrupted agent's client does.
+    let args = json!({ "agent": "ghost", "wait_secs": 30 });
+    let params =
+        CallToolRequestParams::new("task_pull").with_arguments(args.as_object().unwrap().clone());
+    let client = raw_client(&handle.mcp_url()).await;
+    let request = client
+        .peer()
+        .send_cancellable_request(
+            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+            PeerRequestOptions::no_options(),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    request.cancel(None).await.unwrap();
+
+    // A task created after the cancel stays on the board for someone else.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    call(
+        &handle,
+        "task_create",
+        json!({ "agent": "planner", "title": "after a cancel" }),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let listed = call(&handle, "task_list", json!({ "agent": "planner" })).await;
+    assert_eq!(listed["tasks"][0]["status"], "todo", "{listed}");
+    let bob = call(&handle, "task_pull", json!({ "agent": "bob" })).await;
+    assert_eq!(bob["task"]["title"], "after a cancel");
+    handle.shutdown().await.unwrap();
+}
+
+/// A notice is pushed at once to every holder of an affected path, or of an
+/// ancestor or descendant of one, as a message from `tirith`; the push counts
+/// as seen, so the next brief and unread listing skip it, and the decision
+/// log has one row for it.
+#[tokio::test]
+async fn a_notice_reaches_affected_holders_at_once_and_is_not_briefed_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    for (agent, path) in [
+        ("bob", "src/auth"),
+        ("dave", "src/auth/token.rs"),
+        ("carol", "src/billing"),
+    ] {
+        let out = call(
+            &handle,
+            "claim",
+            json!({ "agent": agent, "paths": [path], "reason": "work" }),
+        )
+        .await;
+        assert_eq!(out["status"], "ok");
+    }
+    let out = call(
+        &handle,
+        "notice_publish",
+        json!({ "agent": "alice", "kind": "behavior", "summary": "token refresh is async", "affected_paths": ["src/auth/token.rs"] }),
+    )
+    .await;
+    assert_eq!(out["status"], "ok", "{out}");
+
+    for agent in ["bob", "dave"] {
+        let out = call(&handle, "status", json!({ "agent": agent })).await;
+        assert_eq!(out["inbox"][0]["from"], "tirith", "{out}");
+        let text = out["inbox"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("token refresh is async"), "{text}");
+    }
+    let carol = call(&handle, "status", json!({ "agent": "carol" })).await;
+    assert!(carol.get("inbox").is_none(), "{carol}");
+
+    // Pushed means delivered: bob's next brief and unread list skip it.
+    let again = call(
+        &handle,
+        "claim",
+        json!({ "agent": "bob", "paths": ["src/auth/token.rs"], "reason": "more" }),
+    )
+    .await;
+    assert_eq!(again["status"], "conflict", "dave holds the file: {again}");
+    let again = call(
+        &handle,
+        "claim",
+        json!({ "agent": "bob", "paths": ["src/auth/session.rs"], "reason": "more" }),
+    )
+    .await;
+    assert_eq!(again["status"], "ok", "{again}");
+    let unread = call(
+        &handle,
+        "notice_list",
+        json!({ "agent": "bob", "unread": true }),
+    )
+    .await;
+    assert_eq!(unread["count"], 0, "{unread}");
+
+    let url = format!(
+        "{}api/lead?event=notice_published",
+        handle.dashboard_url()
+    );
+    let log = reqwest_get(&url).await;
+    assert_eq!(log["count"], 1, "{log}");
+    let row = &log["entries"][0];
+    assert_eq!(row["agent"], "alice");
+    assert_eq!(row["candidates"], json!(["bob", "dave"]));
+    assert_eq!(row["details"]["pushed"], json!(["bob", "dave"]));
     handle.shutdown().await.unwrap();
 }

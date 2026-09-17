@@ -458,4 +458,20 @@ mod tests {
             "rows from before ADR-0022 get a permalink on load"
         );
     }
+
+    #[test]
+    fn an_empty_query_matches_every_decision() {
+        let mut log = DecisionLog::default();
+        let decision = log
+            .record(
+                agent("a"),
+                NewDecision::new("Use JSON storage", "State is written to JSON files"),
+                t0(),
+            )
+            .unwrap()
+            .clone();
+        assert!(decision.matches(""));
+        assert!(decision.matches("   "));
+        assert_eq!(log.list(None, Some("")).len(), 1);
+    }
 }

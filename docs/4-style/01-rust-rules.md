@@ -164,15 +164,10 @@ too_many_lines = "allow"        # length is reviewed by humans, not counted
     `schemars`, `clap`, `thiserror`, `anyhow` (binary only), `chrono`,
     `uuid`, `tracing`, `tracing-subscriber`, `reqwest` (no TLS; the MCP
     client transport and localhost health checks),
-    `tempfile` (dev); macOS only behind the `tray` feature,
+    `tempfile` (dev), and, macOS only behind the `tray` feature,
     `tray-icon`, `muda`, `objc2-app-kit`, `objc2-foundation`
-    ([ADR-0019](../5-decisions/0019-menu-bar-tray.md)); and behind the
-    `jev` feature, the Jev client's HTTPS stack: `hyper`, `hyper-util`,
-    `hyper-rustls`, `http-body-util`, and `rustls` on the `ring` provider
-    ([ADR-0024](../5-decisions/0024-jev-assist-experiment.md)). Never turn
-    on TLS in `reqwest`: every `reqwest::Client` in the process would then
-    need a crypto provider installed first. Anything else is a decision to
-    record.
+    ([ADR-0019](../5-decisions/0019-menu-bar-tray.md)). Anything else is
+    a decision to record.
 
 ## Dead code
 
@@ -229,7 +224,10 @@ It runs, in order, `cargo fmt --all -- --check`, `cargo clippy
 --all-targets --all-features -- -D warnings`, `cargo test --all-features`,
 `cargo doc --no-deps` with `RUSTDOCFLAGS=-D warnings`, `cargo machete`,
 `cargo deny check`, and a check for leaked test daemons, printing one line
-per step. Rerun a failed step by hand to see its output.
+per step. A failing step prints a short failure digest and keeps its raw
+output in `target/check-<step>.log`, so there is no need to rerun it to
+see the message. `scripts/check.sh --quick` (unit tests, then doctests) is
+for the edit loop and does not count as this checklist.
 
 ## Cross-file types under a shared working tree
 

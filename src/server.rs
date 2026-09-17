@@ -12,7 +12,7 @@ use std::convert::identity;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rmcp::RoleServer;
@@ -33,25 +33,22 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::assist::{
-    Assist, AssistReport, BRIEF_CANDIDATES, DUPLICATE_CANDIDATES, NOTE_CANDIDATES,
-};
 use crate::claims::ClaimError;
 use crate::clock::{Clock, SystemClock};
 use crate::contracts::{Contract, ContractError, ContractKind, NewContract};
 use crate::dashboard::{self, DashboardContext};
 use crate::decisions::{Decision, DecisionError, NewDecision};
-use crate::jev::Evaluator;
+use crate::lead::LeadPolicy;
 use crate::memory::{
     DEFAULT_SEARCH_LIMIT, MAX_CONTEXT_DEPTH, MAX_SEARCH_LIMIT, MemoryError, MemoryKind, MemoryNote,
     MemorySearch, NewMemory, Permalink,
 };
-use crate::messages::{EVERYONE, MessageError, MessageFilter, NewMessage};
+use crate::messages::{MessageError, MessageFilter, NewMessage};
 use crate::notices::{NewNotice, Notice, NoticeError, NoticeFilter, NoticeKind};
 use crate::registry::{DaemonEntry, Registry};
 use crate::state::{Brief, State};
 use crate::store::{DaemonInfo, JsonStore, Persister, StoreError};
-use crate::tasks::{NewTask, Task, TaskError, TaskState, TaskStatus};
+use crate::tasks::{NewTask, Pulled, TaskError, TaskStatus};
 use crate::types::{
     AgentId, ClaimId, ContractId, DecisionId, IdError, MessageId, NoticeId, Page, PathError,
     PrefixError, RepoPath, TaskId, clamp_limit, parse_paths,
@@ -95,6 +92,9 @@ pub struct ClaimInput {
     /// Attach the brief. Default true.
     #[serde(default)]
     pub brief: Option<bool>,
+    /// On conflict, wait up to this many seconds (max 120) for the paths to free.
+    #[serde(default)]
+    pub wait_secs: Option<u64>,
 }
 
 /// Input for `release`.
@@ -112,6 +112,16 @@ pub struct ReleaseInput {
 pub struct AgentInput {
     /// Your stable agent name.
     pub agent: String,
+}
+
+/// Input for `task_pull`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskPullInput {
+    /// Your stable agent name.
+    pub agent: String,
+    /// If no task is free, wait up to this many seconds (max 120) for one.
+    #[serde(default)]
+    pub wait_secs: Option<u64>,
 }
 
 /// Input for `claims_list`.
@@ -832,14 +842,9 @@ fn run(f: impl FnOnce() -> Outcome) -> Value {
     f().unwrap_or_else(identity)
 }
 
-/// [`run`] for handlers that await Jev (ADR-0024) between `State` calls.
+/// [`run`] for handlers that await between `State` calls.
 async fn run_async(f: impl Future<Output = Outcome>) -> Value {
     f.await.unwrap_or_else(identity)
-}
-
-/// Jev probabilities rounded to two decimals, as the gateway sends them.
-fn rounded(p: f64) -> Value {
-    json!((p * 100.0).round() / 100.0)
 }
 
 fn agent(raw: &str) -> Result<AgentId, Value> {
@@ -1004,56 +1009,19 @@ impl From<MemoryError> for Value {
 pub struct TirithServer {
     state: Arc<State>,
     persister: Arc<Persister>,
-    /// Set once when Jev is enabled (ADR-0024); shared by every session.
-    assist: Arc<OnceLock<Arc<Assist>>>,
+    /// The lead policy (ADR-0027), shared by every session.
+    lead: Arc<LeadPolicy>,
 }
 
 impl TirithServer {
     /// A handler over shared state and a persister.
     pub fn new(state: Arc<State>, persister: Arc<Persister>) -> Self {
+        let lead = Arc::new(LeadPolicy::new(Arc::clone(&state)));
         Self {
             state,
             persister,
-            assist: Arc::new(OnceLock::new()),
+            lead,
         }
-    }
-
-    /// Jev, when this daemon was started with it.
-    fn assist(&self) -> Option<&Arc<Assist>> {
-        self.assist.get()
-    }
-
-    /// Tells every agent whose in-progress work `notice` likely breaks,
-    /// now, through its inbox, instead of at its next claim. Runs in the
-    /// background so the publisher does not wait for Jev.
-    fn fan_out(&self, notice: Notice) {
-        let Some(assist) = self.assist().cloned() else {
-            return;
-        };
-        let state = Arc::clone(&self.state);
-        let persister = Arc::clone(&self.persister);
-        tokio::spawn(async move {
-            let holders = state.claim_holders(&notice.published_by);
-            let audience = assist.notice_audience(&notice, &holders).await;
-            if audience.is_empty() {
-                return;
-            }
-            let text = format!(
-                "notice {} ({}) from {} likely affects your work: {}",
-                notice.id.short(),
-                notice.kind,
-                notice.published_by,
-                truncate(&notice.summary, BRIEF_SUMMARY_MAX),
-            );
-            for agent in audience {
-                if let Err(error) = state.notify(&agent, text.clone()) {
-                    tracing::warn!(%error, %agent, "could not push notice");
-                }
-            }
-            if let Err(error) = persister.flush().await {
-                tracing::error!(%error, "failed to persist pushed notices");
-            }
-        });
     }
 
     /// Waits for pending changes to reach disk and wraps `outcome` as a
@@ -1135,7 +1103,7 @@ impl TirithServer {
     /// Claim files or directories before editing them.
     #[tool(
         name = "claim",
-        description = "Claim paths before editing (a directory covers its contents); nothing is claimed on conflict. An ok reply briefs unread notices, contracts, decisions and memory notes. ttl_secs: default 600, max 3600."
+        description = "Claim paths (a directory covers its contents) before editing, atomically; ok briefs notices, contracts, decisions, memory. ttl_secs 600, max 3600. wait_secs max 120: waits out conflicts."
     )]
     async fn claim(
         &self,
@@ -1145,30 +1113,27 @@ impl TirithServer {
             let agent = agent(&input.agent)?;
             let paths = paths(&input.paths)?;
             let reason = input.reason.trim().to_owned();
-            let granted =
-                match self
+            let result = match input.wait_secs.filter(|secs| *secs > 0) {
+                Some(secs) => {
+                    let wait = std::time::Duration::from_secs(secs);
+                    self.state
+                        .claim_waiting(agent.clone(), paths.clone(), reason, input.ttl_secs, wait)
+                        .await
+                }
+                None => self
                     .state
-                    .claim(agent.clone(), paths.clone(), reason.clone(), input.ttl_secs)
-                {
-                    Ok(granted) => granted,
-                    Err(ClaimError::Conflict(conflicts)) => {
-                        // Experimental (ADR-0024): what to do instead of waiting blind.
-                        let advice = match self.assist() {
-                            Some(assist) => {
-                                assist
-                                    .conflict_advice(&reason, &paths, &conflicts, self.state.now())
-                                    .await
-                            }
-                            None => None,
-                        };
-                        let mut value = Value::from(ClaimError::Conflict(conflicts));
-                        if let (Some(advice), Some(object)) = (advice, value.as_object_mut()) {
-                            object.insert("advice".to_owned(), to_value(&advice));
-                        }
-                        return Err(value);
-                    }
-                    Err(error) => return Err(error.into()),
-                };
+                    .claim(agent.clone(), paths.clone(), reason, input.ttl_secs),
+            };
+            // Repeated refusals escalate (ADR-0027); the lead policy counts
+            // them without making this call wait.
+            match &result {
+                Ok(_) => self.lead.claim_granted(&agent, &paths),
+                Err(ClaimError::Conflict(_)) => {
+                    self.lead.claim_refused(&agent, &paths, input.reason.trim());
+                }
+                Err(_) => {}
+            }
+            let granted = result?;
             let mut value = to_value(&granted);
             // Whoever lost these paths a moment ago may have left them
             // half-edited; the new owner should know before touching them.
@@ -1181,26 +1146,7 @@ impl TirithServer {
             // The brief: what the agent needs to know about these paths,
             // delivered with the claim instead of asked for in four calls.
             if input.brief.unwrap_or(true) {
-                let brief = match self.assist() {
-                    // Experimental (ADR-0024): only the rows this task needs.
-                    Some(assist) => {
-                        let candidates =
-                            self.state
-                                .brief_candidates(&agent, &paths, BRIEF_CANDIDATES);
-                        let selection = assist.select_brief(&reason, &paths, candidates).await;
-                        self.state
-                            .mark_briefed(&agent, selection.brief.notices.iter().map(|n| n.id));
-                        let skipped = selection.skipped;
-                        if skipped.notices + skipped.contracts + skipped.decisions + skipped.memory
-                            > 0
-                            && let Some(object) = value.as_object_mut()
-                        {
-                            object.insert("skipped".to_owned(), to_value(&skipped));
-                        }
-                        selection.brief
-                    }
-                    None => self.state.brief(&agent, &paths),
-                };
+                let brief = self.state.brief(&agent, &paths);
                 value = attach_brief(&value, &brief);
             }
             Ok(ok(value))
@@ -1279,7 +1225,7 @@ impl TirithServer {
         &self,
         Parameters(input): Parameters<TaskCreateInput>,
     ) -> Result<CallToolResult, McpError> {
-        let outcome = run_async(async {
+        let outcome = run(|| {
             let agent = agent(&input.agent)?;
             let depends_on = input
                 .depends_on
@@ -1296,61 +1242,45 @@ impl TirithServer {
                     .with_depends_on(depends_on)
                     .with_paths(opt_paths(input.paths.as_deref())?),
             )?;
-            let mut value = json!({ "task": task });
-            // Experimental (ADR-0024): two agents filing the same work.
-            if let Some(assist) = self.assist() {
-                let mut open: Vec<Task> = self
-                    .state
-                    .tasks(None, None, None)
-                    .into_iter()
-                    .filter(|t| t.id != task.id && !matches!(t.state, TaskState::Done { .. }))
-                    .collect();
-                open.sort_by_key(|t| std::cmp::Reverse(t.created_at));
-                open.truncate(DUPLICATE_CANDIDATES);
-                if let Some((i, p)) = assist.duplicate_task(&task, &open).await
-                    && let Some(existing) = open.get(i)
-                {
-                    value["possible_duplicate"] = json!({
-                        "id": existing.id.short(), "title": existing.title, "confidence": rounded(p),
-                    });
-                }
-            }
-            Ok(ok(value))
-        })
-        .await;
+            Ok(ok(json!({ "task": task })))
+        });
         self.finish(Some(&input.agent), outcome).await
     }
 
     /// Pull the next unblocked task.
     #[tool(
         name = "task_pull",
-        description = "Take the highest-priority unblocked todo task as in_progress."
+        description = "Take the highest-priority unblocked todo task as in_progress. wait_secs max 120: waits for a free task."
     )]
     async fn task_pull(
         &self,
-        Parameters(input): Parameters<AgentInput>,
+        Parameters(input): Parameters<TaskPullInput>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let outcome = run_async(async {
             let agent = agent(&input.agent)?;
-            // Experimental (ADR-0024): among equal priorities, the task
-            // closest to what this agent already has in context.
-            let mut chosen = None;
-            if let Some(assist) = self.assist() {
-                let candidates = self.state.task_candidates(&agent);
-                let (held, recent) = self.state.agent_context(&agent);
-                if let Some(index) = assist
-                    .choose_task(&agent, &held, &recent, &candidates)
-                    .await
-                    .filter(|i| *i > 0)
-                    && let Some(task) = candidates.get(index)
-                {
-                    chosen = self.state.task_pull_id(agent.clone(), task.id);
+            // With wait_secs the lead policy first waits for a free task.
+            let pulled = match input.wait_secs.filter(|secs| *secs > 0) {
+                Some(secs) => {
+                    let wait = std::time::Duration::from_secs(secs);
+                    // rmcp cancels the request's token on an MCP cancel but
+                    // leaves the handler running: stop waiting then, so no
+                    // task goes to a caller that gave up.
+                    tokio::select! {
+                        biased;
+                        () = context.ct.cancelled() => None,
+                        pulled = self.lead.task_pull_waiting(agent, wait) => pulled,
+                    }
                 }
-            }
-            let picked_by_jev = chosen.is_some();
-            Ok(match chosen.or_else(|| self.state.task_pull(agent)) {
-                Some(task) if picked_by_jev => ok(json!({ "task": task, "picked_by": "jev" })),
-                Some(task) => ok(json!({ "task": task })),
+                None => self.state.task_pull(agent),
+            };
+            Ok(match pulled {
+                // Every candidate was held: the task is still handed out,
+                // with what it waits for (ADR-0028).
+                Some(Pulled { task, waiting_on }) if !waiting_on.is_empty() => {
+                    ok(json!({ "task": task, "waiting_on": waiting_on }))
+                }
+                Some(Pulled { task, .. }) => ok(json!({ "task": task })),
                 None => with_status("none", json!({ "message": "no unblocked todo tasks" })),
             })
         })
@@ -1372,9 +1302,12 @@ impl TirithServer {
             let id = self.state.resolve_task(&input.task_id)?;
             let status: TaskStatus = parse(&input.status)?;
             let force = input.force.unwrap_or(false);
-            let task = self
-                .state
-                .task_update(agent, id, status, input.note, force)?;
+            let task =
+                self.state
+                    .task_update(agent.clone(), id, status, input.note.clone(), force)?;
+            // Blocked with a note escalates; other statuses answer open
+            // escalations (ADR-0027).
+            self.lead.task_updated(&agent, &task, input.note.as_deref());
             Ok(ok(json!({ "task": task })))
         });
         self.finish(Some(&input.agent), outcome).await
@@ -1429,7 +1362,7 @@ impl TirithServer {
             let (published, notice) = self.state.contract_publish(agent, new)?;
             let notice_id = notice.as_ref().map(|n| n.id);
             if let Some(notice) = notice {
-                self.fan_out(notice);
+                self.lead.notice_published(&notice);
             }
             Ok(ok(json!({
                 "contract": published.contract,
@@ -1520,7 +1453,7 @@ impl TirithServer {
                 new = new.with_contract_id(id);
             }
             let notice = self.state.notice_publish(agent, new)?;
-            self.fan_out(notice.clone());
+            self.lead.notice_published(&notice);
             Ok(ok(json!({ "notice": notice })))
         });
         self.finish(Some(&input.agent), outcome).await
@@ -1602,7 +1535,7 @@ impl TirithServer {
         &self,
         Parameters(input): Parameters<DecisionListInput>,
     ) -> Result<CallToolResult, McpError> {
-        let outcome = run_async(async {
+        let outcome = run(|| {
             let agent = agent(&input.agent)?;
             let path = opt_path(input.path.as_deref())?;
             let before = cursor(
@@ -1610,33 +1543,6 @@ impl TirithServer {
                 DecisionId::parse,
                 DecisionId::nil(),
             )?;
-            // Experimental (ADR-0024): a query by meaning, on the first page.
-            if let (Some(assist), Some(query), None) = (
-                self.assist(),
-                nonblank(input.query.as_deref()),
-                before.as_ref(),
-            ) {
-                let mut candidates = self.state.decisions(Some(&agent), path.as_ref(), None);
-                candidates.sort_by_key(|d| std::cmp::Reverse(d.recorded_at));
-                candidates.truncate(NOTE_CANDIDATES);
-                if let Some(ranked) = assist.rank_decisions(query, candidates).await {
-                    let limit = clamp_limit(input.limit);
-                    let total = ranked.len();
-                    let rows: Vec<Value> = ranked
-                        .iter()
-                        .take(limit)
-                        .map(|(d, p)| {
-                            let mut row = compact(to_value(d));
-                            row["relevance"] = rounded(*p);
-                            row
-                        })
-                        .collect();
-                    return Ok(ok(json!({
-                        "count": rows.len(), "total": total, "truncated": total > rows.len(),
-                        "ranked_by": "jev", "decisions": rows,
-                    })));
-                }
-            }
             let page = self.state.decisions_page(
                 Some(&agent),
                 path.as_ref(),
@@ -1645,8 +1551,7 @@ impl TirithServer {
                 clamp_limit(input.limit),
             );
             Ok(listing("decisions", &page, |d| (d.recorded_at, d.id)))
-        })
-        .await;
+        });
         self.finish(Some(&input.agent), outcome).await
     }
 
@@ -1677,6 +1582,7 @@ impl TirithServer {
                 "decisions": report.decisions,
                 "memory": report.memory,
                 "agents_active": report.agents.len(),
+                "lead": report.lead.as_ref().map(|l| &l.agent),
                 "persist_error": self.persister.last_error(),
                 "load_errors": report.load_errors,
             });
@@ -1694,11 +1600,11 @@ impl TirithServer {
                         })
                     })
                     .collect();
+                if let Some(lead) = &report.lead {
+                    value["lead_expires_at"] = to_value(&lead.expires_at);
+                }
                 value["agents_truncated"] = Value::Bool(report.agents.len() > agents.len());
                 value["agents"] = Value::Array(agents);
-            }
-            if let Some(assist) = self.assist() {
-                value["jev"] = to_value(&assist.report());
             }
             Ok(ok(value))
         });
@@ -1714,7 +1620,7 @@ impl TirithServer {
         &self,
         Parameters(input): Parameters<MemoryWriteInput>,
     ) -> Result<CallToolResult, McpError> {
-        let outcome = run_async(async {
+        let outcome = run(|| {
             let agent = agent(&input.agent)?;
             let kind: Option<MemoryKind> = opt_parse(nonblank(input.kind.as_deref()))?;
             let mut new = NewMemory::new(input.title, input.body)
@@ -1728,26 +1634,11 @@ impl TirithServer {
                 new = new.with_if_updated_at(at);
             }
             let written = self.state.memory_write(agent, new)?;
-            let mut value = json!({
+            Ok(ok(json!({
                 "note": written.note,
                 "created": written.created,
-            });
-            // Experimental (ADR-0024): one note per piece of knowledge.
-            if written.created
-                && let Some(assist) = self.assist()
-            {
-                let neighbors = self.state.memory_neighbors(&written.note, 20);
-                if let Some((i, p)) = assist.similar_note(&written.note, &neighbors).await
-                    && let Some(similar) = neighbors.get(i)
-                {
-                    value["similar_note"] = json!({
-                        "permalink": similar.permalink, "title": similar.title, "confidence": rounded(p),
-                    });
-                }
-            }
-            Ok(ok(value))
-        })
-        .await;
+            })))
+        });
         self.finish(Some(&input.agent), outcome).await
     }
 
@@ -1790,7 +1681,7 @@ impl TirithServer {
         &self,
         Parameters(input): Parameters<MemorySearchInput>,
     ) -> Result<CallToolResult, McpError> {
-        let outcome = run_async(async {
+        let outcome = run(|| {
             let agent = agent(&input.agent)?;
             let kind: Option<MemoryKind> = opt_parse(nonblank(input.kind.as_deref()))?;
             let limit = input
@@ -1807,46 +1698,6 @@ impl TirithServer {
                 // scoring the whole book twice.
                 limit: Some(limit.saturating_add(1)),
             };
-            // Experimental (ADR-0024): term hits plus the newest notes,
-            // ranked by meaning, so a query in other words still finds them.
-            if let (Some(assist), Some(query)) = (self.assist(), nonblank(filter.query.as_deref()))
-            {
-                let wide = MemorySearch {
-                    limit: Some(NOTE_CANDIDATES),
-                    ..filter.clone()
-                };
-                let mut candidates = self.state.memory_search(Some(&agent), &wide);
-                let recent = MemorySearch {
-                    query: None,
-                    ..wide.clone()
-                };
-                for (note, _) in self.state.memory_search(None, &recent) {
-                    if candidates.len() >= NOTE_CANDIDATES {
-                        break;
-                    }
-                    if !candidates.iter().any(|(n, _)| n.id == note.id) {
-                        candidates.push((note, 0));
-                    }
-                }
-                if let Some(ranked) = assist.rank_notes(query, candidates).await {
-                    let notes: Vec<Value> = ranked
-                        .iter()
-                        .take(limit)
-                        .map(|(note, score, p)| {
-                            let mut value = memory_digest(note);
-                            value["score"] = Value::from(*score);
-                            value["relevance"] = rounded(*p);
-                            value
-                        })
-                        .collect();
-                    return Ok(ok(json!({
-                        "count": notes.len(),
-                        "truncated": ranked.len() > notes.len(),
-                        "ranked_by": "jev",
-                        "notes": notes,
-                    })));
-                }
-            }
             let mut hits = self.state.memory_search(Some(&agent), &filter);
             let truncated = hits.len() > limit;
             hits.truncate(limit);
@@ -1865,8 +1716,7 @@ impl TirithServer {
                 "truncated": truncated,
                 "notes": notes,
             })))
-        })
-        .await;
+        });
         self.finish(Some(&input.agent), outcome).await
     }
 
@@ -1901,38 +1751,19 @@ impl TirithServer {
         &self,
         Parameters(input): Parameters<MessageSendInput>,
     ) -> Result<CallToolResult, McpError> {
-        let outcome = run_async(async {
+        let outcome = run(|| {
             let agent = agent(&input.agent)?;
             let mut new = NewMessage::new(input.to, input.text)
                 .with_paths(opt_paths(input.paths.as_deref())?);
             if let Some(raw) = nonblank(input.reply_to.as_deref()) {
                 new = new.with_reply_to(self.state.resolve_message(raw)?);
             }
-            // Experimental (ADR-0024): a broadcast only costs the agents it concerns.
-            let mut skipped = 0;
-            let message = match self.assist() {
-                Some(assist) if new.to.trim() == EVERYONE && !new.text.trim().is_empty() => {
-                    let candidates = self.state.broadcast_candidates(&agent);
-                    match assist
-                        .broadcast_audience(&new.text, &new.paths, &candidates)
-                        .await
-                    {
-                        Some(audience) => {
-                            skipped = candidates.len() - audience.len();
-                            self.state.message_send_to(agent, new, audience)?
-                        }
-                        None => self.state.message_send(agent, new)?,
-                    }
-                }
-                _ => self.state.message_send(agent, new)?,
-            };
-            let mut value = json!({ "message": compact(to_value(&message)) });
-            if skipped > 0 {
-                value["skipped_recipients"] = json!(skipped);
-            }
-            Ok(ok(value))
-        })
-        .await;
+            let message = self.state.message_send(agent, new)?;
+            // A message to the lead that needs the human escalates; one to
+            // an agent answers its open escalations (ADR-0027).
+            self.lead.message_sent(&message);
+            Ok(ok(json!({ "message": compact(to_value(&message)) })))
+        });
         self.finish(Some(&input.agent), outcome).await
     }
 
@@ -2046,7 +1877,6 @@ pub enum ServeError {
 #[derive(Debug)]
 pub struct ServerHandle {
     addr: SocketAddr,
-    assist: Arc<OnceLock<Arc<Assist>>>,
     state: Arc<State>,
     store: Arc<JsonStore>,
     persister: Arc<Persister>,
@@ -2059,17 +1889,6 @@ impl ServerHandle {
     /// The bound address.
     pub fn addr(&self) -> SocketAddr {
         self.addr
-    }
-
-    /// Turns on the experimental Jev sites (ADR-0024) for every session,
-    /// asking `evaluator`. Returns `false` if they were already on.
-    pub fn enable_assist(&self, evaluator: Arc<dyn Evaluator>) -> bool {
-        self.assist.set(Arc::new(Assist::new(evaluator))).is_ok()
-    }
-
-    /// Jev's counters, when it is on.
-    pub fn assist_report(&self) -> Option<AssistReport> {
-        self.assist.get().map(|a| a.report())
     }
 
     /// The MCP endpoint URL.
@@ -2159,7 +1978,6 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
     let state = Arc::new(State::new(clock, snapshot));
     let persister = Persister::spawn(Arc::clone(&store), Arc::clone(&state));
     let handler = TirithServer::new(Arc::clone(&state), Arc::clone(&persister));
-    let assist = Arc::clone(&handler.assist);
 
     let mcp = StreamableHttpService::new(
         move || Ok(handler.clone()),
@@ -2220,7 +2038,6 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
     tracing::info!(%addr, "tirith listening");
     Ok(ServerHandle {
         addr,
-        assist,
         state,
         store,
         persister,

@@ -15,10 +15,13 @@
 //! done. See ADR-0010.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
 
 use crate::claims::{Claim, ClaimBook, ClaimError, DEFAULT_TTL_SECS, Granted, LostLease, Reaped};
 use crate::clock::Clock;
@@ -26,22 +29,24 @@ use crate::contracts::{
     Contract, ContractError, ContractKind, ContractRegistry, NewContract, Published,
 };
 use crate::decisions::{Decision, DecisionError, DecisionLog, NewDecision};
+use crate::lead::{self, EntryId, Lead, LeadEntry, LeadEvent, LeadLog, NewEntry};
 use crate::memory::{MemoryBook, MemoryError, MemoryNote, MemorySearch, MemoryWritten, NewMemory};
 use crate::messages::{
     BROADCAST_WINDOW, Inbox, Message, MessageBoard, MessageError, MessageFilter, NewMessage,
 };
 use crate::notices::{
     NewNotice, Notice, NoticeBoard, NoticeError, NoticeFilter, NoticeKind, NoticeSeen,
+    coalesce_contract_versions,
 };
 use crate::store::LoadError;
-use crate::tasks::{NewTask, Task, TaskBoard, TaskError, TaskStatus};
+use crate::tasks::{Hold, NewTask, Pulled, Task, TaskBoard, TaskError, TaskStatus};
 use crate::types::{
     AgentId, ClaimId, ContractId, DecisionId, MemoryId, MessageId, NoticeId, Page, PrefixError,
     RepoPath, TaskId,
 };
 
 /// Everything worth persisting, as plain values.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Monotonic counter, incremented each time a dirty snapshot is taken.
     pub seq: u64,
@@ -64,6 +69,10 @@ pub struct Snapshot {
     /// Agent-to-agent messages still within retention (runtime only).
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// The lead policy's decision log within retention (runtime only,
+    /// ADR-0027).
+    #[serde(default)]
+    pub lead_log: Vec<LeadEntry>,
     /// Files and lines the store skipped while loading. Never written.
     #[serde(default)]
     pub load_errors: Vec<LoadError>,
@@ -220,7 +229,7 @@ impl<I: Ord> ChangedIds<I> {
 ///
 /// `None`, an empty `Vec`, and [`Log::Unchanged`] mean "leave those files
 /// alone".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Delta {
     /// Sequence number this delta brings the store to.
     pub seq: u64,
@@ -242,6 +251,8 @@ pub struct Delta {
     pub memory_removed: Vec<MemoryId>,
     /// Message log changes (runtime only).
     pub messages: Log<Message>,
+    /// Lead decision log changes (runtime only, ADR-0027).
+    pub lead_log: Log<LeadEntry>,
 }
 
 impl Delta {
@@ -258,6 +269,7 @@ impl Delta {
             memory: snapshot.memory.clone(),
             memory_removed: Vec::new(),
             messages: Log::Rewritten(snapshot.messages.clone()),
+            lead_log: Log::Rewritten(snapshot.lead_log.clone()),
         }
     }
 }
@@ -306,6 +318,8 @@ pub struct StatusReport {
     pub agents: Vec<AgentSummary>,
     /// Files and lines the store skipped at startup.
     pub load_errors: Vec<LoadError>,
+    /// The holder of the `.tirith/lead` claim, if any (ADR-0027).
+    pub lead: Option<Lead>,
 }
 
 /// Default for [`State::set_task_orphan_secs`]: 30 minutes.
@@ -314,7 +328,7 @@ pub const DEFAULT_TASK_ORPHAN_SECS: u64 = 1800;
 /// Rows shown per section of a claim brief (ADR-0014).
 pub const BRIEF_LIMIT: usize = 5;
 
-/// The sender name of messages Tirith writes itself (ADR-0024).
+/// The sender name of messages Tirith writes itself.
 pub const SYSTEM_AGENT: &str = "tirith";
 
 /// What a successful claim carries back about the claimed paths: one
@@ -383,6 +397,10 @@ struct Inner {
     /// Agent-to-agent messages and who has received what (ADR-0020).
     messages: MessageBoard,
     messages_log: LogCursor,
+    /// What the lead policy decided (ADR-0027). Like renewals, a new row
+    /// is not a change a tool call waits for; it reaches the next delta.
+    lead_log: LeadLog,
+    lead_log_cursor: LogCursor,
     /// Leases were renewed. Not a real change; folded into the next
     /// claims write instead of forcing one.
     touched: bool,
@@ -412,6 +430,58 @@ impl Inner {
             || !self.memory_changed.is_empty()
             || self.messages_log.is_dirty(self.messages.messages().len())
     }
+
+    /// Whether something waits for the next delta that no tool call
+    /// waits for: lease renewals and new lead log rows.
+    fn has_background_writes(&self) -> bool {
+        self.touched || self.lead_log_cursor.is_dirty(self.lead_log.entries().len())
+    }
+}
+
+/// Longest a `claim` may wait for its paths to free, and a `task_pull`
+/// for a free task.
+pub const MAX_CLAIM_WAIT_SECS: u64 = 120;
+
+/// How long after a lease's expiry a waiting claim retries, so the retry
+/// lands after the lease has really ended.
+const EXPIRY_SLACK: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Interest in the next change that can free a task for a waiting
+/// `task_pull`, registered by [`State::watch_board`].
+#[derive(Debug)]
+pub struct BoardWatch<'a> {
+    state: &'a State,
+    freed: Pin<Box<Notified<'a>>>,
+    tasks: Pin<Box<Notified<'a>>>,
+}
+
+impl BoardWatch<'_> {
+    /// Waits until a claim ends or a task is created or changes status
+    /// (since the watch was made), until just after another agent's
+    /// earliest lease would expire (nobody may call to reap it), or until
+    /// `deadline`. Holds no lock while waiting; dropping it is harmless.
+    pub async fn changed(mut self, agent: &AgentId, deadline: tokio::time::Instant) {
+        let now = tokio::time::Instant::now();
+        let clock_now = self.state.clock.now();
+        let expiry = self.state.access(None, |inner, _| {
+            inner
+                .claims
+                .claims()
+                .iter()
+                .filter(|c| &c.owner != agent)
+                .map(|c| c.expires_at)
+                .min()
+        });
+        let wake = expiry.map_or(deadline, |at| {
+            let left = (at - clock_now).to_std().unwrap_or_default();
+            deadline.min(now + left + EXPIRY_SLACK)
+        });
+        tokio::select! {
+            () = &mut self.freed => {}
+            () = &mut self.tasks => {}
+            () = tokio::time::sleep_until(wake) => {}
+        }
+    }
 }
 
 /// Shared, lock-protected coordination state.
@@ -419,6 +489,10 @@ impl Inner {
 pub struct State {
     inner: Mutex<Inner>,
     clock: Arc<dyn Clock>,
+    /// Woken when claims end, by release or expiry, for claims that wait.
+    freed: Notify,
+    /// Woken when a task is created or changes status, for pulls that wait.
+    tasks_changed: Notify,
     started_at: DateTime<Utc>,
     load_errors: Vec<LoadError>,
 }
@@ -439,6 +513,9 @@ impl State {
         let notices = NoticeBoard::from_parts(snapshot.notices, snapshot.notice_seen);
         let seen_log = LogCursor::after_load(loaded_seen, notices.seen().len());
         let messages_log = LogCursor::after_load(loaded_messages, messages.messages().len());
+        let loaded_lead_log = snapshot.lead_log.len();
+        let lead_log = LeadLog::from_entries(snapshot.lead_log, started_at);
+        let lead_log_cursor = LogCursor::after_load(loaded_lead_log, lead_log.entries().len());
         Self {
             inner: Mutex::new(Inner {
                 claims: ClaimBook::from_claims(snapshot.claims),
@@ -451,6 +528,8 @@ impl State {
                 memory: Arc::new(MemoryBook::from_notes(snapshot.memory)),
                 messages,
                 messages_log,
+                lead_log,
+                lead_log_cursor,
                 seq: snapshot.seq,
                 claims_dirty: false,
                 tasks_dirty: false,
@@ -464,6 +543,8 @@ impl State {
                 reaped: Reaped::default(),
             }),
             clock,
+            freed: Notify::new(),
+            tasks_changed: Notify::new(),
             started_at,
             load_errors,
         }
@@ -506,8 +587,13 @@ impl State {
         let mut inner = self.lock();
         let expired = inner.claims.reap(now);
         if !expired.is_empty() {
+            let seq = inner.seq;
+            for claim in &expired {
+                inner.lead_log.append(lead::lease_ended(claim), now, seq);
+            }
             inner.reaped.record(&expired, now);
             inner.claims_dirty = true;
+            self.freed.notify_waiters();
         }
         if let Some(agent) = agent {
             if inner.claims.touch(agent, now) > 0 {
@@ -526,6 +612,7 @@ impl State {
             if !reaped.is_empty() {
                 inner.tasks_orphaned += reaped.len();
                 inner.tasks_dirty = true;
+                self.tasks_changed.notify_waiters();
             }
         }
         f(&mut inner, now)
@@ -552,7 +639,7 @@ impl State {
     /// too (used at shutdown).
     pub fn persist_target(&self, include_renewals: bool) -> u64 {
         let inner = self.lock();
-        let pending = inner.is_dirty() || (include_renewals && inner.touched);
+        let pending = inner.is_dirty() || (include_renewals && inner.has_background_writes());
         inner.seq + u64::from(pending)
     }
 
@@ -563,7 +650,7 @@ impl State {
     pub fn take_dirty(&self) -> Option<Delta> {
         let mut guard = self.lock();
         let inner = &mut *guard;
-        if !inner.is_dirty() && !inner.touched {
+        if !inner.is_dirty() && !inner.has_background_writes() {
             return None;
         }
         inner.seq += 1;
@@ -587,6 +674,7 @@ impl State {
             memory: inner.memory_changed.take(inner.memory.notes(), |n| n.id),
             memory_removed: inner.memory_changed.take_removed(),
             messages: inner.messages_log.take(inner.messages.messages()),
+            lead_log: inner.lead_log_cursor.take(inner.lead_log.entries()),
         })
     }
 
@@ -602,6 +690,7 @@ impl State {
         inner.decisions_changed.mark_all();
         inner.memory_changed.mark_all();
         inner.messages_log.mark_rewrite();
+        inner.lead_log_cursor.mark_rewrite();
     }
 
     /// Sends a message from `agent`. A broadcast (`to` = `*`) is addressed
@@ -654,12 +743,118 @@ impl State {
         reason: String,
         ttl_secs: Option<u64>,
     ) -> Result<Granted, ClaimError> {
+        self.claim_logged(agent, paths, reason, ttl_secs, true)
+    }
+
+    /// [`State::claim`], logging the grant, and the refusal when
+    /// `log_refusal` (a waiting claim logs one row for its whole wait).
+    fn claim_logged(
+        &self,
+        agent: AgentId,
+        paths: Vec<RepoPath>,
+        reason: String,
+        ttl_secs: Option<u64>,
+        log_refusal: bool,
+    ) -> Result<Granted, ClaimError> {
         let ttl = ttl_secs.unwrap_or(DEFAULT_TTL_SECS);
-        self.access(Some(&agent.clone()), |inner, now| {
-            let granted = inner.claims.claim(agent, paths, reason, ttl, now)?;
-            inner.claims_dirty = true;
-            Ok(granted)
+        let who = agent.clone();
+        let why = reason.clone();
+        self.access(Some(&who), |inner, now| {
+            let seq = inner.seq;
+            let requested = log_refusal.then(|| paths.clone());
+            let error = match inner.claims.claim(agent, paths, reason, ttl, now) {
+                Ok(granted) => {
+                    inner.claims_dirty = true;
+                    let row = lead::claim_granted(&who, &granted, &why, ttl);
+                    inner.lead_log.append(row, now, seq);
+                    return Ok(granted);
+                }
+                Err(ClaimError::Conflict(conflicts)) => {
+                    if let Some(paths) = requested {
+                        let row = lead::claim_refused(&who, &paths, &why, &conflicts);
+                        inner.lead_log.append(row, now, seq);
+                    }
+                    ClaimError::Conflict(conflicts)
+                }
+                Err(other) => other,
+            };
+            Err(error)
         })
+    }
+
+    /// [`State::claim`], but on a conflict waits up to `wait` (capped at
+    /// [`MAX_CLAIM_WAIT_SECS`]) for the overlapping leases to be released
+    /// or to expire, retrying atomically each time one ends. Returns the
+    /// last conflict if the paths are still held when the wait is over.
+    /// No lock is held while waiting.
+    pub async fn claim_waiting(
+        &self,
+        agent: AgentId,
+        paths: Vec<RepoPath>,
+        reason: String,
+        ttl_secs: Option<u64>,
+        wait: std::time::Duration,
+    ) -> Result<Granted, ClaimError> {
+        let wait = wait.min(std::time::Duration::from_secs(MAX_CLAIM_WAIT_SECS));
+        let started = tokio::time::Instant::now();
+        let deadline = started + wait;
+        let (result, conflicted) = self
+            .claim_waiting_loop(&agent, &paths, &reason, ttl_secs, wait, deadline)
+            .await;
+        // One row for the whole wait; a claim granted at once is only a grant.
+        if conflicted {
+            let row = lead::claim_waited(&agent, &paths, wait, started.elapsed(), result.is_ok());
+            self.lead_log_append(row);
+        }
+        result
+    }
+
+    async fn claim_waiting_loop(
+        &self,
+        agent: &AgentId,
+        paths: &[RepoPath],
+        reason: &str,
+        ttl_secs: Option<u64>,
+        wait: std::time::Duration,
+        deadline: tokio::time::Instant,
+    ) -> (Result<Granted, ClaimError>, bool) {
+        let mut conflicted = false;
+        loop {
+            // Registered before the attempt, so a release between the
+            // attempt and the wait still wakes it.
+            let freed = self.freed.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            let attempt = self.claim_logged(
+                agent.clone(),
+                paths.to_vec(),
+                reason.to_owned(),
+                ttl_secs,
+                false,
+            );
+            let conflicts = match attempt {
+                Err(ClaimError::Conflict(conflicts)) => conflicts,
+                other => return (other, conflicted),
+            };
+            conflicted = true;
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return (Err(ClaimError::Conflict(conflicts)), conflicted);
+            }
+            // A lease can end with nobody calling to reap it, so also wake
+            // just after the first overlapping lease would expire.
+            let clock_now = self.clock.now();
+            let expiry = conflicts
+                .iter()
+                .map(|c| (c.expires_at - clock_now).to_std().unwrap_or_default())
+                .min()
+                .unwrap_or(wait);
+            let wake = deadline.min(now + expiry + EXPIRY_SLACK);
+            tokio::select! {
+                () = &mut freed => {}
+                () = tokio::time::sleep_until(wake) => {}
+            }
+        }
     }
 
     /// Releases paths. See [`ClaimBook::release`].
@@ -668,11 +863,21 @@ impl State {
         agent: &AgentId,
         paths: Option<Vec<RepoPath>>,
     ) -> Result<Vec<RepoPath>, ClaimError> {
-        self.access(Some(agent), |inner, _| {
+        let released = self.access(Some(agent), |inner, now| {
             let released = inner.claims.release(agent, paths)?;
             inner.claims_dirty = true;
+            if !released.is_empty() {
+                let seq = inner.seq;
+                inner
+                    .lead_log
+                    .append(lead::claim_released(agent, &released), now, seq);
+            }
             Ok(released)
-        })
+        });
+        if released.is_ok() {
+            self.freed.notify_waiters();
+        }
+        released
     }
 
     /// Renews all leases held by `agent`.
@@ -693,21 +898,28 @@ impl State {
 
     /// Creates a task.
     pub fn task_create(&self, agent: AgentId, new: NewTask) -> Result<Task, TaskError> {
-        self.access(Some(&agent.clone()), |inner, now| {
+        let created = self.access(Some(&agent.clone()), |inner, now| {
             let task = inner.tasks.create(agent, new, now)?.clone();
             inner.tasks_dirty = true;
             Ok(task)
-        })
+        });
+        if created.is_ok() {
+            self.tasks_changed.notify_waiters();
+        }
+        created
     }
 
     /// Pulls the next unblocked task for `agent`.
-    pub fn task_pull(&self, agent: AgentId) -> Option<Task> {
+    /// Tasks whose paths overlap another agent's live claim or in-progress
+    /// task are skipped (ADR-0028). See [`TaskBoard::pull`].
+    pub fn task_pull(&self, agent: AgentId) -> Option<Pulled> {
         self.access(Some(&agent.clone()), |inner, now| {
-            let task = inner.tasks.pull(agent, now).cloned();
-            if task.is_some() {
+            let holds = claim_holds(&inner.claims, &agent);
+            let pulled = inner.tasks.pull(agent, &holds, now);
+            if pulled.is_some() {
                 inner.tasks_dirty = true;
             }
-            task
+            pulled
         })
     }
 
@@ -720,14 +932,36 @@ impl State {
         note: Option<String>,
         force: bool,
     ) -> Result<Task, TaskError> {
-        self.access(Some(&agent.clone()), |inner, now| {
+        let updated = self.access(Some(&agent.clone()), |inner, now| {
             let task = inner
                 .tasks
                 .update(agent, id, status, note, force, now)?
                 .clone();
             inner.tasks_dirty = true;
             Ok(task)
-        })
+        });
+        // A task back in `todo`, done (its dependents unblock) or no longer
+        // in progress (its paths free) can be pulled by a waiting agent.
+        if updated.is_ok() {
+            self.tasks_changed.notify_waiters();
+        }
+        updated
+    }
+
+    /// Starts watching for what can let a waiting `task_pull` take a task:
+    /// a claim ending, or a task created or changing status. Make it before
+    /// checking the board, so a change between the check and the wait still
+    /// wakes [`BoardWatch::changed`].
+    pub fn watch_board(&self) -> BoardWatch<'_> {
+        let mut freed = Box::pin(self.freed.notified());
+        freed.as_mut().enable();
+        let mut tasks = Box::pin(self.tasks_changed.notified());
+        tasks.as_mut().enable();
+        BoardWatch {
+            state: self,
+            freed,
+            tasks,
+        }
     }
 
     /// Tasks matching the filters.
@@ -938,17 +1172,35 @@ impl State {
     /// instead of repeating these, and an unread listing skips them. The
     /// memory scan runs outside the lock, like every other memory read.
     pub fn brief(&self, agent: &AgentId, paths: &[RepoPath]) -> Brief {
-        let brief = self.brief_candidates(agent, paths, BRIEF_LIMIT);
-        self.mark_briefed(agent, brief.notices.iter().map(|n| n.id));
+        let (brief, superseded) = self.brief_candidates(agent, paths, BRIEF_LIMIT);
+        // An older contract version notice is delivered with the newer one
+        // that replaced it, so it never surfaces on its own later.
+        let shown: BTreeSet<ContractId> = brief
+            .notices
+            .iter()
+            .filter(|n| n.kind == NoticeKind::Contract)
+            .filter_map(|n| n.contract_id)
+            .collect();
+        let covered = superseded
+            .into_iter()
+            .filter(|(contract, _)| shown.contains(contract))
+            .map(|(_, id)| id);
+        self.mark_briefed(agent, brief.notices.iter().map(|n| n.id).chain(covered));
         brief
     }
 
     /// The rows a brief on `paths` would draw from: the newest `limit` per
-    /// section, with `more` counting the rest. Marks nothing seen; pair it
-    /// with [`State::mark_briefed`] for the notices actually shown.
-    pub fn brief_candidates(&self, agent: &AgentId, paths: &[RepoPath], limit: usize) -> Brief {
-        let (mut brief, book) = self.access(None, |inner, _| {
-            let notices = newest(
+    /// section, with `more` counting the rest, plus the contract version
+    /// notices left out because a newer one for the same contract is a
+    /// candidate (see [`coalesce_contract_versions`]). Marks nothing seen.
+    fn brief_candidates(
+        &self,
+        agent: &AgentId,
+        paths: &[RepoPath],
+        limit: usize,
+    ) -> (Brief, Vec<(ContractId, NoticeId)>) {
+        let (mut brief, superseded, book) = self.access(None, |inner, _| {
+            let (notices, superseded) = coalesce_contract_versions(newest(
                 paths,
                 |path| {
                     let filter = NoticeFilter {
@@ -960,7 +1212,11 @@ impl State {
                 },
                 |n| n.id,
                 |n| n.published_at,
-            );
+            ));
+            let superseded: Vec<(ContractId, NoticeId)> = superseded
+                .iter()
+                .filter_map(|n| n.contract_id.map(|contract| (contract, n.id)))
+                .collect();
             let contracts = newest(
                 paths,
                 |path| inner.contracts.list(Some(path), None),
@@ -986,7 +1242,7 @@ impl State {
                 memory: Vec::new(),
                 more,
             };
-            (brief, Arc::clone(&inner.memory))
+            (brief, superseded, Arc::clone(&inner.memory))
         });
         let memory = newest(
             paths,
@@ -996,104 +1252,69 @@ impl State {
         );
         brief.more.memory = memory.len().saturating_sub(limit);
         brief.memory = capped(memory, limit);
-        brief
+        (brief, superseded)
     }
 
     /// Records that the notices `ids` reached `agent` in a brief.
-    pub fn mark_briefed(&self, agent: &AgentId, ids: impl Iterator<Item = NoticeId>) {
+    fn mark_briefed(&self, agent: &AgentId, ids: impl Iterator<Item = NoticeId>) {
         self.access(None, |inner, now| {
             mark_delivered(inner, Some(agent), ids, now);
         });
     }
 
-    /// Unblocked `todo` tasks in pull order, without taking any.
+    /// Unblocked `todo` tasks in pull order that no other agent holds a
+    /// path of (ADR-0028), without taking any.
     pub fn task_candidates(&self, agent: &AgentId) -> Vec<Task> {
         self.access(Some(agent), |inner, _| {
-            inner.tasks.candidates().into_iter().cloned().collect()
-        })
-    }
-
-    /// Pulls task `id` for `agent` if it is still unblocked and `todo`.
-    pub fn task_pull_id(&self, agent: AgentId, id: TaskId) -> Option<Task> {
-        self.access(Some(&agent.clone()), |inner, now| {
-            let task = inner.tasks.pull_id(agent, id, now).cloned();
-            if task.is_some() {
-                inner.tasks_dirty = true;
-            }
-            task
-        })
-    }
-
-    /// What `agent` has in context: the claims it holds and the five tasks
-    /// it most recently worked on or finished.
-    pub fn agent_context(&self, agent: &AgentId) -> (Vec<Claim>, Vec<Task>) {
-        self.access(None, |inner, _| {
-            let held = inner
-                .claims
-                .claims()
-                .iter()
-                .filter(|c| c.owner == *agent)
-                .cloned()
-                .collect();
-            let mut recent: Vec<&Task> = inner
-                .tasks
-                .tasks()
-                .iter()
-                .filter(|t| t.state.owner() == Some(agent))
-                .collect();
-            recent.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
-            (held, capped(recent, BRIEF_LIMIT))
-        })
-    }
-
-    /// Every agent other than `except` holding claims, with its claims.
-    pub fn claim_holders(&self, except: &AgentId) -> Vec<(AgentId, Vec<Claim>)> {
-        self.access(None, |inner, _| {
-            let mut holders: BTreeMap<AgentId, Vec<Claim>> = BTreeMap::new();
-            for claim in inner.claims.claims() {
-                if claim.owner != *except {
-                    holders
-                        .entry(claim.owner.clone())
-                        .or_default()
-                        .push(claim.clone());
-                }
-            }
-            holders.into_iter().collect()
-        })
-    }
-
-    /// The audience a broadcast from `agent` would have now (every agent
-    /// seen within the broadcast window but the sender), with their claims.
-    pub fn broadcast_candidates(&self, agent: &AgentId) -> Vec<(AgentId, Vec<Claim>)> {
-        self.access(Some(agent), |inner, now| {
+            let holds = claim_holds(&inner.claims, agent);
             inner
-                .last_seen
-                .iter()
-                .filter(|(a, seen)| *a != agent && now - **seen <= BROADCAST_WINDOW)
-                .map(|(a, _)| {
-                    let claims = inner
-                        .claims
-                        .claims()
-                        .iter()
-                        .filter(|c| c.owner == *a)
-                        .cloned()
-                        .collect();
-                    (a.clone(), claims)
-                })
+                .tasks
+                .free_candidates(agent, &holds)
+                .into_iter()
+                .cloned()
                 .collect()
         })
     }
 
-    /// Sends a message whose broadcast audience is exactly `audience`
-    /// instead of every recent agent.
-    pub fn message_send_to(
+    /// Every agent other than `notice`'s publisher holding a claim on one
+    /// of the notice's affected paths, or on an ancestor or descendant of
+    /// one, in name order.
+    pub fn notice_holders(&self, notice: &Notice) -> Vec<AgentId> {
+        self.access(None, |inner, _| {
+            let holders: BTreeSet<AgentId> = inner
+                .claims
+                .claims()
+                .iter()
+                .filter(|c| c.owner != notice.published_by)
+                .filter(|c| {
+                    c.paths
+                        .iter()
+                        .any(|p| notice.affected_paths.iter().any(|a| a.overlaps(p)))
+                })
+                .map(|c| c.owner.clone())
+                .collect();
+            holders.into_iter().collect()
+        })
+    }
+
+    /// Pushes `notice` to `agent` now: a message from Tirith saying `text`,
+    /// and the notice marked seen by `agent`, so its next brief and unread
+    /// listing do not deliver it twice.
+    pub fn push_notice(
         &self,
-        agent: AgentId,
-        new: NewMessage,
-        audience: Vec<AgentId>,
+        agent: &AgentId,
+        notice: NoticeId,
+        text: String,
     ) -> Result<Message, MessageError> {
-        self.access(Some(&agent.clone()), |inner, now| {
-            inner.messages.send(agent, new, audience, now).cloned()
+        let from = AgentId::new(SYSTEM_AGENT)
+            .map_err(|_| MessageError::BadRecipient(SYSTEM_AGENT.to_owned()))?;
+        self.access(None, |inner, now| {
+            let sent = inner
+                .messages
+                .send(from, NewMessage::new(agent.as_str(), text), Vec::new(), now)
+                .cloned()?;
+            mark_delivered(inner, Some(agent), std::iter::once(notice), now);
+            Ok(sent)
         })
     }
 
@@ -1109,33 +1330,6 @@ impl State {
                 .send(from, NewMessage::new(to.as_str(), text), Vec::new(), now)
                 .cloned()
         })
-    }
-
-    /// Notes that could say the same as `note`: the best term matches for
-    /// its title and the newest notes on its paths, never `note` itself.
-    pub fn memory_neighbors(&self, note: &MemoryNote, limit: usize) -> Vec<MemoryNote> {
-        let book = self.memory_book(None);
-        let by_title = MemorySearch {
-            query: Some(note.title.clone()),
-            limit: Some(limit),
-            ..MemorySearch::default()
-        };
-        let mut seen = BTreeSet::from([note.id]);
-        let mut found = Vec::new();
-        let title_hits = book.search(&by_title).into_iter().map(|hit| hit.note);
-        let path_hits = note
-            .paths
-            .iter()
-            .flat_map(|p| book.for_path(p, Some(limit)));
-        for candidate in title_hits.chain(path_hits) {
-            if found.len() == limit {
-                break;
-            }
-            if seen.insert(candidate.id) {
-                found.push(candidate.clone());
-            }
-        }
-        found
     }
 
     /// Leases `agent` lost since it was last told. Each is returned once;
@@ -1285,6 +1479,40 @@ impl State {
         })
     }
 
+    /// The swarm lead: the holder of a live claim on
+    /// [`LEAD_PATH`](crate::lead::LEAD_PATH), or `None` (ADR-0027).
+    pub fn lead(&self) -> Option<Lead> {
+        self.access(None, |inner, _| Lead::from_claims(inner.claims.claims()))
+    }
+
+    /// Appends a lead policy decision, stamped with the time and the
+    /// current sequence number. Written in the background with the next
+    /// delta; no tool call waits for it.
+    pub fn lead_log_append(&self, new: NewEntry) -> EntryId {
+        let now = self.clock.now();
+        let mut inner = self.lock();
+        let seq = inner.seq;
+        inner.lead_log.append(new, now, seq)
+    }
+
+    /// Records what came of lead decision `id`. `false` when the row is
+    /// no longer kept.
+    pub fn lead_log_outcome(&self, id: EntryId, outcome: serde_json::Value) -> bool {
+        let mut inner = self.lock();
+        let found = inner.lead_log.set_outcome(id, outcome);
+        if found {
+            inner.lead_log_cursor.mark_rewrite();
+        }
+        found
+    }
+
+    /// The newest `limit` lead decisions, newest first, optionally only
+    /// those for `event`.
+    pub fn lead_log(&self, limit: usize, event: Option<LeadEvent>) -> Vec<LeadEntry> {
+        // Through `access`, so leases that ended are logged before reading.
+        self.access(None, |inner, _| inner.lead_log.newest(limit, event))
+    }
+
     /// Counts and per-agent summaries.
     pub fn status(&self, agent: Option<&AgentId>) -> StatusReport {
         self.access(agent, |inner, now| {
@@ -1318,6 +1546,7 @@ impl State {
                 decisions: inner.decisions.decisions().len(),
                 memory: inner.memory.notes().len(),
                 tasks_orphaned: inner.tasks_orphaned,
+                lead: Lead::from_claims(inner.claims.claims()),
                 agents,
                 load_errors: self.load_errors.clone(),
             }
@@ -1373,6 +1602,7 @@ fn snapshot_of(inner: &Inner) -> Snapshot {
         decisions: inner.decisions.decisions().to_vec(),
         memory: inner.memory.notes().to_vec(),
         messages: inner.messages.messages().to_vec(),
+        lead_log: inner.lead_log.entries().to_vec(),
         load_errors: Vec::new(),
     }
 }
@@ -1399,6 +1629,21 @@ where
     }
     rows.sort_by_key(|row| std::cmp::Reverse(key(row)));
     rows
+}
+
+/// Every path in a live claim held by an agent other than `agent`.
+fn claim_holds(claims: &ClaimBook, agent: &AgentId) -> Vec<Hold> {
+    claims
+        .claims()
+        .iter()
+        .filter(|c| &c.owner != agent)
+        .flat_map(|c| {
+            c.paths.iter().map(|path| Hold {
+                path: path.clone(),
+                owner: c.owner.clone(),
+            })
+        })
+        .collect()
 }
 
 fn capped<T: Clone>(rows: Vec<&T>, limit: usize) -> Vec<T> {
@@ -1645,6 +1890,46 @@ mod tests {
     }
 
     #[test]
+    fn a_brief_shows_only_the_newest_contract_version_notice() {
+        let (clock, state) = state();
+        let new = |v: u32| {
+            NewContract::new("POST /sessions", ContractKind::Http, json!({ "v": v }))
+                .with_consumers(vec![path("src/client")])
+        };
+        let mut bumps = Vec::new();
+        for v in 1..=4 {
+            clock.advance(Duration::seconds(1));
+            let (_, notice) = state.contract_publish(agent("alice"), new(v)).unwrap();
+            bumps.extend(notice.map(|n| n.id));
+        }
+        assert_eq!(bumps.len(), 3, "v2, v3 and v4 each emit a notice");
+        clock.advance(Duration::seconds(1));
+        let written = state
+            .notice_publish(
+                agent("alice"),
+                NewNotice::new(NoticeKind::Behavior, "sessions expire sooner")
+                    .with_affected_paths(vec![path("src/client")]),
+            )
+            .unwrap()
+            .id;
+
+        let brief = state.brief(&agent("bob"), &[path("src/client/api.rs")]);
+        let shown: Vec<NoticeId> = brief.notices.iter().map(|n| n.id).collect();
+        assert_eq!(shown, vec![written, bumps[2]]);
+        assert_eq!(brief.more.notices, 0);
+
+        let unread = state.notices(
+            None,
+            &NoticeFilter {
+                path: Some(path("src/client")),
+                unread_by: Some(agent("bob")),
+                since: None,
+            },
+        );
+        assert!(unread.is_empty(), "older versions were delivered with v4");
+    }
+
+    #[test]
     fn republishing_a_contract_emits_a_notice_to_consumers() {
         let (_, state) = state();
         let new = |v: u32| NewContract {
@@ -1673,6 +1958,193 @@ mod tests {
         assert_eq!(unread.len(), 1);
     }
 
+    fn task_at(state: &State, title: &str, priority: i32, paths: &[&str]) -> TaskId {
+        let new = NewTask::new(title)
+            .with_priority(priority)
+            .with_paths(paths.iter().map(|p| path(p)).collect());
+        state.task_create(agent("lead"), new).unwrap().id
+    }
+
+    #[test]
+    fn task_pull_skips_a_task_under_another_agents_claim() {
+        let (_, state) = state();
+        task_at(&state, "held", 9, &["src/state.rs"]);
+        let free = task_at(&state, "free", 1, &["src/tasks.rs"]);
+        state
+            .claim(agent("alice"), vec![path("src")], "x".into(), None)
+            .unwrap();
+        let pulled = state.task_pull(agent("carol")).unwrap();
+        // `src` covers both tasks, so carol gets the held top task and waits.
+        assert_eq!(pulled.waiting_on.len(), 1);
+        state.release(&agent("alice"), None).unwrap();
+        state
+            .claim(agent("alice"), vec![path("src/state.rs")], "x".into(), None)
+            .unwrap();
+        let pulled = state.task_pull(agent("dave")).unwrap();
+        assert_eq!(pulled.task.id, free);
+        assert!(pulled.waiting_on.is_empty());
+    }
+
+    #[test]
+    fn task_pull_ignores_the_callers_own_claims() {
+        let (_, state) = state();
+        let top = task_at(&state, "mine", 9, &["src/state.rs"]);
+        task_at(&state, "other", 1, &["src/tasks.rs"]);
+        state
+            .claim(agent("alice"), vec![path("src/state.rs")], "x".into(), None)
+            .unwrap();
+        let pulled = state.task_pull(agent("alice")).unwrap();
+        assert_eq!(pulled.task.id, top);
+        assert!(pulled.waiting_on.is_empty());
+    }
+
+    #[test]
+    fn task_pull_never_skips_a_task_without_paths() {
+        let (_, state) = state();
+        let pathless = task_at(&state, "anywhere", 9, &[]);
+        task_at(&state, "held", 1, &["src/state.rs"]);
+        state
+            .claim(agent("alice"), vec![path("src")], "x".into(), None)
+            .unwrap();
+        assert_eq!(state.task_candidates(&agent("bob")).len(), 1);
+        let pulled = state.task_pull(agent("bob")).unwrap();
+        assert_eq!(pulled.task.id, pathless);
+        assert!(pulled.waiting_on.is_empty());
+    }
+
+    #[test]
+    fn task_pull_falls_back_to_the_first_task_with_waiting_on_when_all_are_held() {
+        let (_, state) = state();
+        let top = task_at(&state, "top", 9, &["src/state.rs"]);
+        task_at(&state, "next", 1, &["src/claims.rs"]);
+        state
+            .claim(agent("alice"), vec![path("src/state.rs")], "x".into(), None)
+            .unwrap();
+        state
+            .claim(agent("bob"), vec![path("src/claims.rs")], "x".into(), None)
+            .unwrap();
+        assert!(state.task_candidates(&agent("carol")).is_empty());
+        let pulled = state.task_pull(agent("carol")).unwrap();
+        assert_eq!(pulled.task.id, top);
+        assert_eq!(
+            pulled.waiting_on,
+            vec![Hold {
+                path: path("src/state.rs"),
+                owner: agent("alice"),
+            }]
+        );
+        // carol's in-progress task now holds src/state.rs for everyone else.
+        let pulled = state.task_pull(agent("dave")).unwrap();
+        assert_eq!(pulled.waiting_on.len(), 1);
+        assert_eq!(pulled.waiting_on[0].owner, agent("bob"));
+    }
+
+    #[tokio::test]
+    async fn a_waiting_claim_is_granted_when_the_holder_releases() {
+        let (_, state) = state();
+        let state = Arc::new(state);
+        state
+            .claim(agent("alice"), vec![path("src")], "x".into(), None)
+            .unwrap();
+        let waiter = Arc::clone(&state);
+        let started = tokio::time::Instant::now();
+        let waiting = tokio::spawn(async move {
+            waiter
+                .claim_waiting(
+                    agent("bob"),
+                    vec![path("src/state.rs")],
+                    "y".into(),
+                    None,
+                    std::time::Duration::from_secs(30),
+                )
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        state.release(&agent("alice"), None).unwrap();
+        let granted = waiting.await.unwrap().unwrap();
+        assert_eq!(granted.new_paths, vec![path("src/state.rs")]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_waiting_claim_returns_the_conflict_when_the_wait_ends() {
+        let (_, state) = state();
+        state
+            .claim(agent("alice"), vec![path("src")], "x".into(), None)
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let refused = state
+            .claim_waiting(
+                agent("bob"),
+                vec![path("src/state.rs")],
+                "y".into(),
+                None,
+                std::time::Duration::from_millis(150),
+            )
+            .await;
+        assert!(matches!(refused, Err(ClaimError::Conflict(ref c)) if c.len() == 1));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(150));
+        assert_eq!(state.claims(None, None).len(), 1, "nothing was claimed");
+    }
+
+    #[tokio::test]
+    async fn a_board_watch_sees_a_task_created_between_the_check_and_the_wait() {
+        let (_, state) = state();
+        let started = tokio::time::Instant::now();
+        let watch = state.watch_board();
+        state
+            .task_create(agent("alice"), NewTask::new("t"))
+            .unwrap();
+        watch
+            .changed(&agent("bob"), started + std::time::Duration::from_secs(30))
+            .await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_board_watch_wakes_on_a_task_update_and_on_a_release() {
+        let (_, state) = state();
+        let state = Arc::new(state);
+        let task = state
+            .task_create(agent("alice"), NewTask::new("t"))
+            .unwrap();
+        state
+            .claim(agent("alice"), vec![path("src")], "x".into(), None)
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let watching = |state: &Arc<State>| {
+            let watcher = Arc::clone(state);
+            tokio::spawn(async move {
+                watcher.watch_board().changed(&agent("bob"), deadline).await;
+            })
+        };
+        let woken = watching(&state);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        state
+            .task_update(agent("alice"), task.id, TaskStatus::Done, None, false)
+            .unwrap();
+        woken.await.unwrap();
+        let woken = watching(&state);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        state.release(&agent("alice"), None).unwrap();
+        woken.await.unwrap();
+        assert!(tokio::time::Instant::now() < deadline);
+    }
+
+    #[tokio::test]
+    async fn a_board_watch_returns_at_the_deadline_when_nothing_changes() {
+        let (_, state) = state();
+        let started = tokio::time::Instant::now();
+        state
+            .watch_board()
+            .changed(
+                &agent("bob"),
+                started + std::time::Duration::from_millis(150),
+            )
+            .await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(150));
+    }
+
     #[test]
     fn status_summarizes_agents() {
         let (_, state) = state();
@@ -1695,5 +2167,84 @@ mod tests {
         assert_eq!(report.agents.len(), 2);
         assert_eq!(report.agents[0].paths.len(), 2);
         assert_eq!(report.agents[1].tasks_in_progress, 1);
+        assert!(report.lead.is_none(), "no .tirith/lead claim, no lead");
+    }
+
+    #[test]
+    fn the_lead_is_the_live_holder_of_the_lead_path() {
+        let (clock, state) = state();
+        state
+            .claim(
+                agent("boss"),
+                vec![path(lead::LEAD_PATH)],
+                "swarm".into(),
+                Some(60),
+            )
+            .unwrap();
+        let lead = state.lead().unwrap();
+        assert_eq!(lead.agent, agent("boss"));
+        assert_eq!(state.status(None).lead, Some(lead));
+        clock.advance(Duration::seconds(61));
+        assert!(state.lead().is_none(), "expired lease, no lead");
+    }
+
+    /// A lead log row is written with the next delta, but no tool call
+    /// waits for it; an outcome rewrites the log.
+    #[test]
+    fn lead_log_rows_ride_the_next_delta_without_dirtying_state() {
+        let (_, state) = state();
+        let id = state.lead_log_append(NewEntry::new(LeadEvent::NoticePublished, "pushed"));
+        assert!(!state.is_dirty(), "no tool call waits for a log row");
+        assert_eq!(state.persist_target(false), state.seq());
+        assert_eq!(state.persist_target(true), state.seq() + 1);
+        let delta = state.take_dirty().unwrap();
+        assert!(matches!(&delta.lead_log, Log::Appended(rows) if rows.len() == 1));
+        assert!(state.take_dirty().is_none());
+        assert!(state.lead_log_outcome(id, json!("confirmed")));
+        let delta = state.take_dirty().unwrap();
+        assert!(
+            matches!(&delta.lead_log, Log::Rewritten(rows) if rows[0].outcome == Some(json!("confirmed")))
+        );
+        assert_eq!(state.lead_log(10, None).len(), 1);
+    }
+
+    /// Claims leave an audit trail after they are gone: granted, refused,
+    /// released and ended leases are logged.
+    #[test]
+    fn claim_lifecycle_events_are_logged() {
+        let (clock, state) = state();
+        state
+            .claim(agent("alice"), vec![path("a")], "fix".into(), Some(60))
+            .unwrap();
+        assert!(
+            state
+                .claim(agent("bob"), vec![path("a/b.rs")], "edit".into(), None)
+                .is_err()
+        );
+        state
+            .claim(agent("bob"), vec![path("c")], "c".into(), Some(30))
+            .unwrap();
+        state.release(&agent("alice"), None).unwrap();
+        clock.advance(Duration::seconds(31));
+        let rows = state.lead_log(10, None);
+        let events: Vec<LeadEvent> = rows.iter().rev().map(|r| r.event).collect();
+        assert_eq!(
+            events,
+            [
+                LeadEvent::ClaimGranted,
+                LeadEvent::ClaimRefused,
+                LeadEvent::ClaimGranted,
+                LeadEvent::ClaimReleased,
+                LeadEvent::LeaseEnded,
+            ]
+        );
+        let refused = &rows[3];
+        assert_eq!(refused.agent, Some(agent("bob")));
+        assert_eq!(
+            refused.details.as_ref().unwrap()["conflicts"][0]["owner"],
+            "alice"
+        );
+        assert_eq!(rows[0].rule.as_deref(), Some("ttl_without_activity"));
+        assert_eq!(rows[0].candidates, ["c"]);
     }
 }

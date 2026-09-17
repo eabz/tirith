@@ -1,0 +1,48 @@
+{
+  "memory": [
+    {
+      "key": "m01", "by": "ana", "kind": "fact",
+      "title": "Tally money is Decimal end to end",
+      "body": "All amounts are Decimal in the order's currency. money.to_decimal refuses floats on purpose; build test values with Decimal(\"12.50\").",
+      "paths": ["tally/money.py", "tally/models.py"], "tags": ["money"]
+    },
+    {
+      "key": "m02", "by": "ben", "kind": "gotcha",
+      "title": "rules.py tables are read as rules.NAME",
+      "body": "tally/pricing.py does `from tally import rules` and reads `rules.DISCOUNT_CODES` etc. at call time, so adding a table to rules.py needs no import change in pricing.py, and tests can patch a table in place.",
+      "paths": ["tally/rules.py", "tally/pricing.py"], "tags": ["pricing"]
+    },
+    {
+      "key": "m03", "by": "ana", "kind": "lesson",
+      "title": "Totals is built with keywords; new fields need defaults",
+      "body": "order_total builds Totals with keyword arguments, but callers outside tally construct Totals positionally with the five original fields. Append new fields at the end with a default.",
+      "paths": ["tally/models.py", "tally/pricing.py"], "tags": ["models"]
+    }
+  ],
+  "decisions": [
+    {
+      "key": "d01", "by": "ben",
+      "title": "Round each component once, never the running total",
+      "decision": "line_total, the discount, shipping and tax are each rounded with round_money when computed; order_total only adds rounded components.",
+      "rationale": "Invoices must add up line by line; rounding the running total produced one-cent mismatches.",
+      "alternatives": ["round only the final total"],
+      "affects_paths": ["tally/pricing.py", "tally/money.py"]
+    },
+    {
+      "key": "d02", "by": "ana",
+      "title": "Fees are flat per currency, not converted",
+      "decision": "Any flat fee is a per-currency table in tally/rules.py keyed by ISO code; there is no FX conversion in tally.",
+      "rationale": "Finance sets local prices per market.",
+      "alternatives": ["one USD fee converted at a daily rate"],
+      "affects_paths": ["tally/rules.py", "tally/pricing.py"]
+    }
+  ],
+  "contracts": [],
+  "notices": [
+    {
+      "key": "n01", "by": "ben", "kind": "behavior",
+      "summary": "Discount codes are now matched case-insensitively (apply_discount uppercases the code).",
+      "affected_paths": ["tally/pricing.py", "tally/rules.py"]
+    }
+  ]
+}

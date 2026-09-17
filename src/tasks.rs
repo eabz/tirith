@@ -239,6 +239,40 @@ pub enum TaskError {
     },
 }
 
+/// A path another agent is working on, through a live claim or an
+/// in-progress task.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Hold {
+    /// The held path.
+    pub path: RepoPath,
+    /// The agent holding it.
+    pub owner: AgentId,
+}
+
+/// A task assigned by [`TaskBoard::pull`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pulled {
+    /// The task, now in progress.
+    pub task: Task,
+    /// Held paths overlapping the task's paths. Empty unless every
+    /// candidate was held, in which case the caller waits for these.
+    pub waiting_on: Vec<Hold>,
+}
+
+/// The holds overlapping any of `task`'s paths under the claim rule
+/// (symbol anchors included, ADR-0029), sorted and deduplicated.
+fn blockers(task: &Task, holds: &[Hold]) -> Vec<Hold> {
+    let mut found: Vec<Hold> = holds
+        .iter()
+        .filter(|h| task.paths.iter().any(|p| p.claim_overlaps(&h.path)))
+        .cloned()
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// All tasks.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskBoard {
@@ -336,11 +370,54 @@ impl TaskBoard {
             .all(|d| matches!(self.get(*d).map(|t| &t.state), Some(TaskState::Done { .. })))
     }
 
-    /// Assigns the highest-priority unblocked `todo` task to `agent` and
-    /// marks it in progress. Ties go to the oldest task.
-    pub fn pull(&mut self, agent: AgentId, now: DateTime<Utc>) -> Option<&Task> {
-        let id = self.candidates().first()?.id;
-        self.pull_id(agent, id, now)
+    /// Assigns the next unblocked `todo` task to `agent` and marks it in
+    /// progress (ADR-0028). Candidates go in [`candidates`](Self::candidates)
+    /// order, but one whose paths overlap `holds` (other agents' live claims,
+    /// supplied by the caller) or another agent's in-progress task is
+    /// skipped: a free lower-priority task beats a held higher-priority one.
+    /// A task with no paths is never held. When every candidate is held, the
+    /// first is assigned anyway and [`Pulled::waiting_on`] says what it
+    /// waits for.
+    pub fn pull(&mut self, agent: AgentId, holds: &[Hold], now: DateTime<Utc>) -> Option<Pulled> {
+        let holds = self.with_task_holds(&agent, holds);
+        let candidates = self.candidates();
+        let first = candidates.first()?;
+        let (id, waiting_on) = candidates
+            .iter()
+            .find(|t| blockers(t, &holds).is_empty())
+            .map_or_else(
+                || (first.id, blockers(first, &holds)),
+                |t| (t.id, Vec::new()),
+            );
+        let task = self.pull_id(agent, id, now)?.clone();
+        Some(Pulled { task, waiting_on })
+    }
+
+    /// Unblocked `todo` tasks in pull order that no path in `holds` or in
+    /// another agent's in-progress task overlaps.
+    pub fn free_candidates(&self, agent: &AgentId, holds: &[Hold]) -> Vec<&Task> {
+        let holds = self.with_task_holds(agent, holds);
+        self.candidates()
+            .into_iter()
+            .filter(|t| blockers(t, &holds).is_empty())
+            .collect()
+    }
+
+    /// `holds` plus the paths of in-progress tasks owned by agents other
+    /// than `agent`.
+    fn with_task_holds(&self, agent: &AgentId, holds: &[Hold]) -> Vec<Hold> {
+        let mut all = holds.to_vec();
+        for task in &self.tasks {
+            if let TaskState::InProgress { owner } = &task.state
+                && owner != agent
+            {
+                all.extend(task.paths.iter().map(|path| Hold {
+                    path: path.clone(),
+                    owner: owner.clone(),
+                }));
+            }
+        }
+        all
     }
 
     /// Unblocked `todo` tasks in pull order: highest priority first, ties
@@ -501,10 +578,10 @@ mod tests {
             )
             .unwrap()
             .id;
-        assert_eq!(board.pull(agent("b"), t0()).unwrap().id, high_old);
-        assert_eq!(board.pull(agent("b"), t0()).unwrap().id, high_new);
-        assert_eq!(board.pull(agent("b"), t0()).unwrap().id, low);
-        assert!(board.pull(agent("b"), t0()).is_none());
+        assert_eq!(board.pull(agent("b"), &[], t0()).unwrap().task.id, high_old);
+        assert_eq!(board.pull(agent("b"), &[], t0()).unwrap().task.id, high_new);
+        assert_eq!(board.pull(agent("b"), &[], t0()).unwrap().task.id, low);
+        assert!(board.pull(agent("b"), &[], t0()).is_none());
     }
 
     #[test]
@@ -518,12 +595,12 @@ mod tests {
             .create(agent("a"), task("second", 9, vec![first]), t0())
             .unwrap()
             .id;
-        assert_eq!(board.pull(agent("b"), t0()).unwrap().id, first);
-        assert!(board.pull(agent("c"), t0()).is_none());
+        assert_eq!(board.pull(agent("b"), &[], t0()).unwrap().task.id, first);
+        assert!(board.pull(agent("c"), &[], t0()).is_none());
         board
             .update(agent("b"), first, TaskStatus::Done, None, false, t0())
             .unwrap();
-        assert_eq!(board.pull(agent("c"), t0()).unwrap().id, second);
+        assert_eq!(board.pull(agent("c"), &[], t0()).unwrap().task.id, second);
     }
 
     #[test]
@@ -549,7 +626,7 @@ mod tests {
             .create(agent("a"), task("x", 0, vec![]), t0())
             .unwrap()
             .id;
-        board.pull(agent("b"), t0()).unwrap();
+        board.pull(agent("b"), &[], t0()).unwrap();
         let updated = board
             .update(
                 agent("b"),
@@ -594,7 +671,7 @@ mod tests {
             .create(agent("a"), task("x", 0, vec![]), t0())
             .unwrap()
             .id;
-        board.pull(agent("b"), t0()).unwrap();
+        board.pull(agent("b"), &[], t0()).unwrap();
         let err = board
             .update(agent("c"), id, TaskStatus::Done, None, false, t0())
             .unwrap_err();
@@ -651,8 +728,8 @@ mod tests {
             .create(agent("a"), task("second", 0, vec![first]), t0())
             .unwrap()
             .id;
-        board.pull(agent("dead"), t0()).unwrap();
-        board.pull(agent("alive"), t0());
+        board.pull(agent("dead"), &[], t0()).unwrap();
+        board.pull(agent("alive"), &[], t0());
         let threshold = Duration::seconds(1800);
         let later = t0() + Duration::seconds(1801);
         // Nothing to reap while everyone is within the threshold.
@@ -673,12 +750,15 @@ mod tests {
         );
         // Not pullable until `first` is done; a live agent finishes it.
         assert!(!board.is_unblocked(board.get(second).unwrap()));
-        board.pull(agent("alive"), later).unwrap();
+        board.pull(agent("alive"), &[], later).unwrap();
         board
             .update(agent("alive"), first, TaskStatus::Done, None, false, later)
             .unwrap();
         assert!(board.is_unblocked(board.get(second).unwrap()));
-        assert_eq!(board.pull(agent("alive"), later).unwrap().id, second);
+        assert_eq!(
+            board.pull(agent("alive"), &[], later).unwrap().task.id,
+            second
+        );
         // An owner never seen counts as silent since the task last changed.
         let none = board.reap_orphans(|_| None, threshold, later + Duration::seconds(1));
         assert!(none.is_empty(), "alive's task changed at `later`");
@@ -686,5 +766,121 @@ mod tests {
             board.reap_orphans(|_| None, threshold, later + Duration::seconds(1801)),
             vec![second]
         );
+    }
+
+    fn at(title: &str, priority: i32, paths: &[&str]) -> NewTask {
+        NewTask::new(title)
+            .with_priority(priority)
+            .with_paths(paths.iter().map(|p| RepoPath::new(p).unwrap()).collect())
+    }
+
+    fn hold(path: &str, owner: &str) -> Hold {
+        Hold {
+            path: RepoPath::new(path).unwrap(),
+            owner: agent(owner),
+        }
+    }
+
+    #[test]
+    fn pull_skips_a_task_under_another_agents_in_progress_task() {
+        let mut board = TaskBoard::default();
+        board
+            .create(agent("a"), at("first", 9, &["src/state.rs"]), t0())
+            .unwrap();
+        board
+            .create(agent("a"), at("same file", 8, &["src/state.rs"]), t0())
+            .unwrap();
+        let free = board
+            .create(agent("a"), at("other file", 1, &["src/tasks.rs"]), t0())
+            .unwrap()
+            .id;
+        board.pull(agent("b"), &[], t0()).unwrap();
+        let pulled = board.pull(agent("c"), &[], t0()).unwrap();
+        assert_eq!(pulled.task.id, free);
+        assert!(pulled.waiting_on.is_empty());
+    }
+
+    #[test]
+    fn pull_skips_held_paths_and_directories_but_not_pathless_tasks() {
+        let mut board = TaskBoard::default();
+        board
+            .create(agent("a"), at("held", 9, &["src/claims.rs"]), t0())
+            .unwrap();
+        let pathless = board
+            .create(agent("a"), at("anywhere", 5, &[]), t0())
+            .unwrap()
+            .id;
+        let holds = [hold("src", "x")];
+        assert_eq!(board.free_candidates(&agent("b"), &holds)[0].id, pathless);
+        assert_eq!(
+            board.pull(agent("b"), &holds, t0()).unwrap().task.id,
+            pathless
+        );
+    }
+
+    #[test]
+    fn anchored_holds_block_whole_file_tasks_but_not_sibling_anchors() {
+        let mut board = TaskBoard::default();
+        let whole = board
+            .create(agent("a"), at("whole file", 9, &["app/config.py"]), t0())
+            .unwrap()
+            .id;
+        let sibling = board
+            .create(
+                agent("a"),
+                at("sibling", 5, &["app/config.py#Config::gzip"]),
+                t0(),
+            )
+            .unwrap()
+            .id;
+        let holds = [hold("app/config.py#Config::from_env", "x")];
+        let free: Vec<TaskId> = board
+            .free_candidates(&agent("b"), &holds)
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(free, vec![sibling]);
+        let pulled = board.pull(agent("b"), &holds, t0()).unwrap();
+        assert_eq!(pulled.task.id, sibling);
+        assert_ne!(pulled.task.id, whole);
+    }
+
+    #[test]
+    fn pull_hands_out_the_first_task_with_waiting_on_when_all_are_held() {
+        let mut board = TaskBoard::default();
+        let top = board
+            .create(agent("a"), at("top", 9, &["src/state.rs", "docs"]), t0())
+            .unwrap()
+            .id;
+        board
+            .create(agent("a"), at("next", 1, &["src/state.rs"]), t0())
+            .unwrap();
+        let holds = [
+            hold("src/state.rs", "x"),
+            hold("src/state.rs", "x"),
+            hold("docs/a.md", "y"),
+        ];
+        let pulled = board.pull(agent("b"), &holds, t0()).unwrap();
+        assert_eq!(pulled.task.id, top);
+        assert_eq!(
+            pulled.waiting_on,
+            vec![hold("docs/a.md", "y"), hold("src/state.rs", "x")]
+        );
+    }
+
+    #[test]
+    fn own_in_progress_tasks_do_not_hold_paths() {
+        let mut board = TaskBoard::default();
+        board
+            .create(agent("a"), at("mine", 9, &["src/state.rs"]), t0())
+            .unwrap();
+        let next = board
+            .create(agent("a"), at("also mine", 8, &["src/state.rs"]), t0())
+            .unwrap()
+            .id;
+        board.pull(agent("b"), &[], t0()).unwrap();
+        let pulled = board.pull(agent("b"), &[], t0()).unwrap();
+        assert_eq!(pulled.task.id, next);
+        assert!(pulled.waiting_on.is_empty());
     }
 }

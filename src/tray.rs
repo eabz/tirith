@@ -1,15 +1,18 @@
 //! `tirith tray`: a macOS menu bar icon listing every Tirith daemon on
 //! this machine, read from the per-user registry (`registry.rs`). Clicking
 //! the icon always shows the menu: one row per daemon with its agent and
-//! claim counts. Clicking a row opens that daemon's dashboard, `Stop`
-//! sends it SIGINT, `Quit tray` exits. See ADR-0019.
+//! claim counts, and how many escalations wait for the human (the daemon's
+//! human queue, ADR-0027). Clicking a row opens that daemon's dashboard,
+//! `Stop` sends it SIGINT, `Quit tray` exits. See ADR-0019. When a
+//! daemon's human queue grows, a macOS notification says so (through
+//! `osascript`, so no notification entitlement or app bundle is needed).
 //!
 //! `AppKit` needs its event loop on the main thread. Rather than pull in
 //! `winit`, this module pumps the loop by hand: wait for an event or a
 //! five-second timeout, dispatch it, drain the menu and tray channels,
 //! refresh the registry. Everything is the safe surface of `objc2`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -181,10 +184,12 @@ fn run_loop() -> Result<(), TrayError> {
     let mode = NSString::from_str("kCFRunLoopDefaultMode");
     let mut rows = Rows::default();
     let mut last_poll: Option<Instant> = None;
+    // Human queue length per daemon pid at the last poll.
+    let mut needs_you: HashMap<u32, usize> = HashMap::new();
 
     loop {
         if last_poll.is_none_or(|t| t.elapsed() >= POLL) {
-            rows = refresh(&menu, &rows, &runtime)?;
+            rows = refresh(&menu, &rows, &runtime, &mut needs_you)?;
             last_poll = Some(Instant::now());
         }
         let until = NSDate::dateWithTimeIntervalSinceNow(POLL.as_secs_f64());
@@ -210,8 +215,14 @@ fn run_loop() -> Result<(), TrayError> {
     }
 }
 
-/// Re-reads the registry, drops dead daemons, and rebuilds the menu.
-fn refresh(menu: &Menu, old: &Rows, runtime: &tokio::runtime::Runtime) -> Result<Rows, TrayError> {
+/// Re-reads the registry, drops dead daemons, rebuilds the menu, and
+/// notifies when a daemon's human queue grew since the last poll.
+fn refresh(
+    menu: &Menu,
+    old: &Rows,
+    runtime: &tokio::runtime::Runtime,
+    needs_you: &mut HashMap<u32, usize>,
+) -> Result<Rows, TrayError> {
     let mut registry = Registry::load(Registry::default_path()?)?;
     let counts: Vec<(DaemonEntry, Option<Counts>)> = registry
         .entries()
@@ -236,9 +247,19 @@ fn refresh(menu: &Menu, old: &Rows, runtime: &tokio::runtime::Runtime) -> Result
         rows.actions.push((none.id().clone(), Action::Quit));
         append(menu, &mut rows, none)?;
     }
+    let previous = std::mem::take(needs_you);
     for (entry, counts) in &live {
+        if counts.needs_you > previous.get(&entry.pid).copied().unwrap_or(0) {
+            notify(&entry.folder_name(), counts.needs_you);
+        }
+        needs_you.insert(entry.pid, counts.needs_you);
+        let waiting = if counts.needs_you > 0 {
+            format!(", {} need you", counts.needs_you)
+        } else {
+            String::new()
+        };
         let label = format!(
-            "{}  {} agents, {} claims",
+            "{}  {} agents, {} claims{waiting}",
             entry.folder_name(),
             counts.agents,
             counts.claims
@@ -276,6 +297,8 @@ fn append(menu: &Menu, rows: &mut Rows, item: MenuItem) -> Result<(), TrayError>
 struct Counts {
     agents: usize,
     claims: usize,
+    /// Items in the daemon's human queue; 0 for daemons that predate it.
+    needs_you: usize,
 }
 
 /// Asks a daemon for its state; `None` when it does not answer in time or
@@ -299,7 +322,36 @@ async fn counts(entry: &DaemonEntry) -> Option<Counts> {
     Some(Counts {
         agents: agents.len(),
         claims: claims.len(),
+        needs_you: state["needs_you"].as_array().map_or(0, Vec::len),
     })
+}
+
+/// Shows a macOS notification that `count` escalations in `folder` wait
+/// for the human. Best effort: a failure is only logged.
+fn notify(folder: &str, count: usize) {
+    if let Err(error) = Command::new("osascript")
+        .args(["-e", &notification_script(folder, count)])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        tracing::warn!(%error, folder, "could not show a notification");
+    }
+}
+
+/// The `AppleScript` for [`notify`], with both strings escaped.
+fn notification_script(folder: &str, count: usize) -> String {
+    let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
+    let body = if count == 1 {
+        "1 escalation needs you".to_owned()
+    } else {
+        format!("{count} escalations need you")
+    };
+    format!(
+        "display notification \"{}\" with title \"Tirith: {}\"",
+        quote(&body),
+        quote(folder)
+    )
 }
 
 fn open(url: &str) {
@@ -357,6 +409,15 @@ mod tests {
             );
             assert!(icon(scale).is_ok());
         }
+    }
+
+    #[test]
+    fn the_notification_script_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            notification_script("my \"repo\\x", 2),
+            "display notification \"2 escalations need you\" with title \"Tirith: my \\\"repo\\\\x\""
+        );
+        assert!(notification_script("tirith", 1).contains("\"1 escalation needs you\""));
     }
 
     #[test]

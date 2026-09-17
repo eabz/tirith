@@ -91,12 +91,6 @@ enum Command {
         /// Do not start the menu bar tray (macOS) alongside this daemon.
         #[arg(long)]
         no_tray: bool,
-        /// Experimental: let the Jev evaluation model make coordination
-        /// judgement calls (ADR-0024). Needs `TYPESAFE_API_KEY` (preferred)
-        /// or `AI_GATEWAY_API_KEY` in the environment or in the repository's
-        /// .env. Off by default; nothing leaves localhost without it.
-        #[arg(long, env = "TIRITH_JEV", value_parser = clap::builder::BoolishValueParser::new())]
-        jev: bool,
     },
     /// Serve MCP over stdin/stdout for clients that spawn servers themselves,
     /// starting the repository's daemon if none is running.
@@ -176,6 +170,11 @@ enum Command {
     Message {
         #[command(subcommand)]
         command: MessageCommand,
+    },
+    /// The swarm lead and its policy's decision log (ADR-0027).
+    Lead {
+        #[command(subcommand)]
+        command: LeadCommand,
     },
     /// List the tools the daemon exposes.
     Tools,
@@ -389,6 +388,23 @@ enum MemoryCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum LeadCommand {
+    /// Show the lead and its newest decisions, newest first, from the
+    /// daemon's `/api/lead`.
+    Log {
+        /// Rows to show (default 50, max 500).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Only decisions on this event, e.g. `task_requested`.
+        #[arg(long)]
+        event: Option<String>,
+    },
+    /// Show the human queue: escalations routed to the human and not yet
+    /// answered, most agents blocked first, from `/api/human`.
+    Human,
+}
+
+#[derive(Debug, Subcommand)]
 enum MessageCommand {
     /// Send a message; it reaches the recipient on their next tool call.
     Send {
@@ -449,8 +465,7 @@ pub(crate) async fn run() -> Result<ExitCode> {
             bind,
             task_orphan_secs,
             no_tray,
-            jev,
-        } => return serve(bind, task_orphan_secs, no_tray, jev, cli.root).await,
+        } => return serve(bind, task_orphan_secs, no_tray, cli.root).await,
         Command::Stdio { bind } => return stdio_shim(bind, cli.root).await,
         Command::Update { to, check } => return self_update(to, check, &cli.root).await,
         #[cfg(all(feature = "tray", target_os = "macos"))]
@@ -462,6 +477,12 @@ pub(crate) async fn run() -> Result<ExitCode> {
                 .map_err(anyhow::Error::from);
         }
         Command::Tools => return tools(&remote).await,
+        Command::Lead {
+            command: LeadCommand::Log { limit, event },
+        } => return lead_log(&remote, limit, event).await,
+        Command::Lead {
+            command: LeadCommand::Human,
+        } => return lead_human(&remote).await,
         Command::Call { tool, arguments } => {
             let mut value: Value =
                 serde_json::from_str(&arguments).context("arguments must be a JSON object")?;
@@ -685,31 +706,10 @@ fn read_stdin() -> Result<String> {
     Ok(body)
 }
 
-/// Connects the daemon to Jev (ADR-0024).
-/// Reads the Jev configuration (ADR-0024) and builds the client, before
-/// the daemon starts, so a missing key never leaves a half-started daemon
-/// behind.
-#[cfg(feature = "jev")]
-async fn jev_client(root: &Path) -> Result<(tirith::jev::JevClient, tirith::jev::JevConfig)> {
-    let dir = root.to_path_buf();
-    let config = tokio::task::spawn_blocking(move || tirith::jev::JevConfig::from_env(&dir))
-        .await?
-        .with_context(|| {
-            format!(
-                "--jev needs {} or {} in the environment or in .env",
-                tirith::jev::TYPESAFE_KEY_VAR,
-                tirith::jev::GATEWAY_KEY_VAR
-            )
-        })?;
-    let client = tirith::jev::JevClient::new(config.clone())?;
-    Ok((client, config))
-}
-
 async fn serve(
     bind: SocketAddr,
     task_orphan_secs: u64,
     no_tray: bool,
-    jev: bool,
     root: PathBuf,
 ) -> Result<ExitCode> {
     tracing_subscriber::fmt()
@@ -731,18 +731,6 @@ async fn serve(
             None
         }
     };
-    #[cfg(feature = "jev")]
-    let jev = if jev {
-        Some(jev_client(&root).await?)
-    } else {
-        None
-    };
-    #[cfg(not(feature = "jev"))]
-    if jev {
-        anyhow::bail!(
-            "--jev needs a build with the `jev` feature: cargo install --path . --features jev"
-        );
-    }
     let handle = server::start(ServeOptions {
         bind,
         repo_root: root.clone(),
@@ -751,18 +739,6 @@ async fn serve(
     })
     .await?;
     handle.set_task_orphan_secs(task_orphan_secs);
-    #[cfg(feature = "jev")]
-    if let Some((client, config)) = jev {
-        client.warm_up().await;
-        handle.enable_assist(std::sync::Arc::new(client));
-        eprintln!(
-            "jev: on ({} {} at {}, timeout {:?})",
-            config.provider(),
-            config.model(),
-            config.endpoint(),
-            config.timeout()
-        );
-    }
     #[cfg(all(feature = "tray", target_os = "macos"))]
     if !no_tray && let Err(error) = tirith::tray::launch_if_absent() {
         eprintln!("warning: could not start the menu bar tray: {error}");
@@ -881,6 +857,131 @@ async fn tools(remote: &Remote) -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `tirith lead log`: the decision log is an HTTP route, not a tool
+/// (ADR-0027), so this reads the dashboard next to the MCP endpoint.
+async fn lead_log(
+    remote: &Remote,
+    limit: Option<usize>,
+    event: Option<String>,
+) -> Result<ExitCode> {
+    let mut url = format!(
+        "{}/api/lead?limit={}",
+        dashboard_base(remote),
+        limit.unwrap_or(50)
+    );
+    if let Some(event) = event {
+        anyhow::ensure!(
+            !event.is_empty() && event.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+            "--event is a snake_case event name, e.g. task_requested"
+        );
+        url.push_str("&event=");
+        url.push_str(&event);
+    }
+    let body = get_json(&url).await?;
+    if remote.json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        println!("{}", lead_log_lines(&body).join("\n"));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `tirith lead human`: the human queue, also an HTTP route (ADR-0027).
+async fn lead_human(remote: &Remote) -> Result<ExitCode> {
+    let body = get_json(&format!("{}/api/human", dashboard_base(remote))).await?;
+    if remote.json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        println!("{}", human_lines(&body).join("\n"));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The dashboard origin next to the MCP endpoint.
+fn dashboard_base(remote: &Remote) -> &str {
+    let base = remote.url.strip_suffix("mcp").unwrap_or(&remote.url);
+    base.trim_end_matches('/')
+}
+
+/// One line per human queue item: when, how many agents it blocks, who
+/// raised it, the rule that sent it, and what it says.
+fn human_lines(body: &Value) -> Vec<String> {
+    let items = body["items"].as_array().map_or(&[][..], Vec::as_slice);
+    if items.is_empty() {
+        return vec!["nothing needs you".to_owned()];
+    }
+    items
+        .iter()
+        .map(|item| {
+            let blocked = item["blocked_agents"].as_array().map_or(0, Vec::len);
+            let task = item["task"].as_str().map_or_else(String::new, |t| {
+                format!(" task {}", t.chars().take(8).collect::<String>())
+            });
+            format!(
+                "#{} {} blocks {blocked} agent(s), from {}{task} [{}]: {}",
+                item["id"],
+                when(&item["at"]),
+                s(&item["agent"]),
+                item["rule"].as_str().unwrap_or("-"),
+                s(&item["text"])
+            )
+        })
+        .collect()
+}
+
+/// GETs `url` from the daemon and parses its JSON body.
+async fn get_json(url: &str) -> Result<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("no daemon answered at {url}"))?;
+    let status = response.status();
+    let text = response.text().await?;
+    anyhow::ensure!(status.is_success(), "{url}: HTTP {status}: {text}");
+    serde_json::from_str(&text).context("the daemon sent invalid JSON")
+}
+
+/// The lead, then one line per decision: id, when, event, agent, action,
+/// and rule and outcome when present.
+fn lead_log_lines(body: &Value) -> Vec<String> {
+    let mut lines = vec![match body["lead"].as_object() {
+        Some(lead) => format!(
+            "lead: {} (lease until {})",
+            s(&lead["agent"]),
+            when(&lead["expires_at"])
+        ),
+        None => "lead: none (nobody holds .tirith/lead)".to_owned(),
+    }];
+    let entries = body["entries"].as_array().map_or(&[][..], Vec::as_slice);
+    if entries.is_empty() {
+        lines.push("no decisions logged".to_owned());
+    }
+    for e in entries {
+        let who = e["agent"]
+            .as_str()
+            .map_or_else(String::new, |agent| format!(" {agent}"));
+        let mut parts = vec![format!(
+            "#{} {} {}{who}: {}",
+            e["id"],
+            when(&e["at"]),
+            s(&e["event"]),
+            s(&e["action"])
+        )];
+        if let Some(rule) = e["rule"].as_str() {
+            parts.push(format!("rule: {rule}"));
+        }
+        if !e["outcome"].is_null() {
+            parts.push(format!("outcome: {}", e["outcome"]));
+        }
+        lines.push(parts.join("; "));
+    }
+    lines
 }
 
 async fn call(remote: &Remote, tool: &str, mut arguments: Value) -> Result<ExitCode> {
@@ -1325,4 +1426,81 @@ fn excerpt(body: &str) -> String {
         cut.push('…');
     }
     cut
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_human_queue_renders_one_line_per_item() {
+        let body = json!({ "count": 1, "items": [{
+            "id": 7, "at": "2026-09-17T04:00:00Z", "agent": "worker",
+            "task": "9f0c1d2e-0000-0000-0000-000000000000", "rule": "human:credentials",
+            "text": "need a key", "blocked_agents": ["worker", "other"],
+        }]});
+        let lines = human_lines(&body);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("#7 "), "{lines:?}");
+        assert!(
+            lines[0].ends_with(
+                "blocks 2 agent(s), from worker task 9f0c1d2e [human:credentials]: need a key"
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(
+            human_lines(&json!({ "items": [] })),
+            vec!["nothing needs you"]
+        );
+    }
+
+    #[test]
+    fn the_lead_log_renders_one_line_per_decision() {
+        let body = json!({
+            "lead": { "agent": "boss", "expires_at": "2026-09-17T05:00:00Z" },
+            "count": 2,
+            "entries": [
+                {
+                    "id": 2, "at": "2026-09-17T04:00:00Z", "event": "escalation_raised",
+                    "agent": "w", "seq": 9, "candidates": [], "rule": "human:credentials",
+                    "action": "queued for the human", "outcome": null
+                },
+                {
+                    "id": 1, "at": "2026-09-17T03:59:00Z", "event": "notice_published",
+                    "seq": 8, "candidates": ["bob"], "rule": "holds_affected_path",
+                    "action": "pushed notice n1 to 1 holder(s)", "outcome": "dismissed"
+                }
+            ]
+        });
+        let lines = lead_log_lines(&body);
+        assert!(lines[0].starts_with("lead: boss"), "{lines:?}");
+        assert!(lines[1].starts_with("#2 "), "{lines:?}");
+        assert!(
+            lines[1].ends_with("escalation_raised w: queued for the human; rule: human:credentials"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[2].ends_with(
+                "notice_published: pushed notice n1 to 1 holder(s); rule: holds_affected_path; outcome: \"dismissed\""
+            ),
+            "{lines:?}"
+        );
+        let claim = lead_log_lines(&json!({ "lead": null, "entries": [{
+            "id": 3, "at": "2026-09-17T04:01:00Z", "event": "claim_refused", "agent": "bob",
+            "seq": 9, "candidates": ["src/a.rs"], "rule": "overlap",
+            "action": "refused 1 path(s)", "outcome": null
+        }] }));
+        assert!(
+            claim[1].ends_with("claim_refused bob: refused 1 path(s); rule: overlap"),
+            "{claim:?}"
+        );
+        let empty = lead_log_lines(&json!({ "lead": null, "entries": [] }));
+        assert_eq!(
+            empty,
+            [
+                "lead: none (nobody holds .tirith/lead)",
+                "no decisions logged"
+            ]
+        );
+    }
 }

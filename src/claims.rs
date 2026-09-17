@@ -77,9 +77,10 @@ impl Claim {
         self.expires_at = now + ttl_duration(self.ttl_secs);
     }
 
-    /// Whether any of this claim's paths overlaps `path`.
+    /// Whether any of this claim's paths overlaps `path` under the claim
+    /// rule, symbol anchors included ([`RepoPath::claim_overlaps`]).
     pub fn covers(&self, path: &RepoPath) -> bool {
-        self.paths.iter().any(|p| p.overlaps(path))
+        self.paths.iter().any(|p| p.claim_overlaps(path))
     }
 }
 
@@ -109,8 +110,9 @@ pub struct Granted {
     pub new_paths: Vec<RepoPath>,
     /// Paths the agent already held; their leases were renewed.
     pub renewed_paths: Vec<RepoPath>,
-    /// Paths the agent held beneath a directory it has just claimed; they
-    /// were folded into the directory claim so there is one lease to release.
+    /// Paths the agent held beneath a directory, file or anchor it has just
+    /// claimed; they were folded into that claim so there is one lease to
+    /// release.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub absorbed_paths: Vec<RepoPath>,
     /// When the newest lease ends.
@@ -177,7 +179,7 @@ impl Reaped {
             .iter()
             .rev()
             .map(|(lost, _)| lost)
-            .find(|lost| lost.path.overlaps(path))
+            .find(|lost| lost.path.claim_overlaps(path))
     }
 }
 
@@ -271,7 +273,7 @@ impl ClaimBook {
         let mut conflicts = Vec::new();
         for path in paths {
             for claim in self.claims.iter().filter(|c| &c.owner != agent) {
-                for held in claim.paths.iter().filter(|held| held.overlaps(path)) {
+                for held in claim.paths.iter().filter(|held| held.claim_overlaps(path)) {
                     conflicts.push(Conflict {
                         path: path.clone(),
                         overlaps: held.clone(),
@@ -289,6 +291,9 @@ impl ClaimBook {
     /// overlaps another agent's claim. Paths the agent already holds are
     /// reasserted (fresh TTL and age) instead of duplicated, and paths it
     /// holds beneath a newly claimed directory are folded into that claim.
+    /// Symbol anchors follow [`RepoPath::covers`]: an anchor inside a held
+    /// file or anchor is renewed, and claiming a file or anchor absorbs the
+    /// agent's anchors inside it (ADR-0029).
     pub fn claim(
         &mut self,
         agent: AgentId,
@@ -308,12 +313,9 @@ impl ClaimBook {
             return Err(ClaimError::Conflict(conflicts));
         }
         let (renewed_paths, new_paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| {
-            self.claims.iter().any(|c| {
-                c.owner == agent
-                    && c.paths
-                        .iter()
-                        .any(|held| held.is_ancestor_of(p) || held == p)
-            })
+            self.claims
+                .iter()
+                .any(|c| c.owner == agent && c.paths.iter().any(|held| held.covers(p)))
         });
         let mut expires_at = now;
         for claim in self.claims.iter_mut().filter(|c| c.owner == agent) {
@@ -326,7 +328,7 @@ impl ClaimBook {
         if !new_paths.is_empty() {
             for claim in self.claims.iter_mut().filter(|c| c.owner == agent) {
                 claim.paths.retain(|held| {
-                    let absorbed = new_paths.iter().any(|p| p.is_ancestor_of(held));
+                    let absorbed = new_paths.iter().any(|p| p != held && p.covers(held));
                     if absorbed {
                         absorbed_paths.push(held.clone());
                     }
@@ -719,5 +721,108 @@ mod tests {
         let much_later = later + Duration::seconds(i64::try_from(MAX_TTL_SECS).unwrap() + 1);
         reaped.record(&[], much_later);
         assert!(reaped.previous_owner(&path("src")).is_none());
+    }
+
+    #[test]
+    fn anchors_conflict_only_with_their_file_and_nested_anchors() {
+        let mut book = ClaimBook::default();
+        book.claim(
+            agent("alice"),
+            vec![path("app/config.py#Config::from_env")],
+            "x".into(),
+            600,
+            t0(),
+        )
+        .unwrap();
+        // A sibling anchor in the same file is free.
+        book.claim(
+            agent("bob"),
+            vec![path("app/config.py#Config.gzip_min_size")],
+            "y".into(),
+            600,
+            t0(),
+        )
+        .unwrap();
+        // The whole file, and the enclosing symbol, are refused.
+        for target in ["app/config.py", "app/config.py#config", "app"] {
+            let err = book
+                .claim(agent("carol"), vec![path(target)], "z".into(), 600, t0())
+                .unwrap_err();
+            let ClaimError::Conflict(conflicts) = err else {
+                panic!("expected conflict for {target}");
+            };
+            assert_eq!(conflicts[0].path, path(target));
+        }
+        assert_eq!(
+            book.list(Some(&path("app/config.py#Config::from_env")))
+                .len(),
+            1
+        );
+        assert_eq!(book.list(Some(&path("app/config.py"))).len(), 2);
+    }
+
+    #[test]
+    fn own_anchors_are_renewed_absorbed_and_released_exactly() {
+        let mut book = ClaimBook::default();
+        let f = "src/state.rs";
+        book.claim(
+            agent("a"),
+            vec![path("src/state.rs#State::brief")],
+            "x".into(),
+            600,
+            t0(),
+        )
+        .unwrap();
+        // A nested anchor inside a held anchor is renewed, not added.
+        let granted = book
+            .claim(
+                agent("a"),
+                vec![path("src/state.rs#state::brief::inner")],
+                "x".into(),
+                600,
+                t0(),
+            )
+            .unwrap();
+        assert!(granted.new_paths.is_empty());
+        assert_eq!(granted.renewed_paths.len(), 1);
+        // Claiming the enclosing symbol absorbs it.
+        let granted = book
+            .claim(
+                agent("a"),
+                vec![path("src/state.rs#State")],
+                "x".into(),
+                600,
+                t0(),
+            )
+            .unwrap();
+        assert_eq!(
+            granted.absorbed_paths,
+            vec![path("src/state.rs#State::brief")]
+        );
+        // Releasing the file does not release an anchor in it.
+        assert!(matches!(
+            book.release(&agent("a"), Some(vec![path(f)])),
+            Err(ClaimError::NotHeld { .. })
+        ));
+        // Claiming the file absorbs the anchor.
+        let granted = book
+            .claim(agent("a"), vec![path(f)], "x".into(), 600, t0())
+            .unwrap();
+        assert_eq!(granted.absorbed_paths, vec![path("src/state.rs#State")]);
+        assert_eq!(
+            book.release(&agent("a"), Some(vec![path(f)])).unwrap(),
+            vec![path(f)]
+        );
+        assert!(book.claims().is_empty());
+    }
+
+    #[test]
+    fn a_lease_is_expired_exactly_at_its_expiry() {
+        let mut book = ClaimBook::default();
+        book.claim(agent("alice"), vec![path("src")], "work".into(), 600, t0())
+            .unwrap();
+        let claim = &book.claims()[0];
+        assert!(!claim.is_expired(claim.expires_at - Duration::seconds(1)));
+        assert!(claim.is_expired(claim.expires_at));
     }
 }

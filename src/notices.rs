@@ -111,6 +111,26 @@ impl Notice {
     }
 }
 
+/// Splits `newest_first` into the rows worth showing and the contract
+/// version notices superseded by a newer one for the same contract in the
+/// same list. Only the automatic [`NoticeKind::Contract`] notices coalesce:
+/// "contract X updated to v3" says nothing once v4 is out. Any other
+/// notice that names a contract was written by an agent and is kept.
+/// Both halves stay newest first.
+pub fn coalesce_contract_versions(newest_first: Vec<&Notice>) -> (Vec<&Notice>, Vec<&Notice>) {
+    let mut contracts = Vec::new();
+    newest_first
+        .into_iter()
+        .partition(|notice| match (notice.kind, notice.contract_id) {
+            (NoticeKind::Contract, Some(id)) if contracts.contains(&id) => false,
+            (NoticeKind::Contract, Some(id)) => {
+                contracts.push(id);
+                true
+            }
+            _ => true,
+        })
+}
+
 /// One delivery: `notice_id` was shown to `agent` at `at`. Appended to
 /// its own runtime log so marking never rewrites the notices log.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,5 +514,39 @@ mod tests {
         };
         let pruned = NoticeBoard::from_parts(board.notices().to_vec(), vec![stray]);
         assert!(pruned.seen().is_empty());
+    }
+
+    #[test]
+    fn contract_version_notices_coalesce_to_the_newest_per_contract() {
+        let mut board = NoticeBoard::default();
+        let widget = ContractId::new();
+        let gadget = ContractId::new();
+        let mut publish = |new: NewNotice, secs: i64| {
+            board
+                .publish(agent("alice"), new, t0() + Duration::seconds(secs))
+                .unwrap()
+                .id
+        };
+        let bump = |id: ContractId, v: u32| {
+            NewNotice::new(NoticeKind::Contract, format!("contract updated to v{v}"))
+                .with_contract_id(id)
+                .with_affected_paths(vec![RepoPath::new("src").unwrap()])
+        };
+        let w2 = publish(bump(widget, 2), 1);
+        let written = publish(
+            NewNotice::new(NoticeKind::Behavior, "widget now retries")
+                .with_contract_id(widget)
+                .with_affected_paths(vec![RepoPath::new("src").unwrap()]),
+            2,
+        );
+        let w3 = publish(bump(widget, 3), 3);
+        let g2 = publish(bump(gadget, 2), 4);
+        let w4 = publish(bump(widget, 4), 5);
+        let mut rows = board.list(&NoticeFilter::default());
+        rows.reverse();
+        let (shown, superseded) = coalesce_contract_versions(rows);
+        let ids = |rows: &[&Notice]| rows.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(ids(&shown), vec![w4, g2, written]);
+        assert_eq!(ids(&superseded), vec![w3, w2]);
     }
 }

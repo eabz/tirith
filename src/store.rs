@@ -1,7 +1,8 @@
 //! JSON persistence under `.tirith/` in the target repository.
 //!
 //! Runtime state (claims, tasks, sequence, daemon address, the notice
-//! seen log, agent messages) goes in `.tirith/runtime/`, which is
+//! seen log, agent messages, the lead decision log) goes in
+//! `.tirith/runtime/`, which is
 //! gitignored by a `.gitignore` this module writes. Contracts, memory
 //! notes, notices, and decisions are written as readable JSON, Markdown,
 //! and JSON Lines so they can be committed and diffed. Every rewrite is
@@ -54,6 +55,8 @@ const NOTICES_FILE: &str = "notices.jsonl";
 const NOTICE_SEEN_FILE: &str = "runtime/notice_seen.jsonl";
 /// Agent-to-agent messages: runtime only, never committed (ADR-0020).
 const MESSAGES_FILE: &str = "runtime/messages.jsonl";
+/// The lead policy's decision log: runtime only, 7-day retention (ADR-0027).
+const LEAD_LOG_FILE: &str = "runtime/lead_log.jsonl";
 /// The pre-ADR-0022 decisions log, imported and removed on first load.
 const DECISIONS_FILE: &str = "decisions.jsonl";
 /// One Markdown file per decision, in the memory-note format (ADR-0022).
@@ -224,6 +227,7 @@ impl JsonStore {
             decisions: self.load_decisions(&mut errors)?,
             memory: self.load_memory(&mut errors)?,
             messages: self.read_log(MESSAGES_FILE, &mut errors)?,
+            lead_log: self.read_log(LEAD_LOG_FILE, &mut errors)?,
             load_errors: errors,
         })
     }
@@ -452,6 +456,7 @@ impl JsonStore {
             )?;
         }
         self.write_log(MESSAGES_FILE, &delta.messages, &mut dirs)?;
+        self.write_log(LEAD_LOG_FILE, &delta.lead_log, &mut dirs)?;
         sync_dirs(&dirs)?;
         // The sequence number goes last, after everything above is durable,
         // so a crash mid-apply never records progress that did not happen.
@@ -1037,11 +1042,18 @@ mod tests {
                 t0(),
             )
             .unwrap();
+        let mut lead_log = crate::lead::LeadLog::default();
+        lead_log.append(
+            crate::lead::NewEntry::new(crate::lead::LeadEvent::ClaimReleased, "released 1 path(s)"),
+            t0(),
+            6,
+        );
         Snapshot {
             seq: 7,
             claims: claims.claims().to_vec(),
             contracts: contracts.contracts().to_vec(),
             memory: memory.notes().to_vec(),
+            lead_log: lead_log.entries().to_vec(),
             ..Snapshot::default()
         }
     }
@@ -1061,6 +1073,7 @@ mod tests {
         let root = dir.path().join(".tirith");
         assert!(root.join(".gitignore").exists());
         assert!(root.join("runtime/claims.json").exists());
+        assert!(root.join("runtime/lead_log.jsonl").exists());
         let contracts: Vec<_> = fs::read_dir(root.join("contracts")).unwrap().collect();
         assert_eq!(contracts.len(), 1);
         assert!(
@@ -1359,5 +1372,12 @@ mod tests {
         assert_eq!(slug("POST /api/sessions"), "post-api-sessions");
         assert_eq!(slug("State::claim()"), "state-claim");
         assert_eq!(slug("///"), "contract");
+    }
+
+    #[test]
+    fn slugs_keep_48_characters() {
+        let long = "a".repeat(60);
+        assert_eq!(slug(&long), "a".repeat(48));
+        assert_eq!(slug(&"b".repeat(48)), "b".repeat(48));
     }
 }

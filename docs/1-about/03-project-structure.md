@@ -46,18 +46,23 @@ tirith/
 │   ├── memory.rs        Memory notes domain, including the Markdown
 │   │                    file format notes are stored in.
 │   ├── messages.rs      Agent-to-agent messages (runtime only).
-│   ├── jev.rs           Experimental: Jev evaluation client (ADR-0024).
-│   └── assist.rs        Experimental: the judgement calls Jev makes.
+│   └── lead.rs          The swarm lead (ADR-0027): identity, the lead
+│                        policy (task_pull waits, notice push, escalation
+│                        routing, the human queue), the decision log.
 ├── tests/
 │   ├── http_roundtrip.rs  Every tool over localhost HTTP.
+│   ├── anchored_claims.rs Experimental symbol-anchored claims (ADR-0029).
 │   ├── persistence.rs     Restart, incremental writes, corrupt files.
 │   ├── memory_layer.rs    Notes on disk, including this repo's own.
 │   ├── stdio_shim.rs      The shim over its pipes.
+│   ├── lead_escalation.rs Escalation triggers, routing, the human queue.
 │   ├── budgets.rs         Token budgets: tools/list, rows, text lines.
-│   └── jev_assist.rs      Experimental Jev sites with a scripted model.
+│   └── common/            Shared helpers for the integration tests.
 ├── examples/
 │   ├── demo.sh          Two agents, overlapping claims, second refused.
-│   └── swarm_bench.rs   200 simulated agents against one daemon.
+│   ├── swarm_bench.rs   200 simulated agents against one daemon.
+│   └── e2e/             End-to-end benchmark kit: LLM workers on the Forge
+│                        and hubs scenarios, scored against hidden tests.
 ├── docs/                All documentation. See docs/README.md.
 │   ├── README.md        Index and writing conventions.
 │   ├── index.html       Redirects to the root landing page.

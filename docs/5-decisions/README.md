@@ -33,8 +33,10 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0021](0021-notice-acks-log.md) | Notices are seen when delivered; the seen log is runtime-only | Accepted |
 | [0022](0022-decisions-as-markdown.md) | Decisions are one Markdown file each, in the memory-note format | Accepted |
 | [0023](0023-stable-toolchain-for-release-containers.md) | A `rust-toolchain.toml` pins the stable channel so release containers meet `rust-version` | Accepted |
-| [0024](0024-jev-assist-experiment.md) | Jev makes coordination judgement calls, behind a flag and with deterministic fallbacks | Experimental |
 | [0025](0025-no-release-build-cache.md) | Release builds drop the dependency cache | Accepted |
+| [0027](0027-swarm-lead-and-escalation.md) | Every swarm has a lead; escalations, the human queue, and the lead log are deterministic | Accepted |
+| [0028](0028-claim-aware-task-pull.md) | `task_pull` skips tasks whose paths another agent holds | Accepted |
+| [0029](0029-symbol-anchored-claims.md) | Symbol-anchored claims and edit-window holds | Proposed |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

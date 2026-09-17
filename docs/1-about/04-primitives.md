@@ -64,6 +64,7 @@ Leases on files or directories. Overlap is refused.
 | `reason` | string | Short, human-readable. Shown to whoever is refused |
 | `ttl_secs` | integer, optional | Default 600. Max 3600 |
 | `brief` | boolean, optional | Default `true`: attach the brief described below. `false` returns the bare claim outcome |
+| `wait_secs` | integer, optional | Default 0. Max 120 (larger values are capped). On conflict, the daemon waits up to this long for the overlapping leases to be released or to expire, retrying the whole claim each time one ends, instead of the agent sleeping and calling again |
 
 Returns `ok` with `claim_id`, `new_paths`, `renewed_paths`, `expires_at`,
 the brief, and, when not empty, `absorbed_paths` (paths you already held
@@ -72,6 +73,39 @@ beneath a directory you just claimed, folded into the directory lease) and
 last hour: `path`, `owner`, `reaped_at`). Or `conflict` with one entry per
 overlapping path: `path`, `overlaps`, `owner`, `reason`, `expires_at`. The
 call is atomic: on conflict, none of the requested paths are claimed.
+With `wait_secs`, the result is `ok` as soon as every overlapping lease has
+ended (each retry is atomic, so another agent can still win the paths
+first), or the last `conflict` once the wait is over. The daemon holds no
+lock while it waits: a release or an expiry wakes waiting claims.
+
+**Symbol anchors (experimental, [ADR-0029](../5-decisions/0029-symbol-anchored-claims.md), Proposed).**
+A `paths` entry may name a symbol inside a file: `path#Anchor`, for
+example `src/state.rs#State::brief` or `app/config.py#Config.from_env`.
+Daemons after 1.0.4 support it; older daemons treat `f#X` as an unrelated
+path that does not overlap `f`, so check the version before relying on it.
+
+- The string is split at the first `#`; the path part is normalized as
+  usual and cannot end in `/`. Anchor segments may be separated by `::`,
+  `.` or `/` and are stored and echoed with `::`. Generic arguments
+  (`Store<T>::load`) and a Go receiver (`(*Server).Handle`) are dropped.
+  Empty segments and whitespace inside a segment are refused. The daemon
+  checks syntax only, never that the symbol exists.
+- Overlap: a file or directory claim overlaps every anchor in or under it;
+  two anchors in the same file overlap when they are equal or one encloses
+  the other by whole segments (`Config` and `Config::from_env` yes,
+  `Config::a` and `Config::b` no, `State` and `StateView` no), compared
+  ASCII case-insensitively. The same rule applies to `claim` conflicts,
+  `wait_secs` retries, `claims_list` with `path`, and `task_pull` holds.
+- Your own claims: an anchor inside a file or anchor you hold is renewed,
+  not added; claiming a file (or an enclosing anchor) absorbs your anchors
+  inside it. `release` stays exact: releasing `f` does not release `f#X`.
+- The brief, notices, contracts, decisions and memory match on the file
+  part only, so any anchor in a file brings that file's rows.
+- A new member is claimed by its new name (`app/config.py#Config::gzip`);
+  the imports and export-list entries it needs ride on that claim. Under an
+  anchor, edit by replacement and never rewrite the whole file.
+- A whole-file claim waiting with `wait_secs` is not queued: new anchor
+  claims in that file can keep it waiting.
 
 **The brief** ([ADR-0014](../5-decisions/0014-brief-on-claim.md)) is what
 the claim teaches you about the paths you just claimed, so you do not have
@@ -79,7 +113,11 @@ to ask four tools first. Four sections, each the five newest rows, each
 omitted when empty:
 
 - `notices`: unread notices you have not been shown before: `id` (8
-  chars), `kind`, `summary` (at most 160 characters), `by`.
+  chars), `kind`, `summary` (at most 160 characters), `by`. Automatic
+  `contract` notices coalesce: only the newest per contract is shown, and
+  the older version notices for that contract are marked delivered with
+  it, so they do not come back in a later brief or unread listing.
+  Notices of other kinds that name a contract are never coalesced.
 - `contracts`: contracts consumed by the paths: `name`, `version`, `kind`.
   Fetch a body with `contract_get`.
 - `decisions`: decisions affecting the paths: `id`, `title`.
@@ -103,6 +141,18 @@ Re-claiming a path you already hold renews it (it appears in
 without activity, and after four TTLs (at most four hours) regardless of
 activity; only `claim` or `renew` restarts that age. When a lease you held
 has ended, your next response carries `lost` (see the conventions above).
+
+### The reserved lead path
+
+The swarm lead is whoever holds a claim naming exactly `.tirith/lead`
+([ADR-0027](../5-decisions/0027-swarm-lead-and-escalation.md)). It is an
+ordinary claim, so only one agent holds it, it expires and is reported in
+`lost` like any other, and no extra tool exists. The session that spawns
+other agents claims it first, with `ttl_secs: 3600` and a reason naming
+the swarm; workers never claim it. A claim on an ancestor such as
+`.tirith` blocks others from taking the lead path but does not make its
+holder the lead. When the lease ends the swarm has no lead until someone
+claims it again. `status` reports the holder as `lead`.
 
 ### `release`
 
@@ -142,7 +192,7 @@ built.
 | Tool | Purpose |
 |---|---|
 | `task_create` | `title`, `description`, `priority` (higher pulls first, default 0), `depends_on[]` (task ids), `paths[]` (hint for claims). Returns `task` |
-| `task_pull` | Returns the highest-priority `todo` task whose dependencies are all `done`, assigns it to `agent`, marks it `in_progress`. Ties go to the oldest task. Status `none` if nothing is unblocked |
+| `task_pull` | Returns the highest-priority `todo` task whose dependencies are all `done`, assigns it to `agent`, marks it `in_progress`. Ties go to the oldest task. A task whose `paths` overlap another agent's live claim or in-progress task is skipped for the next free one; when every candidate is held, the first is returned anyway with `waiting_on` (`path`, `owner`). Status `none` if nothing is unblocked. Optional `wait_secs` (default 0, max 120, larger values are capped) waits for a free task first; see below |
 | `task_update` | `task_id`, `status` in `todo`, `in_progress`, `blocked`, `done`, plus optional `note` and `force`. `in_progress` makes the caller the owner; `blocked` keeps the current owner and stores the note as `reason`. Changing a task another agent has `in_progress` returns `conflict` with `owner` and `since` unless `force` is true, which records who forced it in the notes |
 | `task_list` | Filter by `status` or `owner`; most recently updated first, paged (`limit`, `before`). Returns `count`, `total`, `truncated`, `next_before`, and `tasks` |
 
@@ -159,6 +209,28 @@ every call, next to lease expiry, and `status` counts it as
 `tasks_orphaned`. Last activity is not persisted: after a restart, an owner
 counts as silent since its task last changed. See
 [ADR-0018](../5-decisions/0018-task-ownership-and-contract-republish.md).
+
+`task_pull` looks at claims so a puller is not sent straight into a
+refused `claim`. Candidates keep their order, but a free lower-priority
+task beats a held higher-priority one: held means one of its `paths`
+overlaps (as claims do) a live claim of another agent or the `paths` of
+another agent's `in_progress` task. The caller's own claims and tasks
+never hold anything, and a task with no `paths` is never held. If every
+candidate is held, the old pick is assigned and `waiting_on` lists the
+overlapping held paths and their owners. See
+[ADR-0028](../5-decisions/0028-claim-aware-task-pull.md).
+
+**Waiting for work.** With `wait_secs`, a `task_pull` that finds no free
+task (none unblocked, or every candidate held) does not answer at once.
+The daemon waits, up to `wait_secs`, for something that could free one: a
+claim released or expiring, a task created, or a task changing status.
+Each time, it checks again, and as soon as a free task exists the pull
+goes through the normal claim-aware path above; if another agent takes
+that task first, it keeps waiting. On timeout it returns what a pull
+without `wait_secs` returns: `none`, or a held task with `waiting_on`.
+Nothing is assigned while it waits, and nothing is held against the
+caller. Idle workers call it this way instead of ending their turn or
+sleeping between pulls.
 
 ## Contracts
 
@@ -185,7 +257,7 @@ overwriting.
 
 | Tool | Purpose |
 |---|---|
-| `notice_publish` | `kind` (`rename`, `signature`, `removed`, `moved`, `behavior`), `summary`, `from`, `to`, `affected_paths[]`, optional `contract_id`. Returns `notice` |
+| `notice_publish` | `kind` (`rename`, `signature`, `removed`, `moved`, `behavior`), `summary`, `from`, `to`, `affected_paths[]`, optional `contract_id`. Returns `notice`. Every other agent holding one of `affected_paths` exactly, or an ancestor or descendant of one, gets a message from `tirith` in its inbox now, and the notice counts as seen by it, so its next brief does not repeat it |
 | `notice_list` | `path` (notices whose `affected_paths` overlap it), `since` (RFC 3339), `unread` (boolean: only notices never delivered to the caller; listing them marks them seen), `all`; newest first, paged (`limit`, `before`). `unread` without `path` is scoped to the paths the caller currently holds claims on, so "what must I react to" is one call; `all: true` looks beyond them, and a caller holding nothing gets zero rows and a `message` saying so. Returns `count`, `total`, `truncated`, `next_before`, and `notices` |
 
 A sixth kind, `contract`, is emitted automatically when a contract gets a
@@ -338,7 +410,9 @@ receive it. Nothing is attached when nothing is waiting.
 `status` takes an optional `agent` and `verbose`. It returns counts
 (`claims`, `tasks_open`, `tasks_done`, `tasks_orphaned`, `contracts`,
 `notices`, `decisions`, `memory`, `agents_active`), `started_at`, `now`,
-`uptime_secs`, `seq`, `version`, `persist_error` (the last write failure,
+`uptime_secs`, `seq`, `version`, `lead` (the agent holding the
+[`.tirith/lead`](#the-reserved-lead-path) claim, or null), `persist_error`
+(the last write failure,
 or null), and `load_errors`: files or lines the daemon skipped at startup
 because they would not parse, each as `path` (relative to `.tirith/`),
 optional `line`, and `error`. A daemon never refuses to start over one
@@ -347,34 +421,87 @@ keeps the bad lines in place when it rewrites the file.
 
 With `verbose: true` it also returns `agents` (at most 50 rows; then
 `agents_truncated` is true): per agent, `paths_count`, when the latest
-lease `expires_at`, and `tasks_in_progress`. The dashboard's `/api/state`
-remains the full view for humans.
+lease `expires_at`, and `tasks_in_progress`, plus `lead_expires_at` when
+there is a lead. The dashboard's `/api/state` remains the full view for
+humans; it shows the lead and its lease in the header (`server.lead`).
 
-## Experimental: Jev assist
+## The lead decision log
 
-A daemon started with `tirith serve --jev` (with `TYPESAFE_API_KEY` or
-`AI_GATEWAY_API_KEY` in the environment or `.env`; the client is compiled
-in by default) asks the Jev evaluation model a few judgement
-calls on agents' behalf ([ADR-0024](../5-decisions/0024-jev-assist-experiment.md)).
-No tool name or input changes. Some results gain optional fields, each
-omitted when Jev is off, fails, or is unsure, in which case the result is
-exactly what it is without Jev:
+What the lead policy (`src/lead.rs`, deterministic, no network) decides is
+appended to `.tirith/runtime/lead_log.jsonl` (runtime state, gitignored,
+rows older than 7 days dropped at startup) by the persister in the
+background; no tool call waits for it
+([ADR-0027](../5-decisions/0027-swarm-lead-and-escalation.md)). It is not
+an MCP tool. Read it with `GET /api/lead` on the dashboard port
+(`?limit=N`, default 50, max 500; `?event=claim_refused` to filter), which
+returns `lead`, `count`, and `entries` newest first, or with
+`tirith lead log [--limit N] [--event E]`.
 
-| tool | field | meaning |
+Each row has `id`, `at`, `event`, `seq` (the state sequence number read),
+`candidates` (agents or paths), `rule` (the rule that decided, or null),
+`action`, `outcome` (filled in later, when observable), and, when present,
+`agent` and `details`.
+
+Events:
+
+- `claim_granted` (`details`: new, renewed and absorbed paths, reason,
+  `ttl_secs`), `claim_refused` (the conflicts and their owners),
+  `claim_waited` (a `wait_secs` claim: `waited_ms` and whether it was
+  granted), `claim_released`, and `lease_ended` (rule
+  `ttl_without_activity` or `max_lease_age`), so claims stay auditable
+  after they are gone.
+- `notice_published`: a notice pushed to the holders of its affected
+  paths (rule `holds_affected_path`; `details`: `notice`, `kind`,
+  `affected_paths`, `pushed`). No row when nobody holds such a path.
+- `escalation_raised`: one row per routed escalation (below).
+
+## Escalation routing
+
+The lead policy raises and routes escalations
+([ADR-0027](../5-decisions/0027-swarm-lead-and-escalation.md) section 3)
+with fixed rules, as part of the call that triggered them. No tool or
+parameter was added.
+
+**Triggers.**
+
+- A `task_update` to `blocked` with a note; the note is the text.
+- The third refusal of the same claim (same agent, same paths) within
+  360 s, three full claim waits, including a refused `wait_secs` claim.
+  One escalation per run of refusals; the text names the paths, the
+  claim's reason, and who holds them.
+- A `message_send` to the lead (the holder of `.tirith/lead`) by name,
+  from anyone else, **only** when its text matches a human rule. Any other
+  message to the lead is just delivered.
+
+**Routes.**
+
+| condition | route | delivery |
 |---|---|---|
-| `claim` (ok) | `skipped` | per brief section, rows judged irrelevant to `reason` and left out; skipped notices stay unread. The shown rows are ordered by relevance |
-| `claim` (conflict) | `advice` | `{action, confidence, hint}`, action one of `wait`, `work_elsewhere`, `coordinate`, `narrow_claim` |
-| `task_pull` | `picked_by: "jev"` | a task other than the oldest was chosen among the highest-priority ones, for affinity with the agent's claims and recent tasks |
-| `task_create` | `possible_duplicate` | `{id, title, confidence}` of an open task that may cover the same work |
-| `memory_write` (created) | `similar_note` | `{permalink, title, confidence}` of a note that may say the same |
-| `memory_search` with `query` | `ranked_by: "jev"`, row `relevance` | term hits and the newest notes, filtered and ordered by meaning |
-| `decision_list` with `query`, no `before` | `ranked_by: "jev"`, row `relevance` | decisions matching by meaning instead of by substring |
-| `message_send` to `*` | `skipped_recipients` | agents the broadcast does not concern were left out of its audience |
-| `status` | `jev` | calls, failures, questions, input tokens, cost, and latency, in total and per site |
+| the text (and paths) match a human rule | `human` | the human queue, and a message from `tirith` to the lead |
+| no human rule matches, and there is a lead other than the escalating agent | `lead` | a message from `tirith` to the lead |
+| no lead, or the lead is the escalating agent | `human` | the human queue (rule `no_lead`) |
 
-`notice_publish`, and a contract republish, also push a message from
-`tirith` into the inbox of every agent whose held paths and reason Jev
-judges affected, instead of waiting for that agent's next claim.
+The human rules match phrases at word boundaries: credentials,
+permissions, spending, a destructive or irreversible step, or a text
+addressed to the human. The phrase list is `lead::HUMAN_RULES`; the row's
+`rule` is `human:<category>`. Workers never see routes or rules.
+
+**The log row** has `agent` and `details`: `trigger` (`task_blocked`,
+`message_to_lead`, `claims_refused`), `text` (at most 1000 characters),
+`task`, `paths`, `route`, and `delivered` (`lead`, `human_queue`). Its
+`outcome` is filled in when the escalation is answered: a message to the
+escalating agent from anyone (`via: message`), its task leaving `blocked`
+(`via: task_in_progress`, `task_done`, `task_todo`), or the refused claim
+granted (`via: claim_granted`), with `answered_by` and `after_secs`.
+
+**The human queue** is every `escalation_raised` row delivered to
+`human_queue` with no outcome yet, ranked by how many agents it blocks
+(the escalating agent, others escalating on the same task, and owners of
+open tasks that depend on it), then by how long it has waited. Read it
+with `GET /api/human` (`lead`, `count`, `items`), `tirith lead human`, the
+dashboard's "Needs you" list (`needs_you` in `/api/state`), or the macOS
+tray, which shows the count per daemon and posts a notification when it
+grows.
 
 ## Resources — Planned
 

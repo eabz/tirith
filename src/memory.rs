@@ -2316,4 +2316,27 @@ mod tests {
         .unwrap();
         assert_eq!(book.context("root", 1).len(), 1);
     }
+
+    #[test]
+    fn title_hits_weigh_more_than_permalink_hits() {
+        let empty = || Haystacks {
+            title: String::new(),
+            permalink: String::new(),
+            tags: String::new(),
+            observations: String::new(),
+            body: String::new(),
+        };
+        let terms = vec!["lease".to_owned()];
+        let in_title = Haystacks {
+            title: "lease".to_owned(),
+            ..empty()
+        };
+        let in_permalink = Haystacks {
+            permalink: "lease".to_owned(),
+            ..empty()
+        };
+        // One title hit is worth 6, plus 10 for matching every term.
+        assert_eq!(score_with(&in_title, &terms), 16);
+        assert!(score_with(&in_title, &terms) > score_with(&in_permalink, &terms));
+    }
 }

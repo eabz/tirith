@@ -33,7 +33,7 @@ src/update.rs      `tirith update`: re-runs the release installer in place.
 src/server.rs      MCP surface (rmcp): tool inputs, outcome formatting,
                    and `start`, which wires everything into one HTTP server.
 src/dashboard.rs   `/` (embedded dashboard.html), `/logo.png`, `/api/state`,
-                   `/api/health`.
+                   `/api/health`, `/api/lead`, `/api/human`.
 src/registry.rs    Per-user registry of running daemons (every platform).
 src/tray.rs        `tirith tray`, the macOS menu bar icon (feature `tray`).
 src/client.rs      MCP client used by the CLI and integration tests.
@@ -49,6 +49,10 @@ src/decisions.rs   Decisions log.
 src/memory.rs      Memory notes and the Markdown file format they are
                    stored in. Pure: no rmcp, axum, tokio, or I/O.
 src/messages.rs    Agent-to-agent messages and their delivery marks.
+src/lead.rs        The swarm lead (ADR-0027): who holds `.tirith/lead`,
+                   the lead policy (task_pull waits, notice push,
+                   escalation triggers and routing, the human queue), and
+                   the lead decision log. Deterministic.
 src/store.rs       Persistence: JSON files under .tirith/, atomic writes
                    and appends, and the background Persister that writes
                    deltas in sequence order.
@@ -155,6 +159,12 @@ logo is served from `/logo.png`, embedded from `src/dashboard-logo.png`
 favicon.
 `/api/health` answers as long as the daemon is up; the stdio shim probes it
 to decide whether the daemon recorded in `daemon.json` is still alive.
+`/api/lead` returns the swarm lead (the holder of `.tirith/lead`) and the
+newest rows of the lead decision log; the header of the page shows the
+lead and its lease. `/api/human` returns the human queue, the escalations
+routed to the human and not yet answered; the same list is `needs_you` in
+`/api/state`, shown first on the page as "Needs you" and counted in the
+macOS tray, which posts a notification when a daemon's queue grows.
 
 ## Transport and port
 

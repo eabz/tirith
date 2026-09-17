@@ -44,7 +44,19 @@ as the installed binary. Stop that one by hand with the pid in
    `notice_list`, `contract_list`, `decision_list`, or `memory_search`
    only when `more` says there is more, or for paths you are not
    claiming. On `conflict`, do not edit; either pull a different task or
-   wait for the lease to end.
+   wait with `wait_secs` (up to 120) so the server retries the moment the
+   lease ends, instead of sleeping and retrying yourself.
+
+   **Hold shared files only while editing them.** Files many tasks touch
+   (in this repository `src/server.rs`, `src/state.rs`, `src/lead.rs`,
+   `docs/1-about/04-primitives.md`, and their like) are claimed in edit
+   windows: read and prepare the change without a claim, claim the file
+   with `wait_secs`, write it in one go, run the quickest relevant check,
+   and release it. Files only your task touches can be held for the whole
+   task. Measured on four end-to-end runs (ADR-0029): shared-file holds
+   were 4,187 s in total but only 122 s of editing, and 57% of all waiting
+   happened after the file was already free; edit windows with
+   `wait_secs` would have removed most of the 2,762 blocked worker-seconds.
 3. **Contract before interface work.** If your change creates or changes
    something another agent will call (a `State` method signature, a tool
    schema, a store format), `contract_publish` it first.
@@ -63,9 +75,56 @@ as the installed binary. Stop that one by hand with the pid in
    last hour) and arrives as `inbox` on the recipient's next call, five
    at a time; `message_list` is the history. This works for every MCP
    client, unlike a chat app's own session messaging.
-7. **Release when done.** `release` all claims. Record settled choices
+7. **Check cheaply while holding claims, fully before releasing.** While
+   editing, `scripts/check.sh --quick` runs the unit tests, then the
+   doctests, in a few seconds. Before `release`, run the full
+   `scripts/check.sh` once. A failing step prints a digest with the
+   panic or compiler messages and keeps the raw log in
+   `target/check-<step>.log`, so read the digest instead of rerunning
+   the step. Other agents compile the same tree: a compile error in a
+   file you do not hold is theirs, not yours; wait or message the
+   holder.
+8. **Release when done.** `release` all claims. Record settled choices
    with `decision_record`, and write what you learned about the paths you
    touched with `memory_write` ([02-memory.md](02-memory.md)).
+
+## The swarm lead
+
+When one session spawns other agents, that session is the swarm lead
+([ADR-0027](../5-decisions/0027-swarm-lead-and-escalation.md)), and Tirith
+knows it by one reserved claim:
+
+1. **Claim `.tirith/lead` first**, before spawning anyone, with
+   `ttl_secs: 3600` and a reason naming the swarm. `status` then reports
+   you as `lead`, and the dashboard shows it.
+2. **Workers never claim `.tirith/lead`.** Say so in the brief you give
+   every spawned agent, together with your agent name, which is where they
+   send escalations with `message_send`.
+3. **Keep it.** Any call renews the lease, but like every lease it ends
+   after four TTLs. When a response carries `lost` for `.tirith/lead`,
+   claim it again at once; until then the swarm has no lead.
+   **Read your inbox.** The daemon routes workers' escalations (a task
+   set to `blocked`, the third refusal of the same claim within 360 s) to
+   your inbox as messages from `tirith`. Escalations about credentials,
+   permissions, spending, destructive or irreversible steps, or addressed
+   to the human go to the human queue (`tirith lead human`, the
+   dashboard's "Needs you"), and you are told; so does a message to you
+   that matches one of those rules. While there is no lead, every
+   escalation goes to the human queue. Answering a worker by
+   `message_send`, the task leaving `blocked`, or the refused claim being
+   granted marks the escalation answered.
+4. **Release it last**, after the workers have finished.
+
+**Idle workers wait on the board, not on the turn.** A worker with nothing
+to do calls `task_pull` with `wait_secs` (up to 120) instead of ending its
+turn or sleeping, and calls it again while the answer is `none` and tasks
+remain open. While no free task exists, the daemon holds the call until a
+claim is released or expires, a task is created, or a task changes status,
+then pulls as usual; on timeout it returns what a plain pull would: `none`,
+or a held task with `waiting_on`, whose paths the worker then claims with
+`wait_secs`. Put this in the brief for every spawned worker, so a worker
+that finds the board momentarily empty picks up the next task the moment
+it unblocks.
 
 The report at the end of a task names the claims held, the notices
 published, and any claim that was refused (AGENTS.md section 2).

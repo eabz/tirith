@@ -37,9 +37,13 @@ A change is done only when all of these hold:
 
 Never claim a step passed without running it in this session. Run the
 chain through `scripts/check.sh`, one line per step, because full test
-output read into an agent's context costs thousands of tokens. While
-editing, run only the module's tests (`cargo test --lib claims`); run the
-full chain once, before you release your claims.
+output read into an agent's context costs thousands of tokens. A failing
+step prints a digest (panic and assertion messages, compiler errors) and
+keeps the raw log in `target/check-<step>.log`; read the digest before
+rerunning anything. While editing, run only the module's tests (`cargo
+test --lib claims`) or `scripts/check.sh --quick` (unit tests, then
+doctests, a few seconds); `--quick` is not done. Run the full chain once,
+before you release your claims.
 
 ## 3. Tooling workflow
 
@@ -71,6 +75,9 @@ register `tirith stdio`, which starts the repository's daemon at
 not optional:
 
 1. `claim` the files or directories you intend to edit before editing.
+   Hold files other tasks also touch only while editing them (prepare
+   first, claim with `wait_secs`, write, check, release); see the edit
+   window rule in `docs/6-agent-workflow/03-tirith-dogfooding.md`.
    If refused, do not edit; pick other work or coordinate with the owner.
    The `ok` reply is your brief: the unread notices, contracts, decisions,
    and memory notes for those paths, five newest of each. Read it before
@@ -84,6 +91,12 @@ not optional:
 4. `release` your claims when done. Record settled choices with
    `decision_record`, and write what you learned about the paths you
    touched with `memory_write`.
+
+**Swarm lead.** A session that spawns other agents is the lead: it claims
+the reserved path `.tirith/lead` first (`ttl_secs: 3600`, reason naming
+the swarm), re-claims it on `lost`, and releases it last. Workers never
+claim `.tirith/lead`; they escalate to its holder (`status` reports it as
+`lead`) with `message_send`. See ADR-0027.
 
 Leases end after their TTL without activity, and after four TTLs (at most
 four hours) regardless; long sessions re-claim or `renew`. If any response

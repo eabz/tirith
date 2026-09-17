@@ -7,6 +7,16 @@
 //! as its favicon. There is nothing to build or install; the page and the
 //! logo are embedded in the binary.
 //!
+//! `GET /api/lead` returns the swarm lead and the newest rows of the lead
+//! policy's decision log (ADR-0027); `?limit=N` (default 50, max 500) and
+//! `?event=task_requested` narrow it. It reads the state on each request,
+//! so it is for humans and `tirith lead log`, not for polling.
+//!
+//! `GET /api/human` returns the human queue: escalations the lead policy
+//! routed to the human and nobody has answered yet, ranked by how many
+//! agents each blocks, then by how long it has waited (ADR-0027). The same
+//! list rides `/api/state` as `needs_you`, which the page and the tray read.
+//!
 //! `/api/state` is served from a cached, pre-serialized view that a
 //! background task rebuilds whenever the persister writes something, so
 //! polling browsers never take the [`State`] lock. The `ETag` is the
@@ -16,12 +26,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use axum::Router;
-use axum::extract::State as Extract;
+use axum::extract::{Query, State as Extract};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::lead::{LOG_PAGE_DEFAULT, LeadEvent, human_queue_of};
 use crate::memory::MemoryNote;
 use crate::server::VERSION;
 use crate::state::State;
@@ -113,7 +125,8 @@ impl Shared {
     }
 }
 
-/// Routes: `/`, `/logo.png`, `/api/state`, `/api/health`.
+/// Routes: `/`, `/logo.png`, `/api/state`, `/api/health`, `/api/lead`,
+/// `/api/human`.
 ///
 /// Must be called on a Tokio runtime: it spawns the task that refreshes
 /// the cached view after each write.
@@ -131,6 +144,8 @@ pub fn router(context: DashboardContext) -> Router {
         .route("/logo.png", get(logo))
         .route("/api/state", get(api_state))
         .route("/api/health", get(health))
+        .route("/api/lead", get(api_lead))
+        .route("/api/human", get(api_human))
         .with_state(shared)
 }
 
@@ -163,6 +178,38 @@ async fn health(Extract(shared): Extract<Shared>) -> Json<Value> {
     }))
 }
 
+/// Query parameters of `/api/lead`.
+#[derive(Debug, Deserialize)]
+struct LeadQuery {
+    limit: Option<usize>,
+    event: Option<LeadEvent>,
+}
+
+/// The lead and its newest decisions, newest first. An unknown `event`
+/// is refused by the extractor with `400`.
+async fn api_lead(Extract(shared): Extract<Shared>, Query(query): Query<LeadQuery>) -> Response {
+    let state = &shared.context.state;
+    let entries = state.lead_log(query.limit.unwrap_or(LOG_PAGE_DEFAULT), query.event);
+    let body = json!({
+        "lead": state.lead(),
+        "count": entries.len(),
+        "entries": entries,
+    });
+    ([(header::CACHE_CONTROL, "no-cache")], Json(body)).into_response()
+}
+
+/// The human queue, most urgent first, with the lead.
+async fn api_human(Extract(shared): Extract<Shared>) -> Response {
+    let state = &shared.context.state;
+    let items = human_queue_of(state);
+    let body = json!({
+        "lead": state.lead(),
+        "count": items.len(),
+        "items": items,
+    });
+    ([(header::CACHE_CONTROL, "no-cache")], Json(body)).into_response()
+}
+
 /// Serializes everything the page shows. Takes the state lock twice
 /// (status, then snapshot) and is the only place the dashboard does so.
 fn build_view(context: &DashboardContext, generation: u64) -> View {
@@ -180,6 +227,7 @@ fn build_view(context: &DashboardContext, generation: u64) -> View {
             "seq": report.seq,
             "persist_error": context.persister.last_error(),
             "load_errors": report.load_errors,
+            "lead": report.lead,
         },
         "counts": {
             "claims": report.claims,
@@ -197,6 +245,7 @@ fn build_view(context: &DashboardContext, generation: u64) -> View {
         "notices": &snapshot.notices[tail(snapshot.notices.len())..],
         "decisions": &snapshot.decisions[tail(snapshot.decisions.len())..],
         "memory": snapshot.memory.iter().map(memory_row).collect::<Vec<_>>(),
+        "needs_you": human_queue_of(&context.state),
     });
     View {
         etag: format!("\"{}.{generation}\"", report.seq),
@@ -273,6 +322,68 @@ mod tests {
                 .unwrap()
                 .to_vec()
         })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_lead_log_is_served_newest_first_with_the_lead() {
+        use crate::lead::{LEAD_PATH, NewEntry};
+        let (shared, _dir) = shared();
+        let state = &shared.context.state;
+        state
+            .claim(
+                AgentId::new("boss").unwrap(),
+                vec![RepoPath::new(LEAD_PATH).unwrap()],
+                "swarm".into(),
+                None,
+            )
+            .unwrap();
+        state.lead_log_append(NewEntry::new(LeadEvent::NoticePublished, "first"));
+        state.lead_log_append(NewEntry::new(LeadEvent::EscalationRaised, "second"));
+        let query = |limit, event| LeadQuery { limit, event };
+        let all = api_lead(Extract(shared.clone()), Query(query(None, None))).await;
+        let all = tokio::task::block_in_place(|| body(all));
+        assert_eq!(all["lead"]["agent"], "boss");
+        assert_eq!(all["count"], 3, "the lead claim is logged too: {all}");
+        assert_eq!(all["entries"][0]["action"], "second");
+        let one = api_lead(
+            Extract(shared.clone()),
+            Query(query(Some(5), Some(LeadEvent::NoticePublished))),
+        )
+        .await;
+        let one = tokio::task::block_in_place(|| body(one));
+        assert_eq!(one["count"], 1);
+        assert_eq!(one["entries"][0]["event"], "notice_published");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_human_queue_lists_open_escalations_routed_to_the_human() {
+        use crate::lead::NewEntry;
+        let (shared, _dir) = shared();
+        let state = &shared.context.state;
+        let raise = |agent: &str, delivered: Value| {
+            state.lead_log_append(
+                NewEntry::new(LeadEvent::EscalationRaised, "routed")
+                    .with_agent(AgentId::new(agent).unwrap())
+                    .with_details(json!({ "trigger": "task_blocked", "text": "need a key", "delivered": delivered })),
+            )
+        };
+        raise("worker", json!(["human_queue", "lead"]));
+        raise("other", json!(["lead"]));
+        let answered = raise("third", json!(["human_queue"]));
+        assert!(state.lead_log_outcome(answered, json!({ "answered_by": "boss" })));
+        let out = api_human(Extract(shared.clone())).await;
+        let out = tokio::task::block_in_place(|| body(out));
+        assert_eq!(out["count"], 1, "{out}");
+        assert_eq!(out["items"][0]["agent"], "worker");
+        assert_eq!(out["items"][0]["text"], "need a key");
+        assert_eq!(out["items"][0]["blocked_agents"], json!(["worker"]));
+        shared.refresh();
+        let view: Value = serde_json::from_slice(&shared.current().bytes).unwrap();
+        assert_eq!(
+            view["needs_you"].as_array().map(Vec::len),
+            Some(1),
+            "{view}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

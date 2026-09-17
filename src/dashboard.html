@@ -191,6 +191,7 @@
     <span class="chip" title="daemon version">v<b id="version"></b></span>
     <span class="chip" title="uptime">up <b id="uptime"></b></span>
     <span class="chip" title="state sequence number">seq <b id="seq"></b></span>
+    <span class="chip" title="swarm lead: the holder of the .tirith/lead claim (ADR-0027)">lead <b id="lead"></b></span>
   </div>
   <div class="controls">
     <span class="live" id="live"><i></i><span id="live-text">connecting</span></span>
@@ -205,6 +206,10 @@
     <input id="q" type="search" placeholder="Filter rows by agent, path, title… (press / to focus)" autocomplete="off" spellcheck="false">
     <nav id="nav"></nav>
   </div>
+  <section class="card" id="s-needs" data-key="needs">
+    <div class="card-h"><h2>Needs you</h2><span class="n"></span><span class="sp"></span><span class="caret">▼</span></div>
+    <div class="card-b"></div>
+  </section>
   <section class="card" id="s-agents" data-key="agents">
     <div class="card-h"><h2>Agents</h2><span class="n"></span><span class="sp"></span><span class="caret">▼</span></div>
     <div class="card-b"></div>
@@ -247,10 +252,11 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('tirith.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('tirith.' + k, JSON.stringify(v)); } catch {} },
 };
-const SECTIONS = ['agents', 'claims', 'tasks', 'contracts', 'notices', 'decisions', 'memory'];
-const LABELS = { agents: 'Agents', claims: 'Claims', tasks: 'Tasks', contracts: 'Contracts', notices: 'Notices', decisions: 'Decisions', memory: 'Memory' };
+const SECTIONS = ['needs', 'agents', 'claims', 'tasks', 'contracts', 'notices', 'decisions', 'memory'];
+const LABELS = { needs: 'Needs you', agents: 'Agents', claims: 'Claims', tasks: 'Tasks', contracts: 'Contracts', notices: 'Notices', decisions: 'Decisions', memory: 'Memory' };
 const MEMORY_KINDS = ['fact', 'lesson', 'gotcha', 'handoff', 'research', 'note'];
 const EMPTY = {
+  needs: 'Nothing needs you. Escalations the lead policy routes to the human (credentials, permissions, spending, irreversible steps, or what only you can decide) show up here, most agents blocked first.',
   agents: 'No agents have called in yet. Any tool call registers the calling agent here.',
   claims: 'No active claims. Agents call <code>claim</code> before editing files.',
   tasks: 'The board is empty. Create work with <code>task_create</code>.',
@@ -378,7 +384,8 @@ function fill(key, cols, rows, total = rows.length) {
   const n = card.querySelector('.n'); n.textContent = total; n.dataset.total = total;
   card.querySelector('.card-b').innerHTML = rows.length ? table(cols, rows) : `<div class="empty">${EMPTY[key]}</div>`;
 }
-function overlaps(a, b) { return a === b || a.startsWith(b + '/') || b.startsWith(a + '/'); }
+// Anchored paths (`src/a.rs#Symbol`) count as their file here.
+function overlaps(a, b) { a = a.split('#')[0]; b = b.split('#')[0]; return a === b || a.startsWith(b + '/') || b.startsWith(a + '/'); }
 function notesFor(notes, list) {
   list = list || [];
   return (notes || []).filter(n => (n.paths || []).some(p => list.some(q => overlaps(p, q))))
@@ -396,6 +403,7 @@ function render(d) {
   now = serverNow || Date.parse(d.server.now) || Date.now();
   $('mcp').textContent = d.server.mcp_url; $('repo').textContent = d.server.repo_root;
   $('uptime').textContent = dur(Math.max(0, Math.floor((now - Date.parse(d.server.started_at)) / 1000))); $('version').textContent = d.server.version; $('seq').textContent = d.server.seq;
+  $('lead').innerHTML = d.server.lead ? `${who(d.server.lead.agent)} ${until(d.server.lead.expires_at)}` : '<span class="dim">none</span>';
   $('f-version').textContent = `v${d.server.version}`; $('f-started').textContent = fmtAbs(d.server.started_at);
   const problems = [];
   if (d.server.persist_error) problems.push(`Persistence error: ${d.server.persist_error}. State stays in memory but is not being written to .tirith/.`);
@@ -422,10 +430,15 @@ function render(d) {
     const [text, cls] = Array.isArray(hint) ? hint : [hint, ''];
     return `<a class="tile" href="#s-${key}" style="--c:${color}"><div class="n">${n}</div><div class="l">${l}</div><div class="h ${cls}">${esc(text)}</div></a>`;
   }).join('');
+  const needs = d.needs_you || [];
   $('nav').innerHTML = SECTIONS.map(k => {
-    const n = k === 'tasks' ? c.tasks_open : k === 'agents' ? d.agents.length : c[k];
+    const n = k === 'tasks' ? c.tasks_open : k === 'agents' ? d.agents.length : k === 'needs' ? needs.length : c[k];
     return `<a class="btn" href="#s-${k}">${LABELS[k]} <span class="dim">${n}</span></a>`;
   }).join('');
+
+  fill('needs', ['waiting', 'blocks', 'from', 'task', 'what', 'why here'],
+    needs.map(x => [ago(x.at), whoList(x.blocked_agents), who(x.agent), x.task ? short(x.task) : '<span class="dim">—</span>',
+      clamp(x.text, 'nh:' + x.id), `<span class="tag kind">${esc(x.rule || 'judged')}</span> <span class="dim">${esc(x.trigger || '')}</span>`]));
 
   fill('agents', ['agent', 'holds', 'lease ends', 'tasks in progress'],
     d.agents.map(a => [who(a.agent), paths(a.paths), a.expires_at ? until(a.expires_at) : '<span class="dim">no claims</span>', `<span class="num">${a.tasks_in_progress}</span>`]));
