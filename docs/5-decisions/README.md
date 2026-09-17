@@ -33,6 +33,7 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0021](0021-notice-acks-log.md) | Notices are seen when delivered; the seen log is runtime-only | Accepted |
 | [0022](0022-decisions-as-markdown.md) | Decisions are one Markdown file each, in the memory-note format | Accepted |
 | [0023](0023-stable-toolchain-for-release-containers.md) | A `rust-toolchain.toml` pins the stable channel so release containers meet `rust-version` | Accepted |
+| [0024](0024-jev-assist-experiment.md) | Jev makes coordination judgement calls, behind a flag and with deterministic fallbacks | Experimental |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

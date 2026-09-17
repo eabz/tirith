@@ -105,3 +105,7 @@ objc2-foundation = { version = "0.3", optional = true, default-features = false,
 default = ["tray"]
 # `tirith tray`: the macOS menu bar icon. Compiles to nothing off macOS.
 tray = ["dep:tray-icon", "dep:muda", "dep:objc2-app-kit", "dep:objc2-foundation"]
+# Experimental (ADR-0024): `tirith serve --jev` asks the Jev evaluation model
+# on the Vercel AI Gateway. Needs HTTPS, so it turns on reqwest's rustls;
+# default builds stay localhost-only.
+jev = ["reqwest/rustls"]

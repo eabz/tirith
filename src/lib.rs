@@ -17,6 +17,10 @@
 //! - [`messages`]: agent-to-agent notes, delivered on the recipient's
 //!   next call (runtime only).
 //!
+//! Experimental: [`jev`] reaches the Jev evaluation model and [`assist`]
+//! asks it the judgement calls a coordination server can make for its
+//! agents, falling back to the rules above whenever it cannot (ADR-0024).
+//!
 //! [`stdio`] is the shim MCP clients spawn per session; it starts the
 //! daemon when needed and proxies to it. [`registry`] lists every daemon
 //! on the machine for the menu bar tray. [`update`] replaces the running
@@ -25,12 +29,14 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod assist;
 pub mod claims;
 pub mod client;
 pub mod clock;
 pub mod contracts;
 pub mod dashboard;
 pub mod decisions;
+pub mod jev;
 pub mod memory;
 pub mod messages;
 pub mod notices;

@@ -314,6 +314,9 @@ pub const DEFAULT_TASK_ORPHAN_SECS: u64 = 1800;
 /// Rows shown per section of a claim brief (ADR-0014).
 pub const BRIEF_LIMIT: usize = 5;
 
+/// The sender name of messages Tirith writes itself (ADR-0024).
+pub const SYSTEM_AGENT: &str = "tirith";
+
 /// What a successful claim carries back about the claimed paths: one
 /// capped section per primitive, newest first. `more` counts the matching
 /// rows that were left out, so the caller knows whether to page with the
@@ -935,7 +938,16 @@ impl State {
     /// instead of repeating these, and an unread listing skips them. The
     /// memory scan runs outside the lock, like every other memory read.
     pub fn brief(&self, agent: &AgentId, paths: &[RepoPath]) -> Brief {
-        let (mut brief, book) = self.access(None, |inner, now| {
+        let brief = self.brief_candidates(agent, paths, BRIEF_LIMIT);
+        self.mark_briefed(agent, brief.notices.iter().map(|n| n.id));
+        brief
+    }
+
+    /// The rows a brief on `paths` would draw from: the newest `limit` per
+    /// section, with `more` counting the rest. Marks nothing seen; pair it
+    /// with [`State::mark_briefed`] for the notices actually shown.
+    pub fn brief_candidates(&self, agent: &AgentId, paths: &[RepoPath], limit: usize) -> Brief {
+        let (mut brief, book) = self.access(None, |inner, _| {
             let notices = newest(
                 paths,
                 |path| {
@@ -962,19 +974,18 @@ impl State {
                 |d| d.recorded_at,
             );
             let more = BriefMore {
-                notices: notices.len().saturating_sub(BRIEF_LIMIT),
-                contracts: contracts.len().saturating_sub(BRIEF_LIMIT),
-                decisions: decisions.len().saturating_sub(BRIEF_LIMIT),
+                notices: notices.len().saturating_sub(limit),
+                contracts: contracts.len().saturating_sub(limit),
+                decisions: decisions.len().saturating_sub(limit),
                 memory: 0,
             };
             let brief = Brief {
-                notices: capped(notices),
-                contracts: capped(contracts),
-                decisions: capped(decisions),
+                notices: capped(notices, limit),
+                contracts: capped(contracts, limit),
+                decisions: capped(decisions, limit),
                 memory: Vec::new(),
                 more,
             };
-            mark_delivered(inner, Some(agent), brief.notices.iter().map(|n| n.id), now);
             (brief, Arc::clone(&inner.memory))
         });
         let memory = newest(
@@ -983,9 +994,148 @@ impl State {
             |m| m.id,
             |m| m.updated_at,
         );
-        brief.more.memory = memory.len().saturating_sub(BRIEF_LIMIT);
-        brief.memory = capped(memory);
+        brief.more.memory = memory.len().saturating_sub(limit);
+        brief.memory = capped(memory, limit);
         brief
+    }
+
+    /// Records that the notices `ids` reached `agent` in a brief.
+    pub fn mark_briefed(&self, agent: &AgentId, ids: impl Iterator<Item = NoticeId>) {
+        self.access(None, |inner, now| {
+            mark_delivered(inner, Some(agent), ids, now);
+        });
+    }
+
+    /// Unblocked `todo` tasks in pull order, without taking any.
+    pub fn task_candidates(&self, agent: &AgentId) -> Vec<Task> {
+        self.access(Some(agent), |inner, _| {
+            inner.tasks.candidates().into_iter().cloned().collect()
+        })
+    }
+
+    /// Pulls task `id` for `agent` if it is still unblocked and `todo`.
+    pub fn task_pull_id(&self, agent: AgentId, id: TaskId) -> Option<Task> {
+        self.access(Some(&agent.clone()), |inner, now| {
+            let task = inner.tasks.pull_id(agent, id, now).cloned();
+            if task.is_some() {
+                inner.tasks_dirty = true;
+            }
+            task
+        })
+    }
+
+    /// What `agent` has in context: the claims it holds and the five tasks
+    /// it most recently worked on or finished.
+    pub fn agent_context(&self, agent: &AgentId) -> (Vec<Claim>, Vec<Task>) {
+        self.access(None, |inner, _| {
+            let held = inner
+                .claims
+                .claims()
+                .iter()
+                .filter(|c| c.owner == *agent)
+                .cloned()
+                .collect();
+            let mut recent: Vec<&Task> = inner
+                .tasks
+                .tasks()
+                .iter()
+                .filter(|t| t.state.owner() == Some(agent))
+                .collect();
+            recent.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
+            (held, capped(recent, BRIEF_LIMIT))
+        })
+    }
+
+    /// Every agent other than `except` holding claims, with its claims.
+    pub fn claim_holders(&self, except: &AgentId) -> Vec<(AgentId, Vec<Claim>)> {
+        self.access(None, |inner, _| {
+            let mut holders: BTreeMap<AgentId, Vec<Claim>> = BTreeMap::new();
+            for claim in inner.claims.claims() {
+                if claim.owner != *except {
+                    holders
+                        .entry(claim.owner.clone())
+                        .or_default()
+                        .push(claim.clone());
+                }
+            }
+            holders.into_iter().collect()
+        })
+    }
+
+    /// The audience a broadcast from `agent` would have now (every agent
+    /// seen within the broadcast window but the sender), with their claims.
+    pub fn broadcast_candidates(&self, agent: &AgentId) -> Vec<(AgentId, Vec<Claim>)> {
+        self.access(Some(agent), |inner, now| {
+            inner
+                .last_seen
+                .iter()
+                .filter(|(a, seen)| *a != agent && now - **seen <= BROADCAST_WINDOW)
+                .map(|(a, _)| {
+                    let claims = inner
+                        .claims
+                        .claims()
+                        .iter()
+                        .filter(|c| c.owner == *a)
+                        .cloned()
+                        .collect();
+                    (a.clone(), claims)
+                })
+                .collect()
+        })
+    }
+
+    /// Sends a message whose broadcast audience is exactly `audience`
+    /// instead of every recent agent.
+    pub fn message_send_to(
+        &self,
+        agent: AgentId,
+        new: NewMessage,
+        audience: Vec<AgentId>,
+    ) -> Result<Message, MessageError> {
+        self.access(Some(&agent.clone()), |inner, now| {
+            inner.messages.send(agent, new, audience, now).cloned()
+        })
+    }
+
+    /// A message from Tirith itself ([`SYSTEM_AGENT`]) to `to`. Unlike
+    /// [`State::message_send`] it does not count as activity by anyone, so
+    /// the system never shows up as an agent or a broadcast recipient.
+    pub fn notify(&self, to: &AgentId, text: String) -> Result<Message, MessageError> {
+        let from = AgentId::new(SYSTEM_AGENT)
+            .map_err(|_| MessageError::BadRecipient(SYSTEM_AGENT.to_owned()))?;
+        self.access(None, |inner, now| {
+            inner
+                .messages
+                .send(from, NewMessage::new(to.as_str(), text), Vec::new(), now)
+                .cloned()
+        })
+    }
+
+    /// Notes that could say the same as `note`: the best term matches for
+    /// its title and the newest notes on its paths, never `note` itself.
+    pub fn memory_neighbors(&self, note: &MemoryNote, limit: usize) -> Vec<MemoryNote> {
+        let book = self.memory_book(None);
+        let by_title = MemorySearch {
+            query: Some(note.title.clone()),
+            limit: Some(limit),
+            ..MemorySearch::default()
+        };
+        let mut seen = BTreeSet::from([note.id]);
+        let mut found = Vec::new();
+        let title_hits = book.search(&by_title).into_iter().map(|hit| hit.note);
+        let path_hits = note
+            .paths
+            .iter()
+            .flat_map(|p| book.for_path(p, Some(limit)));
+        for candidate in title_hits.chain(path_hits) {
+            if found.len() == limit {
+                break;
+            }
+            if seen.insert(candidate.id) {
+                found.push(candidate.clone());
+            }
+        }
+        found
     }
 
     /// Leases `agent` lost since it was last told. Each is returned once;
@@ -1251,9 +1401,8 @@ where
     rows
 }
 
-/// The first [`BRIEF_LIMIT`] rows, owned.
-fn capped<T: Clone>(rows: Vec<&T>) -> Vec<T> {
-    rows.into_iter().take(BRIEF_LIMIT).cloned().collect()
+fn capped<T: Clone>(rows: Vec<&T>, limit: usize) -> Vec<T> {
+    rows.into_iter().take(limit).cloned().collect()
 }
 
 #[cfg(test)]

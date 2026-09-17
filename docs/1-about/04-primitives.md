@@ -350,6 +350,32 @@ With `verbose: true` it also returns `agents` (at most 50 rows; then
 lease `expires_at`, and `tasks_in_progress`. The dashboard's `/api/state`
 remains the full view for humans.
 
+## Experimental: Jev assist
+
+A daemon started with `tirith serve --jev` (a build with the `jev`
+feature, and `TYPESAFE_API_KEY` or `AI_GATEWAY_API_KEY` in the
+environment or `.env`) asks the Jev evaluation model a few judgement
+calls on agents' behalf ([ADR-0024](../5-decisions/0024-jev-assist-experiment.md)).
+No tool name or input changes. Some results gain optional fields, each
+omitted when Jev is off, fails, or is unsure, in which case the result is
+exactly what it is without Jev:
+
+| tool | field | meaning |
+|---|---|---|
+| `claim` (ok) | `skipped` | per brief section, rows judged irrelevant to `reason` and left out; skipped notices stay unread. The shown rows are ordered by relevance |
+| `claim` (conflict) | `advice` | `{action, confidence, hint}`, action one of `wait`, `work_elsewhere`, `coordinate`, `narrow_claim` |
+| `task_pull` | `picked_by: "jev"` | a task other than the oldest was chosen among the highest-priority ones, for affinity with the agent's claims and recent tasks |
+| `task_create` | `possible_duplicate` | `{id, title, confidence}` of an open task that may cover the same work |
+| `memory_write` (created) | `similar_note` | `{permalink, title, confidence}` of a note that may say the same |
+| `memory_search` with `query` | `ranked_by: "jev"`, row `relevance` | term hits and the newest notes, filtered and ordered by meaning |
+| `decision_list` with `query`, no `before` | `ranked_by: "jev"`, row `relevance` | decisions matching by meaning instead of by substring |
+| `message_send` to `*` | `skipped_recipients` | agents the broadcast does not concern were left out of its audience |
+| `status` | `jev` | calls, failures, questions, input tokens, cost, and latency, in total and per site |
+
+`notice_publish`, and a contract republish, also push a message from
+`tirith` into the inbox of every agent whose held paths and reason Jev
+judges affected, instead of waiting for that agent's next claim.
+
 ## Resources — Planned
 
 Read-only MCP resources mirroring the list tools, for clients that prefer

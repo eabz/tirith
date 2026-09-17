@@ -91,6 +91,12 @@ enum Command {
         /// Do not start the menu bar tray (macOS) alongside this daemon.
         #[arg(long)]
         no_tray: bool,
+        /// Experimental: let the Jev evaluation model make coordination
+        /// judgement calls (ADR-0024). Needs `TYPESAFE_API_KEY` (preferred)
+        /// or `AI_GATEWAY_API_KEY` in the environment or in the repository's
+        /// .env, and the `jev` feature.
+        #[arg(long, env = "TIRITH_JEV")]
+        jev: bool,
     },
     /// Serve MCP over stdin/stdout for clients that spawn servers themselves,
     /// starting the repository's daemon if none is running.
@@ -443,7 +449,8 @@ pub(crate) async fn run() -> Result<ExitCode> {
             bind,
             task_orphan_secs,
             no_tray,
-        } => return serve(bind, task_orphan_secs, no_tray, cli.root).await,
+            jev,
+        } => return serve(bind, task_orphan_secs, no_tray, jev, cli.root).await,
         Command::Stdio { bind } => return stdio_shim(bind, cli.root).await,
         Command::Update { to, check } => return self_update(to, check, &cli.root).await,
         #[cfg(all(feature = "tray", target_os = "macos"))]
@@ -678,10 +685,37 @@ fn read_stdin() -> Result<String> {
     Ok(body)
 }
 
+/// Connects the daemon to Jev (ADR-0024).
+#[cfg(feature = "jev")]
+async fn enable_jev(handle: &server::ServerHandle, root: &Path) -> Result<()> {
+    let dir = root.to_path_buf();
+    let config = tokio::task::spawn_blocking(move || tirith::jev::JevConfig::from_env(&dir))
+        .await?
+        .with_context(|| {
+            format!(
+                "--jev needs {} or {} in the environment or in .env",
+                tirith::jev::TYPESAFE_KEY_VAR,
+                tirith::jev::GATEWAY_KEY_VAR
+            )
+        })?;
+    let client = tirith::jev::JevClient::new(config.clone())?;
+    client.warm_up().await;
+    handle.enable_assist(std::sync::Arc::new(client));
+    eprintln!(
+        "jev: on ({} {} at {}, timeout {:?})",
+        config.provider(),
+        config.model(),
+        config.endpoint(),
+        config.timeout()
+    );
+    Ok(())
+}
+
 async fn serve(
     bind: SocketAddr,
     task_orphan_secs: u64,
     no_tray: bool,
+    jev: bool,
     root: PathBuf,
 ) -> Result<ExitCode> {
     tracing_subscriber::fmt()
@@ -711,6 +745,14 @@ async fn serve(
     })
     .await?;
     handle.set_task_orphan_secs(task_orphan_secs);
+    if jev {
+        #[cfg(feature = "jev")]
+        enable_jev(&handle, &root).await?;
+        #[cfg(not(feature = "jev"))]
+        anyhow::bail!(
+            "--jev needs a build with the `jev` feature: cargo install --path . --features jev"
+        );
+    }
     #[cfg(all(feature = "tray", target_os = "macos"))]
     if !no_tray && let Err(error) = tirith::tray::launch_if_absent() {
         eprintln!("warning: could not start the menu bar tray: {error}");

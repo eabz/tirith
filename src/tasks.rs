@@ -339,19 +339,37 @@ impl TaskBoard {
     /// Assigns the highest-priority unblocked `todo` task to `agent` and
     /// marks it in progress. Ties go to the oldest task.
     pub fn pull(&mut self, agent: AgentId, now: DateTime<Utc>) -> Option<&Task> {
-        let candidate = self
+        let id = self.candidates().first()?.id;
+        self.pull_id(agent, id, now)
+    }
+
+    /// Unblocked `todo` tasks in pull order: highest priority first, ties
+    /// to the oldest.
+    pub fn candidates(&self) -> Vec<&Task> {
+        let mut found: Vec<(usize, &Task)> = self
             .tasks
             .iter()
             .enumerate()
             .filter(|(_, t)| t.state == TaskState::Todo && self.is_unblocked(t))
-            .max_by(|(ia, a), (ib, b)| {
-                a.priority
-                    .cmp(&b.priority)
-                    .then_with(|| b.created_at.cmp(&a.created_at))
-                    .then_with(|| ib.cmp(ia))
-            })
-            .map(|(i, _)| i)?;
-        let task = &mut self.tasks[candidate];
+            .collect();
+        found.sort_by(|(ia, a), (ib, b)| {
+            b.priority
+                .cmp(&a.priority)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+                .then_with(|| ia.cmp(ib))
+        });
+        found.into_iter().map(|(_, t)| t).collect()
+    }
+
+    /// Assigns task `id` to `agent` if it is still an unblocked `todo`
+    /// task; `None` otherwise, so a stale choice never takes a task
+    /// someone else already pulled.
+    pub fn pull_id(&mut self, agent: AgentId, id: TaskId, now: DateTime<Utc>) -> Option<&Task> {
+        let index = self.tasks.iter().position(|t| t.id == id)?;
+        if self.tasks[index].state != TaskState::Todo || !self.is_unblocked(&self.tasks[index]) {
+            return None;
+        }
+        let task = &mut self.tasks[index];
         task.state = TaskState::InProgress { owner: agent };
         task.updated_at = now;
         Some(task)

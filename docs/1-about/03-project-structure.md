@@ -45,13 +45,16 @@ tirith/
 │   ├── decisions.rs     Decisions log domain.
 │   ├── memory.rs        Memory notes domain, including the Markdown
 │   │                    file format notes are stored in.
-│   └── messages.rs      Agent-to-agent messages (runtime only).
+│   ├── messages.rs      Agent-to-agent messages (runtime only).
+│   ├── jev.rs           Experimental: Jev evaluation client (ADR-0024).
+│   └── assist.rs        Experimental: the judgement calls Jev makes.
 ├── tests/
 │   ├── http_roundtrip.rs  Every tool over localhost HTTP.
 │   ├── persistence.rs     Restart, incremental writes, corrupt files.
 │   ├── memory_layer.rs    Notes on disk, including this repo's own.
 │   ├── stdio_shim.rs      The shim over its pipes.
-│   └── budgets.rs         Token budgets: tools/list, rows, text lines.
+│   ├── budgets.rs         Token budgets: tools/list, rows, text lines.
+│   └── jev_assist.rs      Experimental Jev sites with a scripted model.
 ├── examples/
 │   ├── demo.sh          Two agents, overlapping claims, second refused.
 │   └── swarm_bench.rs   200 simulated agents against one daemon.

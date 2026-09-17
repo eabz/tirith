@@ -16,3 +16,8 @@
 # Serena local overrides and caches
 /.serena/cache/
 /.serena/project.local.yml
+
+# Local secrets (AI Gateway key for the Jev prototype). Never commit.
+.env
+.env.*
+!.env.example
