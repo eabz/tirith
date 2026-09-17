@@ -95,7 +95,7 @@ enum Command {
         /// judgement calls (ADR-0024). Needs `TYPESAFE_API_KEY` (preferred)
         /// or `AI_GATEWAY_API_KEY` in the environment or in the repository's
         /// .env, and the `jev` feature.
-        #[arg(long, env = "TIRITH_JEV")]
+        #[arg(long, env = "TIRITH_JEV", value_parser = clap::builder::BoolishValueParser::new())]
         jev: bool,
     },
     /// Serve MCP over stdin/stdout for clients that spawn servers themselves,
@@ -686,8 +686,11 @@ fn read_stdin() -> Result<String> {
 }
 
 /// Connects the daemon to Jev (ADR-0024).
+/// Reads the Jev configuration (ADR-0024) and builds the client, before
+/// the daemon starts, so a missing key never leaves a half-started daemon
+/// behind.
 #[cfg(feature = "jev")]
-async fn enable_jev(handle: &server::ServerHandle, root: &Path) -> Result<()> {
+async fn jev_client(root: &Path) -> Result<(tirith::jev::JevClient, tirith::jev::JevConfig)> {
     let dir = root.to_path_buf();
     let config = tokio::task::spawn_blocking(move || tirith::jev::JevConfig::from_env(&dir))
         .await?
@@ -699,16 +702,7 @@ async fn enable_jev(handle: &server::ServerHandle, root: &Path) -> Result<()> {
             )
         })?;
     let client = tirith::jev::JevClient::new(config.clone())?;
-    client.warm_up().await;
-    handle.enable_assist(std::sync::Arc::new(client));
-    eprintln!(
-        "jev: on ({} {} at {}, timeout {:?})",
-        config.provider(),
-        config.model(),
-        config.endpoint(),
-        config.timeout()
-    );
-    Ok(())
+    Ok((client, config))
 }
 
 async fn serve(
@@ -737,6 +731,18 @@ async fn serve(
             None
         }
     };
+    #[cfg(feature = "jev")]
+    let jev = if jev {
+        Some(jev_client(&root).await?)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "jev"))]
+    if jev {
+        anyhow::bail!(
+            "--jev needs a build with the `jev` feature: cargo install --path . --features jev"
+        );
+    }
     let handle = server::start(ServeOptions {
         bind,
         repo_root: root.clone(),
@@ -745,12 +751,16 @@ async fn serve(
     })
     .await?;
     handle.set_task_orphan_secs(task_orphan_secs);
-    if jev {
-        #[cfg(feature = "jev")]
-        enable_jev(&handle, &root).await?;
-        #[cfg(not(feature = "jev"))]
-        anyhow::bail!(
-            "--jev needs a build with the `jev` feature: cargo install --path . --features jev"
+    #[cfg(feature = "jev")]
+    if let Some((client, config)) = jev {
+        client.warm_up().await;
+        handle.enable_assist(std::sync::Arc::new(client));
+        eprintln!(
+            "jev: on ({} {} at {}, timeout {:?})",
+            config.provider(),
+            config.model(),
+            config.endpoint(),
+            config.timeout()
         );
     }
     #[cfg(all(feature = "tray", target_os = "macos"))]

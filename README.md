@@ -156,6 +156,85 @@ tirith call <tool> '<json>'                # call any tool directly
 `--agent` sets your name, `--json` prints the raw result, and non-`ok`
 outcomes exit with status 1.
 
+## Experimental: Jev assist
+
+Tirith can ask [Jev](https://docs.typesafe.ai/introduction), `TypeSafe`
+AI's evaluation model, to make small judgement calls for your agents. Jev
+doesn't write text: it answers yes/no, pick-one, and rating questions with
+probabilities, in about 150 ms for a fraction of a cent. With it on:
+
+- a claim's brief leaves out rows the task doesn't need;
+- a refused claim comes back with advice;
+- `task_pull` picks, among equal priorities, the task closest to what the
+  agent already holds;
+- duplicate tasks and notes are flagged;
+- a notice is pushed immediately to the agents whose work it breaks;
+- a `*` broadcast skips agents it doesn't concern;
+- memory and decision searches match by meaning.
+
+Claims, leases, and task ownership stay exact. Whenever Jev fails, times
+out, or isn't confident, the result is exactly what Tirith returns without
+it. Design and trade-offs:
+[ADR-0024](docs/5-decisions/0024-jev-assist-experiment.md). Every field it
+adds: [04-primitives.md](docs/1-about/04-primitives.md#experimental-jev-assist).
+
+**1. Build with the `jev` feature.** Release binaries don't include it,
+because it is the only part of Tirith that leaves localhost.
+
+```bash
+cargo install --path . --features jev
+```
+
+**2. Add a key** to `.env` in the repository root, or export it. Make sure
+`.env` is gitignored in that repository.
+
+```bash
+TYPESAFE_API_KEY=...      # TypeSafe directly (preferred: one hop, ~150 ms)
+AI_GATEWAY_API_KEY=...    # or through the Vercel AI Gateway (~450 ms)
+```
+
+With both set, `TypeSafe` is used; `TIRITH_JEV_PROVIDER=gateway` forces
+the gateway. `TIRITH_JEV_MODEL` and `TIRITH_JEV_TIMEOUT_MS` (default 5000)
+are optional; [.env.example](.env.example) lists them all. A Vercel key on
+the free tier is limited to about five calls a minute, so add credits
+before testing through the gateway.
+
+**3. Start the daemon with Jev on.** By hand:
+
+```bash
+tirith serve --jev
+```
+
+The startup output shows `jev: on (typesafe jev-latest at ...)`; a missing
+key or a build without the feature stops with an error instead. To have
+the stdio shim start it that way, set `TIRITH_JEV=1` in the MCP server's
+environment:
+
+```bash
+claude mcp add tirith -e TIRITH_JEV=1 -- tirith stdio
+```
+
+The shim only starts a daemon when none is running, so stop an existing
+one first (its pid is in `.tirith/runtime/daemon.json`).
+
+**4. Check it is working.**
+
+```bash
+tirith --json status    # the "jev" object: calls, failures, tokens, cost, latency per site
+```
+
+Each call is also logged with its site, latency, question count, and
+tokens: in the terminal for `tirith serve`, in `.tirith/runtime/serve.log`
+when the shim started the daemon. Failures are logged with the reason
+(`429`, timeout, ...) and fall back. Assisted results are visible in the
+tools' output: `skipped` on a claim, `advice` on a conflict, `picked_by:
+"jev"` on a pull, `possible_duplicate`, `similar_note`, `ranked_by: "jev"`,
+and `skipped_recipients`.
+
+To check the wiring without a key or a network,
+`cargo test --all-features --test jev_assist` drives them through a real
+daemon with a scripted Jev.
+
 ## Documentation
 
 | Section | Contents |

@@ -1,7 +1,8 @@
 # ADR-0024: Jev makes coordination judgement calls, behind a flag and with deterministic fallbacks
 
-**Status:** Experimental, 2026-09-16. Branch `experiment/jev`; not in a
-release. Accept, revise, or drop after the A/B runs described below.
+**Status:** Experimental, 2026-09-16. Behind the `jev` cargo feature and
+`tirith serve --jev`; not in release binaries. Accept, revise, or drop
+after the A/B runs described below.
 
 ## Context
 
