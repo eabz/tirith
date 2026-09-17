@@ -52,6 +52,15 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # HTTP client the shim, the CLI client, and the tray use to reach the
 # daemon; also rmcp's client transport. Tests use it for raw JSON-RPC.
 reqwest = { version = "0.13.2", default-features = false }
+# The Jev client (feature `jev`, ADR-0024) has its own HTTPS stack so
+# reqwest stays localhost-only: hyper's pooled client (already in the tree
+# through axum and reqwest) over rustls on the ring provider with Mozilla's
+# roots, which cross-compiles to every release target.
+hyper = { version = "1", default-features = false, optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"], optional = true }
+hyper-rustls = { version = "0.27", default-features = false, features = ["ring", "http1", "tls12", "webpki-tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 
 [dev-dependencies]
 # Isolated .tirith directories for store and integration tests.
@@ -102,10 +111,10 @@ objc2-app-kit = { version = "0.3", optional = true, default-features = false, fe
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSDate", "NSString", "NSRunLoop", "NSObjCRuntime"] }
 
 [features]
-default = ["tray"]
+default = ["tray", "jev"]
 # `tirith tray`: the macOS menu bar icon. Compiles to nothing off macOS.
 tray = ["dep:tray-icon", "dep:muda", "dep:objc2-app-kit", "dep:objc2-foundation"]
-# Experimental (ADR-0024): `tirith serve --jev` asks the Jev evaluation model
-# on the Vercel AI Gateway. Needs HTTPS, so it turns on reqwest's rustls;
-# default builds stay localhost-only.
-jev = ["reqwest/rustls"]
+# Experimental (ADR-0024): the Jev client behind `tirith serve --jev`. On by
+# default; it only leaves localhost when a daemon is started with `--jev`.
+# `--no-default-features --features tray` builds a localhost-only binary.
+jev = ["dep:hyper", "dep:hyper-util", "dep:hyper-rustls", "dep:http-body-util", "dep:rustls"]

@@ -587,10 +587,19 @@ const RETRY_AFTER: Duration = Duration::from_millis(150);
 
 /// Sends evaluations to a [`Provider`] over HTTPS, reusing one connection
 /// pool for the daemon's lifetime.
+///
+/// It runs on its own hyper client with rustls on the ring provider and
+/// Mozilla's root certificates, not on reqwest: reqwest's rustls without a
+/// built-in provider would make every other `reqwest::Client` in the
+/// process (CLI, stdio shim, tray, tests) need one installed first, and
+/// its built-in provider (aws-lc) is harder to cross-compile.
 #[cfg(feature = "jev")]
 #[derive(Debug, Clone)]
 pub struct JevClient {
-    http: reqwest::Client,
+    http: hyper_util::client::legacy::Client<
+        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        http_body_util::Full<hyper::body::Bytes>,
+    >,
     config: JevConfig,
     label: String,
 }
@@ -599,11 +608,16 @@ pub struct JevClient {
 impl JevClient {
     /// A client for `config`.
     pub fn new(config: JevConfig) -> Result<Self, JevError> {
-        let http = reqwest::Client::builder()
-            .timeout(config.timeout)
-            .pool_idle_timeout(Duration::from_secs(300))
-            .build()
-            .map_err(|e| JevError::Transport(e.to_string()))?;
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_provider_and_webpki_roots(rustls::crypto::ring::default_provider())
+            .map_err(|e| JevError::Transport(e.to_string()))?
+            .https_only()
+            .enable_http1()
+            .build();
+        let http =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .pool_idle_timeout(Duration::from_secs(300))
+                .build(connector);
         let label = format!("{}/{}", config.provider, config.model);
         Ok(Self {
             http,
@@ -615,24 +629,23 @@ impl JevClient {
     /// Opens a pooled connection so the first real evaluation does not pay
     /// the TLS handshake. Best effort; the answer is ignored.
     pub async fn warm_up(&self) {
-        let _ = self.http.head(&self.config.endpoint).send().await;
+        let request =
+            hyper::Request::head(&self.config.endpoint).body(http_body_util::Full::default());
+        if let Ok(request) = request {
+            let _ = tokio::time::timeout(self.config.timeout, self.http.request(request)).await;
+        }
     }
 
     /// One HTTP attempt. `started` is when the evaluation began, so a
-    /// retried call reports its whole latency.
+    /// retried call reports its whole latency and shares one timeout.
     async fn send(&self, body: &Value, started: std::time::Instant) -> Result<Response, JevError> {
-        let transport = |e: reqwest::Error| {
-            if e.is_timeout() {
-                JevError::Timeout
-            } else {
-                JevError::Transport(e.to_string())
-            }
-        };
-        let mut builder = self
-            .http
-            .post(&self.config.endpoint)
-            .bearer_auth(&self.config.api_key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        use http_body_util::BodyExt as _;
+        use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
+
+        let transport = |e: &dyn fmt::Display| JevError::Transport(e.to_string());
+        let mut builder = hyper::Request::post(&self.config.endpoint)
+            .header(AUTHORIZATION, format!("Bearer {}", self.config.api_key))
+            .header(CONTENT_TYPE, "application/json");
         if self.config.provider == Provider::Gateway {
             builder = builder
                 .header("ai-gateway-protocol-version", "0.0.1")
@@ -640,13 +653,28 @@ impl JevClient {
                 .header("ai-evaluation-model-specification-version", "4")
                 .header("ai-model-id", &self.config.model);
         }
-        let response = builder
-            .body(serde_json::to_vec(body)?)
-            .send()
+        let request = builder
+            .body(http_body_util::Full::new(serde_json::to_vec(body)?.into()))
+            .map_err(|e| transport(&e))?;
+        let exchange = async {
+            let response = self
+                .http
+                .request(request)
+                .await
+                .map_err(|e| transport(&e))?;
+            let status = response.status();
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| transport(&e))?
+                .to_bytes();
+            Ok::<_, JevError>((status, bytes))
+        };
+        let remaining = self.config.timeout.saturating_sub(started.elapsed());
+        let (status, bytes) = tokio::time::timeout(remaining, exchange)
             .await
-            .map_err(transport)?;
-        let status = response.status();
-        let bytes = response.bytes().await.map_err(transport)?;
+            .map_err(|_| JevError::Timeout)??;
         if !status.is_success() {
             return Err(JevError::from_status(status.as_u16(), &bytes));
         }
