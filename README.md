@@ -149,7 +149,8 @@ tirith decision record | list
 tirith memory   write | read | search | delete   # body from --body, --file, or stdin
 tirith message  send | list                # talk to other agents; the inbox shows on any result
 tirith lead log                            # the swarm lead and its policy's decisions
-tirith lead human                          # escalations waiting for you, most agents blocked first
+tirith lead human                          # items waiting for you, most agents blocked first
+tirith lead human done <id> [--reply TEXT] # answer one; the reply reaches its sender
 tirith tray                                # macOS only: menu bar icon listing every daemon
 tirith tools                               # list tools with descriptions
 tirith call <tool> '<json>'                # call any tool directly
@@ -167,15 +168,18 @@ rules, without spending an LLM turn:
 
 - **What escalates:** a task set to `blocked` (its note is the reason), or
   the third refusal of the same claim within 360 s. A message to the lead
-  escalates only when it matches a human rule.
-- **Where it goes:** anything that mentions credentials, permissions,
-  spending, destructive or irreversible steps, or is addressed to the
-  human goes to your "needs you" queue, and the lead is told. Everything
-  else reaches the lead's inbox as a message from `tirith`. While there is
-  no lead, every escalation goes to your queue.
+  is never an escalation.
+- **Where it goes:** while there is a lead, to the lead's inbox as a
+  message from `tirith`, tagged "may need the human" when it mentions
+  credentials, permissions, spending, or destructive steps. Nothing
+  reaches you on its own: the lead relays what needs you with
+  `message_send` to `human`, written for you. While there is no lead,
+  escalations go to your queue.
 - **Your queue:** the dashboard's "Needs you" list, `tirith lead human`,
-  `/api/human` on the dashboard port, and the macOS tray's count and
-  notification, ranked by how many agents each item blocks.
+  `/api/human` on the dashboard port, and the macOS tray, which lists each
+  item's sender and first line and notifies you of new ones. Answer with
+  the dashboard's Done button or `tirith lead human done <id> --reply
+  "..."`; the reply reaches the sender as a message from `human`.
 
 Claim grants, refusals, waits, releases and lease ends, notice pushes, and
 escalations are appended to the lead decision log: `tirith lead log`, or

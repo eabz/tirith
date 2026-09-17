@@ -15,32 +15,17 @@
     "tests/memory_layer.rs"
   ],
   "current": {
-    "version": 6,
+    "version": 7,
     "shape": {
-      "change_from_v5": {
-        "claim.memory": "omitted when empty; present only when at least one note concerns the claimed paths"
+      "MemoryBook.write": "unchanged signature",
+      "change_from_v6": {
+        "memory_write.semantics": "without `permalink`: the note at the title's slug if its title equals the written title; else the most recently updated note whose title equals it (any permalink); else a new note at the slug, or slug-<id> when another title holds the slug. Updates keep id, permalink, created_at, author."
       },
-      "claim_integration": {
-        "cap": "CLAIM_MEMORY_LIMIT 5",
-        "row": "MemoryDigest",
-        "when_empty": "key absent, per Brief on claim v1"
-      },
-      "constants": {
-        "CLAIM_MEMORY_EXCERPT": 160,
-        "CLAIM_MEMORY_LIMIT": 5,
-        "DEFAULT_SEARCH_LIMIT": 10,
-        "MAX_CONTEXT_DEPTH": 3,
-        "MAX_PERMALINK_DEPTH": 8,
-        "MAX_PERMALINK_LEN": 120,
-        "MAX_RELATED": 20,
-        "MAX_SEARCH_LIMIT": 50,
-        "MAX_TITLE_LEN": 120
-      },
-      "everything_else": "as v5"
+      "everything_else": "as v6"
     },
-    "notes": "v6: one clarification, no behaviour change on the memory tools themselves. On an ok `claim` response, the `memory` section is OMITTED when no note concerns the claimed paths, rather than sent as an empty array. This follows contract \"Brief on claim\" v1 (claude-token-diet) and the compact-row rule of no empty arrays; earlier versions of this contract read as if `memory` were always present, and tests/memory_layer.rs now asserts absence rather than an empty array. When present it is still at most CLAIM_MEMORY_LIMIT (5) digests, never a body. Also confirmed landed since v5: both literal limit strings in src/server.rs now read default 10, max 50, matching the constants. Everything else in v5 stands.",
-    "published_by": "claude-memory-layer",
-    "published_at": "2026-09-16T03:08:12.240479Z"
+    "notes": "v7 (task 29430f99): one behavior change to memory_write's upsert rule, no schema change. Before, a write without `permalink` matched only the note at the title's slug, so a note with the same title under another permalink (folder-filed, id-suffixed after a slug collision, or `note-<id>` for a title with no ASCII slug) got a duplicate on every write. Now an exact (trimmed) title match updates that note wherever it lives. Everything else in v6 stands.",
+    "published_by": "tray-daemons",
+    "published_at": "2026-09-17T15:46:10.693291Z"
   },
   "history": [
     {
@@ -298,6 +283,34 @@
       "notes": "v5: one change from v4. memory_search `limit` now defaults to 10 and clamps to 50 (was 20 and 100). Decided by head-dev-fable on token grounds once the latency argument was settled: ten digest rows are about 2.3 KB, which keeps a search response below a notice listing, as ADR-0013 wants; at 20 it was the largest response in the system at 4.7 KB. Behavior is live as soon as this lands because the constants DEFAULT_SEARCH_LIMIT and MAX_SEARCH_LIMIT live in src/memory.rs and server.rs imports them. Two LITERAL strings in src/server.rs still say \"default 20, max 100\" and are wrong until claude-token-diet updates them in its current window, which I have asked for by message rather than reopening the file: the `limit` field doc on MemorySearchInput (line ~416) and the memory_search tool description (line ~1566). Everything else in v4 stands.",
       "published_by": "claude-memory-layer",
       "published_at": "2026-09-16T03:05:28.685232Z"
+    },
+    {
+      "version": 6,
+      "shape": {
+        "change_from_v5": {
+          "claim.memory": "omitted when empty; present only when at least one note concerns the claimed paths"
+        },
+        "claim_integration": {
+          "cap": "CLAIM_MEMORY_LIMIT 5",
+          "row": "MemoryDigest",
+          "when_empty": "key absent, per Brief on claim v1"
+        },
+        "constants": {
+          "CLAIM_MEMORY_EXCERPT": 160,
+          "CLAIM_MEMORY_LIMIT": 5,
+          "DEFAULT_SEARCH_LIMIT": 10,
+          "MAX_CONTEXT_DEPTH": 3,
+          "MAX_PERMALINK_DEPTH": 8,
+          "MAX_PERMALINK_LEN": 120,
+          "MAX_RELATED": 20,
+          "MAX_SEARCH_LIMIT": 50,
+          "MAX_TITLE_LEN": 120
+        },
+        "everything_else": "as v5"
+      },
+      "notes": "v6: one clarification, no behaviour change on the memory tools themselves. On an ok `claim` response, the `memory` section is OMITTED when no note concerns the claimed paths, rather than sent as an empty array. This follows contract \"Brief on claim\" v1 (claude-token-diet) and the compact-row rule of no empty arrays; earlier versions of this contract read as if `memory` were always present, and tests/memory_layer.rs now asserts absence rather than an empty array. When present it is still at most CLAIM_MEMORY_LIMIT (5) digests, never a body. Also confirmed landed since v5: both literal limit strings in src/server.rs now read default 10, max 50, matching the constants. Everything else in v5 stands.",
+      "published_by": "claude-memory-layer",
+      "published_at": "2026-09-16T03:08:12.240479Z"
     }
   ]
 }

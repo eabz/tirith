@@ -77,7 +77,7 @@ def main():
         started = time.time()
         verdict = gate.evaluate(stop_gate.GateInput(task=task, last_message=event.get("last_assistant_message") or "",
                                                     repo=c.repo_root(run), agent=agent, config=cfg,
-                                                    continues=continues))
+                                                    continues=continues, run=run))
         gate_ms = round((time.time() - started) * 1000, 1)
         detail = dict(task=str(task.get("id"))[:8], gate=getattr(gate, "name", "?"), ms=gate_ms, **verdict.evidence)
         if verdict.decision == "continue":

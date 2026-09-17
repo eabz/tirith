@@ -13,22 +13,34 @@
 //! agent on the repository. It also refuses a daemon that serves another
 //! repository, which a stale record can point at when both use the default
 //! port, and starts its own on a free port instead. See ADR-0016.
+//!
+//! A call can end before the daemon answers it: the client cancels it, or
+//! closes stdin because the session is over. The shim cancels the daemon
+//! request either way, so a `claim` or `task_pull` waiting with `wait_secs`
+//! never grants anything to a client that is gone, and logs each forwarded
+//! cancel to `serve.log`. See ADR-0031.
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    CallToolRequest, CallToolRequestParams, CallToolResponse, ClientRequest, Implementation,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, ServerResult,
 };
-use rmcp::service::{RequestContext, RoleClient, RoleServer, RunningService};
+use rmcp::service::{
+    Peer, PeerRequestOptions, RequestContext, RoleClient, RoleServer, ServiceError,
+};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde::Deserialize;
 use thiserror::Error;
+use tokio::io::{AsyncRead, ReadBuf};
+use tokio::sync::{mpsc, watch};
 
 use crate::server::{INSTRUCTIONS, VERSION};
 use crate::store::{DaemonInfo, JsonStore, StoreError};
@@ -338,14 +350,15 @@ fn log_path(store: &JsonStore) -> PathBuf {
 }
 
 /// Appends one line to the daemon's log, so a restart is visible next to
-/// what the daemon printed.
+/// what the daemon printed. The line goes out in one write, so lines
+/// logged at the same moment (two forwarded cancels) never interleave.
 fn log_line(store: &JsonStore, line: &str) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path(store))
     {
-        let _ = writeln!(file, "{line}");
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 
@@ -420,14 +433,41 @@ fn detach(command: &mut Command) {
     command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
 }
 
-/// Forwards `tools/list` and `tools/call` to the daemon.
+/// How long a shim whose client is gone gives in-flight calls to cancel
+/// their daemon requests, and then its daemon session to close.
+const CANCEL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Forwards `tools/list` and `tools/call` to the daemon, and passes on
+/// every way a call can end early (ADR-0031): a cancel from the client,
+/// and the client closing stdin, both cancel the daemon request, so a call
+/// that waits (`claim` or `task_pull` with `wait_secs`) never grants
+/// anything to a client that is gone.
 struct Proxy {
-    daemon: RunningService<RoleClient, ()>,
+    daemon: Peer<RoleClient>,
     instructions: String,
+    /// Where forwarded cancels are logged.
+    store: JsonStore,
+    /// `true` once the client has closed stdin. The sender lives in the
+    /// transport, so a dropped sender means the same.
+    closed: watch::Receiver<bool>,
+    /// A drop guard, never sent on. Every in-flight call holds the proxy
+    /// through rmcp's `Arc`, so the channel closes when the last call
+    /// finishes, and [`run`] waits for that before the process exits.
+    _calls: mpsc::Sender<()>,
 }
 
 fn internal(error: impl std::fmt::Display) -> McpError {
     McpError::internal_error(error.to_string(), None)
+}
+
+/// The daemon's answer to a `tools/call`, passed through as it came.
+fn tool_response(result: ServerResult) -> Result<CallToolResponse, McpError> {
+    match result {
+        ServerResult::CallToolResult(result) => Ok(CallToolResponse::Complete(result)),
+        ServerResult::InputRequiredResult(result) => Ok(CallToolResponse::InputRequired(result)),
+        ServerResult::CreateTaskResult(result) => Ok(CallToolResponse::Task(result)),
+        _ => Err(internal(ServiceError::UnexpectedResponse)),
+    }
 }
 
 impl ServerHandler for Proxy {
@@ -450,19 +490,80 @@ impl ServerHandler for Proxy {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let result = self.daemon.call_tool(request).await.map_err(internal)?;
-        Ok(result.into())
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(request));
+        let mut handle = self
+            .daemon
+            .send_cancellable_request(request, PeerRequestOptions::no_options())
+            .await
+            .map_err(internal)?;
+        let mut closed = self.closed.clone();
+        let reason = tokio::select! {
+            biased;
+            response = &mut handle.rx => {
+                let result = response
+                    .unwrap_or(Err(ServiceError::TransportClosed))
+                    .map_err(internal)?;
+                return tool_response(result);
+            }
+            () = context.ct.cancelled() => "the client cancelled it",
+            // An error here means the transport is gone, so the client is too.
+            _ = closed.wait_for(|closed| *closed) => "the client closed stdin",
+        };
+        let id = handle.id.clone();
+        let sent = handle.cancel(Some(reason.to_owned())).await;
+        let line = match sent {
+            Ok(()) => format!("[tirith stdio] cancelled request {id} at the daemon: {reason}"),
+            Err(error) => {
+                format!(
+                    "[tirith stdio] could not cancel request {id} at the daemon ({reason}): {error}"
+                )
+            }
+        };
+        let store = self.store.clone();
+        let _ = tokio::task::spawn_blocking(move || log_line(&store, &line)).await;
+        // rmcp drops this reply for a cancelled request; after a closed
+        // stdin nobody reads it either.
+        Err(McpError::internal_error(
+            format!("cancelled: {reason}"),
+            None,
+        ))
+    }
+}
+
+/// A reader that marks `closed` once it reaches end of file or fails, so
+/// the proxy learns that its client has gone before rmcp's serve loop does.
+struct EofWatch<R> {
+    inner: R,
+    closed: watch::Sender<bool>,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for EofWatch<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(result) = &polled
+            && (result.is_err() || (buf.filled().len() == before && buf.remaining() > 0))
+        {
+            self.closed.send_replace(true);
+        }
+        polled
     }
 }
 
 /// Ensures a daemon for `root`, then serves MCP over this process's stdin
-/// and stdout until the client closes the pipe.
+/// and stdout until the client closes the pipe. Calls still waiting then
+/// are cancelled at the daemon, and the daemon session is closed, before
+/// this returns.
 pub async fn run(root: PathBuf, bind: String) -> Result<(), StdioError> {
     let info = ensure_daemon(&root, &bind).await?;
     let transport = StreamableHttpClientTransport::from_uri(info.url.clone());
-    let daemon = ().serve(transport).await.map_err(|e| StdioError::Connect {
+    let mut daemon = ().serve(transport).await.map_err(|e| StdioError::Connect {
         url: info.url.clone(),
         message: e.to_string(),
     })?;
@@ -471,17 +572,63 @@ pub async fn run(root: PathBuf, bind: String) -> Result<(), StdioError> {
         .and_then(|peer| peer.instructions.clone())
         .unwrap_or_else(|| INSTRUCTIONS.to_owned());
     tracing::info!(url = %info.url, pid = info.pid, "proxying stdio to daemon");
+    let (closed_tx, closed) = watch::channel(false);
+    let (calls, mut calls_done) = mpsc::channel(1);
     let proxy = Proxy {
-        daemon,
+        daemon: daemon.peer().clone(),
         instructions,
+        store: JsonStore::new(&root),
+        closed,
+        _calls: calls,
+    };
+    let stdin = EofWatch {
+        inner: tokio::io::stdin(),
+        closed: closed_tx,
     };
     let running = proxy
-        .serve(rmcp::transport::stdio())
+        .serve((stdin, tokio::io::stdout()))
         .await
         .map_err(|e| StdioError::Serve(e.to_string()))?;
-    running
+    let served = running
         .waiting()
         .await
-        .map_err(|e| StdioError::Serve(e.to_string()))?;
-    Ok(())
+        .map_err(|e| StdioError::Serve(e.to_string()));
+    // The client is gone. Calls still in flight are cancelling their daemon
+    // requests; the last one to finish drops the proxy and closes `calls`.
+    let _ = tokio::time::timeout(CANCEL_TIMEOUT, calls_done.recv()).await;
+    // Ending the session also ends, at the daemon, anything still tied to it.
+    let _ = daemon.close_with_timeout(CANCEL_TIMEOUT).await;
+    served.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn eof_watch_marks_closed_only_at_end_of_file() {
+        let (closed_tx, closed) = watch::channel(false);
+        let mut reader = EofWatch {
+            inner: &b"hello"[..],
+            closed: closed_tx,
+        };
+        let mut buf = [0_u8; 5];
+        reader.read_exact(&mut buf).await.unwrap();
+        assert!(!*closed.borrow(), "data read is not the end");
+        assert_eq!(reader.read(&mut buf).await.unwrap(), 0);
+        assert!(*closed.borrow(), "end of file marks closed");
+    }
+
+    #[tokio::test]
+    async fn an_empty_buffer_is_not_end_of_file() {
+        let (closed_tx, closed) = watch::channel(false);
+        let mut reader = EofWatch {
+            inner: &b"hello"[..],
+            closed: closed_tx,
+        };
+        assert_eq!(reader.read(&mut []).await.unwrap(), 0);
+        assert!(!*closed.borrow());
+    }
 }

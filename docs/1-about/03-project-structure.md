@@ -26,6 +26,7 @@ tirith/
 │   ├── cli.rs           clap commands and human rendering (binary only).
 │   ├── lib.rs           Crate root: module declarations.
 │   ├── server.rs        MCP tool surface (rmcp) and `start`.
+│   ├── hangup.rs        Tells a waiting tool call that its caller left.
 │   ├── dashboard.rs     Dashboard routes.
 │   ├── dashboard.html   The dashboard page, embedded at build time.
 │   ├── dashboard-logo.png  The logo the dashboard serves at /logo.png.

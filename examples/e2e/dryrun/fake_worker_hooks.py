@@ -11,16 +11,26 @@ task_pull or task_update itself. It sends the hook scripts in
 PreToolUse, PostToolUse and Stop, obeys their outputs (a denied edit is
 retried later, a blocked stop carries the next task or the gate's reason),
 implements each task by copying its symbols from reference/ (as
-fake_worker_hubs.py does), and appends a synthetic transcript so the scorer's
-turn metrics run. Its first stop on its first task omits the acceptance
-criteria, to exercise the gate's continue path. --auto-identity launches
-without TB_AGENT, so the hooks assign the name.
+fake_worker_hubs.py does), and appends a synthetic transcript
+(dryrun/transcript.py: tool_use and tool_result rows, a denied edit as an
+error result) so the scorer's turn and violation metrics run. Its first stop
+on its first task omits the acceptance criteria, to exercise the gate's
+continue path. The reference symbols use other tasks' symbols, so a task's
+own acceptance checks would fail until those tasks land and every worker
+would wait in the gate on a task nobody is working on. A real worker writes
+code that works with what is there; the fake instead also splices the
+reference symbols of the other tasks its checks need (its closure, computed
+once per run on the baseline and cached in <run>/fake_closures.json). That
+keeps the gate's decision about the task's own checks while the full suite
+is still red. --auto-identity launches without TB_AGENT, so the hooks assign
+the name.
 
 selfcheck runs targeted checks on the same run before workers start
 (deny with holder, brief context, release on the next non-edit call,
 in-flight edits not released, Bash write claimed after the fact, helper
 SubagentStop ignored, auto identity, settings matchers, gate criteria
-parsing, transcript turn classes, hooks prompt) and exits non-zero on failure.
+parsing, gate test scope, violation counting, transcript turn classes, hooks
+prompt) and exits non-zero on failure.
 """
 
 import json
@@ -38,6 +48,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "lib"))
 sys.path.insert(0, str(HERE.parent / "hooks"))
 from fake_worker_hubs import splice, write_atomic  # noqa: E402
+from transcript import Transcript  # noqa: E402
 
 
 class Session:
@@ -48,7 +59,6 @@ class Session:
         tdir = run / "fake_transcripts"
         tdir.mkdir(exist_ok=True)
         self.transcript = tdir / ("%s.jsonl" % (agent or self.session_id[:8]))
-        self.turn = 0
         self.stop_active = False
         self.stats = {"denied": 0, "edits": 0, "stops": 0, "gate_continues": 0, "tasks": 0}
 
@@ -69,24 +79,15 @@ class Session:
             out = json.loads(proc.stdout)
         return proc.returncode, out
 
-    def record_turn(self, tool, tool_input, text=None):
-        self.turn += 1
-        content = [{"type": "tool_use", "id": "toolu_fake_%d" % self.turn, "name": tool, "input": tool_input}] \
-            if tool else [{"type": "text", "text": text or ""}]
-        row = {"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-               "message": {"id": "msg_fake_%s_%d" % (self.session_id[:8], self.turn), "role": "assistant",
-                           "content": content,
-                           "usage": {"input_tokens": 5, "cache_read_input_tokens": 2000,
-                                     "cache_creation_input_tokens": 100, "output_tokens": 150}}}
-        with open(str(self.transcript), "a") as handle:
-            handle.write(json.dumps(row) + "\n")
+    def record(self):
+        return Transcript(self.transcript, self.session_id[:8])
 
     def tool(self, name, tool_input):
-        """A non-edit tool call: PreToolUse (releases), then PostToolUse."""
-        self.record_turn(name, tool_input)
-        use_id = "toolu_%s" % uuid.uuid4().hex[:12]
+        """A non-edit tool call: PreToolUse (releases), the tool's result, then PostToolUse."""
+        use_id = self.record().use(name, tool_input)
         _, pre = self.hook("pre_other.py", self.event("PreToolUse", tool_name=name, tool_input=tool_input,
                                                       tool_use_id=use_id))
+        self.record().result(use_id)
         if name == "Bash":
             self.hook("post_edit.py", self.event("PostToolUse", tool_name=name, tool_input=tool_input,
                                                  tool_response={"stdout": "", "stderr": "", "interrupted": False,
@@ -100,17 +101,19 @@ class Session:
             current = path.read_text() if path.exists() else ""
             tool_input = {"file_path": str(path), "content": "<new>"} if tool == "Write" else \
                 {"file_path": str(path), "old_string": current[:40], "new_string": "<new>", "replace_all": False}
-            self.record_turn(tool, tool_input)
-            use_id = "toolu_%s" % uuid.uuid4().hex[:12]
+            use_id = self.record().use(tool, tool_input)
             _, pre = self.hook("pre_edit.py", self.event("PreToolUse", tool_name=tool, tool_input=tool_input,
                                                          tool_use_id=use_id))
             if (pre.get("hookSpecificOutput") or {}).get("permissionDecision") == "deny":
+                self.record().result(use_id, is_error=True, text=pre["hookSpecificOutput"].get(
+                    "permissionDecisionReason", ""))
                 self.stats["denied"] += 1
                 time.sleep(random.uniform(0.3, 1.0))
                 self.tool("Read", {"file_path": str(path)})
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
             write_atomic(path, make_text(path.read_text() if path.exists() else ""))
+            self.record().result(use_id)
             self.stats["edits"] += 1
             self.hook("post_edit.py", self.event("PostToolUse", tool_name=tool, tool_input=tool_input,
                                                  tool_response={"filePath": str(path), "type": "update"},
@@ -120,7 +123,7 @@ class Session:
 
     def stop(self, message):
         self.stats["stops"] += 1
-        self.record_turn(None, None, text=message)
+        self.record().text(message)
         _, out = self.hook("stop.py", self.event("Stop", stop_hook_active=self.stop_active,
                                                  last_assistant_message=message, background_tasks=[],
                                                  session_crons=[]))
@@ -131,6 +134,68 @@ class Session:
 TASK_RE = re.compile(r"Tirith assigned you task (\S+): (.*)")
 
 
+def anchor_groups(specs_by_key, keys):
+    """path -> symbols for the anchors of the given tasks, in task order."""
+    groups = {}
+    for key in keys:
+        for anchor in specs_by_key[key]["anchors"]:
+            path, _, symbol = anchor.partition("#")
+            if symbol not in groups.setdefault(path, []):
+                groups[path].append(symbol)
+    return groups
+
+
+def closures(run, scen, specs_by_key):
+    """task key -> task keys whose reference symbols its acceptance checks need (itself included).
+
+    Starts from every task and drops each other task whose symbols the checks
+    pass without, on a scratch copy of the baseline. Cached per run; parallel
+    workers wait on a lock while the first one computes (~3 s).
+    """
+    import fcntl
+    import shutil
+    import tempfile
+    import stop_gate
+    cache = run / "fake_closures.json"
+    with open(str(run / "fake_closures.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if cache.is_file():
+            return json.loads(cache.read_text())
+        result = {}
+        with tempfile.TemporaryDirectory(prefix="fake_closure_") as tmp:
+            repo = Path(tmp) / "repo"
+            shutil.copytree(str(scen / "scenario"), str(repo))
+            baseline = {path: path.read_text() for path in repo.rglob("*.py")}
+            package = repo / "closure_checks"
+            package.mkdir()
+            (package / "__init__.py").write_text("")
+            for spec in specs_by_key.values():
+                shutil.copy(str(scen / "hidden_tests" / spec["hidden_test"]), str(package / spec["hidden_test"]))
+
+            def passes(keys, module):
+                for path, text in baseline.items():
+                    path.write_text(text)
+                for rel, symbols in anchor_groups(specs_by_key, keys).items():
+                    target = repo / rel
+                    target.write_text(splice(target.read_text(), (scen / "reference" / rel).read_text(), symbols))
+                proc = subprocess.run([sys.executable, "-B", "-c", stop_gate.RUNNER,
+                                       "closure_checks." + module[:-3]], cwd=str(repo), capture_output=True,
+                                      text=True, timeout=120)
+                out = json.loads(proc.stdout.strip().splitlines()[-1])
+                return not out["import_error"] and not out["failed"] and out["run"] > 0
+
+            for key, spec in specs_by_key.items():
+                chosen = [key] + [k for k in specs_by_key if k != key]
+                if passes(chosen, spec["hidden_test"]):
+                    for other in list(chosen[1:]):
+                        trial = [k for k in chosen if k != other]
+                        if passes(trial, spec["hidden_test"]):
+                            chosen = trial
+                result[key] = chosen
+        write_atomic(cache, json.dumps(result, indent=1))
+        return result
+
+
 def summary_for(spec):
     import stop_gate
     criteria = stop_gate.acceptance_criteria(spec["description"])
@@ -138,11 +203,8 @@ def summary_for(spec):
         spec["title"], "\n".join("- " + crit for crit in criteria))
 
 
-def implement(session, spec, scen):
-    groups = {}
-    for anchor in spec["anchors"]:
-        path, _, symbol = anchor.partition("#")
-        groups.setdefault(path, []).append(symbol)
+def implement(session, spec, scen, specs_by_key):
+    groups = anchor_groups(specs_by_key, closures(session.run, scen, specs_by_key)[spec["key"]])
     for path in groups:
         session.tool("Read", {"file_path": str(session.repo / path)})
     for path, symbols in groups.items():
@@ -160,10 +222,11 @@ def implement(session, spec, scen):
         args = {"kind": "signature", "summary": "round_money(amount, currency): currency is now required",
                 "from": "round_money(amount)", "to": "round_money(amount, currency)",
                 "affected_paths": ["tally/money.py", "tally/pricing.py"]}
-        session.record_turn("Bash", {"command": "TB_RUN=%s TB_AGENT=%s %s/tb notice_publish '%s'"
-                                                % (session.run, agent, session.run, json.dumps(args))})
+        use_id = session.record().use("Bash", {"command": "TB_RUN=%s TB_AGENT=%s %s/tb notice_publish '%s'"
+                                                   % (session.run, agent, session.run, json.dumps(args))})
         subprocess.run([str(session.run / "tb"), "notice_publish", json.dumps(args)], capture_output=True,
                        env=dict(os.environ, TB_RUN=str(session.run), TB_AGENT=agent), timeout=60)
+        session.record().result(use_id)
     session.tool("Bash", {"command": "python3 -m unittest", "description": "Run tests"})
 
 
@@ -176,6 +239,7 @@ def worker(run, agent, auto_identity):
     meta = json.loads((run / "meta.json").read_text())
     scen = Path(meta["scenario_dir"])
     specs = {t["title"]: t for t in json.loads((scen / "tasks.json").read_text())["tasks"]}
+    specs_by_key = {t["key"]: t for t in specs.values()}
     session = Session(run, None if auto_identity else agent, env_identity=not auto_identity)
     if auto_identity:
         session.transcript = run / "fake_transcripts" / ("%s-auto.jsonl" % agent)
@@ -188,13 +252,13 @@ def worker(run, agent, auto_identity):
         if match:
             spec = specs[match.group(2).strip()]
             session.stats["tasks"] += 1
-            implement(session, spec, scen)
+            implement(session, spec, scen, specs_by_key)
             message = "Done." if first_stop_sloppy else summary_for(spec)
             first_stop_sloppy = False
             out = session.stop(message)
             while out.get("decision") == "block" and out.get("reason", "").startswith("Task "):
                 session.stats["gate_continues"] += 1
-                time.sleep(random.uniform(1.0, 3.0))
+                time.sleep(random.uniform(2.0, 4.0))  # the task's checks may wait on other tasks' symbols
                 session.tool("Bash", {"command": "python3 -m unittest", "description": "Re-run tests"})
                 out = session.stop(summary_for(spec))
         elif "final report" in text:
@@ -211,10 +275,11 @@ def worker(run, agent, auto_identity):
 # ---------------------------------------------------------------- selfcheck
 
 def selfcheck(run):
-    failures = []
+    failures, checks = [], []
 
     def check(name, ok, detail=""):
         print("%s %s%s" % ("PASS" if ok else "FAIL", name, (": " + str(detail)[:300]) if detail and not ok else ""))
+        checks.append(name)
         if not ok:
             failures.append(name)
 
@@ -318,6 +383,90 @@ def selfcheck(run):
     check("'Done.' mentions none", not any(stop_gate.mentioned(c, "Done.") for t in specs
                                            for c in stop_gate.acceptance_criteria(t["description"])
                                            if stop_gate.criterion_terms(c)))
+    # Gate test scope: the task's own acceptance module decides, not the full suite.
+    import shutil
+    import tempfile
+    cfg = dict(json.loads((run / "hooks_state" / "config.json").read_text()))
+    cfg.update(test_command=["python3", "-m", "unittest"], gate_max_continues=2, gate_tests="task")
+    by_key = {t["key"]: t for t in specs}
+    ids = json.loads((run / "task_ids.json").read_text())
+    scen = Path(meta["scenario_dir"])
+    with tempfile.TemporaryDirectory(prefix="gate_selfcheck_") as tmp:
+        grun = Path(tmp)
+        shutil.copy(str(run / "meta.json"), str(grun / "meta.json"))
+        shutil.copy(str(run / "task_ids.json"), str(grun / "task_ids.json"))
+        shutil.copytree(str(scen / "scenario"), str(grun / "repo"))
+        own = by_key["parse-money"]
+        money = grun / "repo" / "tally" / "money.py"
+        money.write_text(splice(money.read_text(), (scen / "reference" / "tally" / "money.py").read_text(),
+                                ["parse_money"]))
+        (grun / "repo" / "tests" / "test_other_task_unfinished.py").write_text(
+            "import unittest\n\n\nclass OtherTask(unittest.TestCase):\n    def test_not_landed(self):\n"
+            "        self.fail('another task is half done')\n")
+
+        def verdict(spec, scope="task", continues=0, message=None):
+            task = {"id": ids[spec["key"]][:8], "title": spec["title"], "description": spec["description"]}
+            gate_cfg = dict(cfg, gate_tests=scope)
+            return stop_gate.PlaceholderGate().evaluate(stop_gate.GateInput(
+                task=task, last_message=message if message is not None else summary_for(spec),
+                repo=grun / "repo", agent="sc-gate", config=gate_cfg, continues=continues, run=grun))
+
+        v = verdict(own, continues=5)
+        check("gate: own tests pass, suite red -> done, never escalates",
+              v.decision == "done" and v.evidence.get("suite_ok") is False and v.evidence["tests_scope"] == "task",
+              (v.decision, v.evidence))
+        v = verdict(own, message="Done.")
+        check("gate: own tests pass, criteria unaddressed -> continue", v.decision == "continue", (v.decision, v.reason))
+        v = verdict(by_key["bulk-discount"])
+        check("gate: own tests fail -> continue naming the failing checks",
+              v.decision == "continue" and "acceptance checks" in v.reason and "test_" in v.reason
+              and "Traceback" not in v.reason, (v.decision, v.reason[:300]))
+        v = verdict(by_key["bulk-discount"], continues=2)
+        check("gate: own tests still fail after the limit -> escalate", v.decision == "escalate", v.decision)
+        v = verdict(own, scope="suite")
+        check("gate: suite scope keeps the old behavior", v.decision == "continue" and
+              v.evidence["tests_scope"] == "suite", (v.decision, v.evidence))
+        unknown = stop_gate.task_acceptance_module(grun, {"id": "ffffffff", "title": "not a scenario task"})
+        check("gate: a task the scenario does not know falls back to the suite", unknown is None, unknown)
+    # Violations: writes without the writer's own live claim.
+    import violations
+    with tempfile.TemporaryDirectory(prefix="violations_selfcheck_") as tmp:
+        vrun = Path(tmp)
+        for rel in ("tally/a.py", "tally/b.py", "tally/c.py", "tally/d.py"):
+            (vrun / "repo" / rel).parent.mkdir(parents=True, exist_ok=True)
+            (vrun / "repo" / rel).write_text("x = 1\n")
+        stamp = lambda sec: "2026-09-17T10:00:%02d.000Z" % sec  # noqa: E731
+        coord = [{"ts": stamp(1), "agent": "v1", "tool": "claim", "request": {"paths": ["tally/a.py"]},
+                  "response": {"status": "ok"}},
+                 {"ts": stamp(1), "agent": "v1", "tool": "claim", "request": {"paths": ["tally/d.py#f"]},
+                  "response": {"status": "ok"}},
+                 {"ts": stamp(1), "agent": "v2", "tool": "claim", "request": {"paths": ["tally/b.py"]},
+                  "response": {"status": "ok"}},
+                 {"ts": stamp(2), "agent": "v1", "tool": "claim", "request": {"paths": ["tally/b.py"]},
+                  "response": {"status": "conflict"}},
+                 {"ts": stamp(5), "agent": "v1", "tool": "release", "request": {},
+                  "response": {"status": "ok", "released": ["tally/a.py", "tally/d.py::f"]}}]
+        (vrun / "coord_full.jsonl").write_text("".join(json.dumps(r) + "\n" for r in coord))
+        rows = []
+        for n, (sec, tool, tool_input, is_error) in enumerate([
+                (3, "Edit", {"file_path": str(vrun / "repo/tally/a.py")}, False),   # covered
+                (6, "Edit", {"file_path": str(vrun / "repo/tally/a.py")}, False),   # after release
+                (3, "Write", {"file_path": str(vrun / "repo/tally/b.py")}, False),  # held by v2
+                (3, "Edit", {"file_path": str(vrun / "repo/tally/b.py")}, True),    # denied: not a write
+                (3, "Bash", {"command": "echo y > tally/c.py"}, False),              # shell write, unclaimed
+                (3, "Edit", {"file_path": str(vrun / "repo/tally/d.py")}, False),   # anchor claim only
+                (3, "Read", {"file_path": str(vrun / "repo/tally/a.py")}, False)]):
+            use_id = "toolu_v%d" % n
+            rows.append({"type": "assistant", "timestamp": stamp(sec - 1), "message": {
+                "id": "m%d" % n, "content": [{"type": "tool_use", "id": use_id, "name": tool, "input": tool_input}]}})
+            rows.append({"type": "user", "timestamp": stamp(sec), "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": use_id, "is_error": is_error}]}})
+        (vrun / "transcripts").mkdir()
+        (vrun / "transcripts" / "v1.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        got = (violations.per_worker(vrun) or {}).get("per_worker", {}).get("v1", {})
+        want = {"tool_edits": 4, "bash_writes": 1, "unclaimed": 3, "anchor_only": 1,
+                "unclaimed_paths": {"tally/a.py": 1, "tally/b.py": 1, "tally/c.py": 1}}
+        check("violations: unclaimed writes per worker", got == want, got)
     # Turn classes.
     import turns
     fixture = run / "fake_transcripts" / "selfcheck-fixture.jsonl"
@@ -334,7 +483,7 @@ def selfcheck(run):
     kinds = [turns.classify(t)[0] for t in turns.load_turns(fixture)]
     check("turn classes", kinds == ["mechanical", "mechanical", "coordination", "work", "work", "text"], kinds)
     fixture.unlink()
-    print("selfcheck: %d failures" % len(failures))
+    print("selfcheck: %d checks, %d failures" % (len(checks), len(failures)))
     return 1 if failures else 0
 
 

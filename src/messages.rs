@@ -5,6 +5,11 @@
 //! recipient's next tool call, whatever it is; nothing polls. See
 //! ADR-0020.
 //!
+//! One recipient is not an agent: [`HUMAN`]. A message to it is not
+//! delivered to any inbox; the lead policy puts it in the human queue,
+//! and the human's reply comes back as a message from `human` (ADR-0027).
+//! No agent may call itself `human`, and a broadcast never reaches it.
+//!
 //! Messages are runtime state: they live in `.tirith/runtime/messages.jsonl`,
 //! are never committed, and are dropped after [`RETENTION`]. Delivery
 //! marks live only in memory for the daemon's lifetime, like a brief's.
@@ -27,6 +32,22 @@ pub const RETENTION: Duration = Duration::hours(24);
 pub const BROADCAST_WINDOW: Duration = Duration::hours(1);
 /// The recipient name that means every agent seen recently.
 pub const EVERYONE: &str = "*";
+/// The recipient name that means the human: a message to it becomes a
+/// human queue item (ADR-0027), and the human's replies come from it. It
+/// is never an agent.
+pub const HUMAN: &str = "human";
+
+/// Whether `name` is [`HUMAN`], ignoring case and surrounding blanks.
+///
+/// ```
+/// use tirith::messages::is_human;
+///
+/// assert!(is_human(" Human"));
+/// assert!(!is_human("humans"));
+/// ```
+pub fn is_human(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case(HUMAN)
+}
 
 /// One message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +57,7 @@ pub struct Message {
     pub id: MessageId,
     /// Who sent it.
     pub from: AgentId,
-    /// The agent name it was sent to, or [`EVERYONE`].
+    /// The agent name it was sent to, [`EVERYONE`], or [`HUMAN`].
     pub to: String,
     /// The text, at most [`MAX_TEXT`] characters.
     pub text: String,
@@ -56,6 +77,11 @@ impl Message {
     /// Whether this went to everyone.
     pub fn is_broadcast(&self) -> bool {
         self.to == EVERYONE
+    }
+
+    /// Whether this went to the human queue.
+    pub fn is_to_human(&self) -> bool {
+        self.to == HUMAN
     }
 
     /// Whether `agent` is a recipient.
@@ -88,7 +114,8 @@ pub struct NewMessage {
 }
 
 impl NewMessage {
-    /// A message to `to` (an agent name or [`EVERYONE`]) saying `text`.
+    /// A message to `to` (an agent name, [`EVERYONE`], or [`HUMAN`])
+    /// saying `text`.
     ///
     /// ```
     /// use tirith::messages::NewMessage;
@@ -145,8 +172,8 @@ pub enum MessageError {
         /// The maximum.
         max: usize,
     },
-    /// The recipient was not an agent name or `*`.
-    #[error("recipient must be an agent name or `*`: {0}")]
+    /// The recipient was not an agent name, `*`, or `human`.
+    #[error("recipient must be an agent name, `*`, or `human`: {0}")]
     BadRecipient(String),
     /// `reply_to` names no message.
     #[error("no message with id {0}")]
@@ -190,8 +217,9 @@ impl MessageBoard {
     }
 
     /// Sends a message. `recent` is every agent seen within
-    /// [`BROADCAST_WINDOW`], the audience of a broadcast; it is ignored for
-    /// a direct message.
+    /// [`BROADCAST_WINDOW`], the audience of a broadcast, never including
+    /// [`HUMAN`]; it is ignored for a direct message. `to` is stored as
+    /// [`HUMAN`] whatever its case.
     pub fn send(
         &mut self,
         from: AgentId,
@@ -207,7 +235,11 @@ impl MessageBoard {
         if len > MAX_TEXT {
             return Err(MessageError::TooLong { len, max: MAX_TEXT });
         }
-        let to = new.to.trim();
+        let to = if is_human(&new.to) {
+            HUMAN
+        } else {
+            new.to.trim()
+        };
         if to.is_empty()
             || to.contains(['\n', '\r'])
             || (to != EVERYONE && AgentId::new(to).is_err())
@@ -220,7 +252,10 @@ impl MessageBoard {
             return Err(MessageError::NotFound(reply_to));
         }
         let audience = if to == EVERYONE {
-            recent.into_iter().filter(|a| *a != from).collect()
+            recent
+                .into_iter()
+                .filter(|a| *a != from && !is_human(a.as_str()))
+                .collect()
         } else {
             Vec::new()
         };
@@ -240,9 +275,11 @@ impl MessageBoard {
             .unwrap_or_else(|| unreachable!("just pushed")))
     }
 
-    /// Whether `agent` still has to receive `message`.
+    /// Whether `agent` still has to receive `message`. A message to
+    /// [`HUMAN`] is never delivered to an inbox.
     fn undelivered(&self, agent: &AgentId, message: &Message) -> bool {
-        message.addressed_to(agent)
+        !message.is_to_human()
+            && message.addressed_to(agent)
             && self
                 .delivered
                 .get(agent)
@@ -374,6 +411,38 @@ mod tests {
         assert!(
             board.take_inbox(&agent("late")).messages.is_empty(),
             "not seen before the send"
+        );
+    }
+
+    #[test]
+    fn a_message_to_the_human_reaches_no_inbox_and_no_broadcast_reaches_the_human() {
+        let mut board = MessageBoard::default();
+        let sent = board
+            .send(
+                agent("lead"),
+                NewMessage::new(" Human ", "the headless CLI is not logged in"),
+                [],
+                t0(),
+            )
+            .unwrap()
+            .clone();
+        assert!(sent.is_to_human());
+        assert_eq!(sent.to, HUMAN);
+        board
+            .send(
+                agent("lead"),
+                NewMessage::new(EVERYONE, "stand by"),
+                [agent("human"), agent("w")],
+                t0(),
+            )
+            .unwrap();
+        let broadcast = board.messages().last().unwrap();
+        assert_eq!(broadcast.audience, vec![agent("w")]);
+        assert!(board.take_inbox(&agent("human")).messages.is_empty());
+        assert_eq!(
+            board.list(&agent("lead"), &MessageFilter::default()).len(),
+            2,
+            "the sender's history keeps it"
         );
     }
 

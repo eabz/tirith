@@ -38,14 +38,15 @@ use crate::clock::{Clock, SystemClock};
 use crate::contracts::{Contract, ContractError, ContractKind, NewContract};
 use crate::dashboard::{self, DashboardContext};
 use crate::decisions::{Decision, DecisionError, NewDecision};
+use crate::hangup;
 use crate::lead::LeadPolicy;
 use crate::memory::{
     DEFAULT_SEARCH_LIMIT, MAX_CONTEXT_DEPTH, MAX_SEARCH_LIMIT, MemoryError, MemoryKind, MemoryNote,
     MemorySearch, NewMemory, Permalink,
 };
-use crate::messages::{MessageError, MessageFilter, NewMessage};
+use crate::messages::{HUMAN, MessageError, MessageFilter, NewMessage, is_human};
 use crate::notices::{NewNotice, Notice, NoticeError, NoticeFilter, NoticeKind};
-use crate::registry::{DaemonEntry, Registry};
+use crate::registry::{DaemonEntry, REREGISTER_EVERY, Registration};
 use crate::state::{Brief, State};
 use crate::store::{DaemonInfo, JsonStore, Persister, StoreError};
 use crate::tasks::{NewTask, Pulled, TaskError, TaskStatus};
@@ -119,7 +120,7 @@ pub struct AgentInput {
 pub struct TaskPullInput {
     /// Your stable agent name.
     pub agent: String,
-    /// If no task is free, wait up to this many seconds (max 120) for one.
+    /// Wait up to this many seconds (max 120) while todo tasks are claimed or wait on dependencies.
     #[serde(default)]
     pub wait_secs: Option<u64>,
 }
@@ -487,6 +488,14 @@ fn ok(fields: Value) -> Value {
     with_status("ok", fields)
 }
 
+/// A wait that ended because the caller went away (ADR-0031). Nobody
+/// reads it; the status only keeps the log and tests honest.
+// Same reasoning as `invalid`.
+#[allow(clippy::needless_pass_by_value)]
+fn cancelled(message: impl ToString) -> Value {
+    with_status("cancelled", json!({ "message": message.to_string() }))
+}
+
 // Taking `impl ToString` by value keeps `.map_err(invalid)` ergonomic at every call site.
 #[allow(clippy::needless_pass_by_value)]
 fn invalid(message: impl ToString) -> Value {
@@ -847,12 +856,20 @@ async fn run_async(f: impl Future<Output = Outcome>) -> Value {
     f.await.unwrap_or_else(identity)
 }
 
+/// The calling agent's name. `human` is reserved: it names the human
+/// queue, never an agent (ADR-0027).
 fn agent(raw: &str) -> Result<AgentId, Value> {
+    if is_human(raw) {
+        return Err(invalid(format!(
+            "`{HUMAN}` is reserved for the human queue; pick another agent name"
+        )));
+    }
     AgentId::new(raw).map_err(invalid)
 }
 
+/// An agent name used as a filter, where `human` is allowed.
 fn opt_agent(raw: Option<&str>) -> Result<Option<AgentId>, Value> {
-    raw.map(agent).transpose()
+    raw.map(|r| AgentId::new(r).map_err(invalid)).transpose()
 }
 
 fn paths(raw: &[String]) -> Result<Vec<RepoPath>, Value> {
@@ -926,6 +943,7 @@ impl From<ClaimError> for Value {
             ),
             ClaimError::NotHeld { .. } | ClaimError::NoClaims(_) => not_found(e),
             ClaimError::NoPaths | ClaimError::InvalidTtl(_) => invalid(e),
+            ClaimError::Cancelled => cancelled(e),
         }
     }
 }
@@ -1011,6 +1029,14 @@ pub struct TirithServer {
     persister: Arc<Persister>,
     /// The lead policy (ADR-0027), shared by every session.
     lead: Arc<LeadPolicy>,
+}
+
+/// The result of a call whose caller is gone (ADR-0031). Nobody reads it,
+/// so it skips [`TirithServer::finish`]: lost leases and inbox messages
+/// stay for the agent's next call instead of riding on a reply that is
+/// dropped. State written meanwhile reaches disk on the persister's tick.
+fn unheard(outcome: Value) -> CallToolResult {
+    CallToolResult::structured(outcome)
 }
 
 impl TirithServer {
@@ -1108,6 +1134,7 @@ impl TirithServer {
     async fn claim(
         &self,
         Parameters(input): Parameters<ClaimInput>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let outcome = run_async(async {
             let agent = agent(&input.agent)?;
@@ -1116,8 +1143,17 @@ impl TirithServer {
             let result = match input.wait_secs.filter(|secs| *secs > 0) {
                 Some(secs) => {
                     let wait = std::time::Duration::from_secs(secs);
+                    // Stops waiting, claiming nothing, once the caller is gone.
+                    let gone = hangup::caller_gone(&context);
                     self.state
-                        .claim_waiting(agent.clone(), paths.clone(), reason, input.ttl_secs, wait)
+                        .claim_waiting(
+                            agent.clone(),
+                            paths.clone(),
+                            reason,
+                            input.ttl_secs,
+                            wait,
+                            gone,
+                        )
                         .await
                 }
                 None => self
@@ -1152,6 +1188,9 @@ impl TirithServer {
             Ok(ok(value))
         })
         .await;
+        if hangup::is_caller_gone(&context) {
+            return Ok(unheard(outcome));
+        }
         self.finish(Some(&input.agent), outcome).await
     }
 
@@ -1250,7 +1289,7 @@ impl TirithServer {
     /// Pull the next unblocked task.
     #[tool(
         name = "task_pull",
-        description = "Take the highest-priority unblocked todo task as in_progress. wait_secs max 120: waits for a free task."
+        description = "Take the highest-priority unblocked todo task as in_progress. wait_secs max 120: waits out claims and dependencies."
     )]
     async fn task_pull(
         &self,
@@ -1259,24 +1298,29 @@ impl TirithServer {
     ) -> Result<CallToolResult, McpError> {
         let outcome = run_async(async {
             let agent = agent(&input.agent)?;
-            // With wait_secs the lead policy first waits for a free task.
+            // With wait_secs the lead policy waits while every todo task is
+            // claimed or waits on dependencies (ADR-0028, revised).
             let pulled = match input.wait_secs.filter(|secs| *secs > 0) {
                 Some(secs) => {
                     let wait = std::time::Duration::from_secs(secs);
-                    // rmcp cancels the request's token on an MCP cancel but
-                    // leaves the handler running: stop waiting then, so no
-                    // task goes to a caller that gave up.
+                    // Stop waiting once the caller is gone (cancelled,
+                    // disconnected, session closed), so no task goes to it.
+                    // Nothing is assigned before the waiting pull returns.
                     tokio::select! {
                         biased;
-                        () = context.ct.cancelled() => None,
+                        () = hangup::caller_gone(&context) => {
+                            return Err(cancelled(
+                                "the caller went away while the pull waited; nothing was assigned",
+                            ));
+                        }
                         pulled = self.lead.task_pull_waiting(agent, wait) => pulled,
                     }
                 }
                 None => self.state.task_pull(agent),
             };
             Ok(match pulled {
-                // Every candidate was held: the task is still handed out,
-                // with what it waits for (ADR-0028).
+                // A held task is still handed out, with what it waits for
+                // (ADR-0028).
                 Some(Pulled { task, waiting_on }) if !waiting_on.is_empty() => {
                     ok(json!({ "task": task, "waiting_on": waiting_on }))
                 }
@@ -1285,6 +1329,9 @@ impl TirithServer {
             })
         })
         .await;
+        if hangup::is_caller_gone(&context) {
+            return Ok(unheard(outcome));
+        }
         self.finish(Some(&input.agent), outcome).await
     }
 
@@ -1565,7 +1612,7 @@ impl TirithServer {
         Parameters(input): Parameters<StatusInput>,
     ) -> Result<CallToolResult, McpError> {
         let outcome = run(|| {
-            let agent = opt_agent(input.agent.as_deref())?;
+            let agent = input.agent.as_deref().map(agent).transpose()?;
             let report = self.state.status(agent.as_ref());
             let mut value = json!({
                 "version": VERSION,
@@ -1745,7 +1792,7 @@ impl TirithServer {
     /// Send a message to another agent.
     #[tool(
         name = "message_send",
-        description = "Message an agent (to: name, or * for all active); delivered on their next call. text: max 1000 chars."
+        description = "Message an agent (to: name, * for all active, human for the human queue); delivered on their next call. text: max 1000 chars."
     )]
     async fn message_send(
         &self,
@@ -1759,8 +1806,8 @@ impl TirithServer {
                 new = new.with_reply_to(self.state.resolve_message(raw)?);
             }
             let message = self.state.message_send(agent, new)?;
-            // A message to the lead that needs the human escalates; one to
-            // an agent answers its open escalations (ADR-0027).
+            // A message to `human` becomes a human queue item; one to an
+            // agent answers its open escalations (ADR-0027).
             self.lead.message_sent(&message);
             Ok(ok(json!({ "message": compact(to_value(&message)) })))
         });
@@ -1847,7 +1894,9 @@ pub struct ServeOptions {
     pub clock: Option<Arc<dyn Clock>>,
     /// The per-user daemon registry to announce this daemon in, for the
     /// menu bar tray (ADR-0019). `None` registers nowhere, which is what
-    /// tests want; `tirith serve` passes [`Registry::default_path`].
+    /// tests want; `tirith serve` passes
+    /// [`Registry::default_path`](crate::registry::Registry::default_path).
+    /// The daemon puts its entry back every minute if it goes missing.
     pub registry: Option<PathBuf>,
 }
 
@@ -1880,7 +1929,7 @@ pub struct ServerHandle {
     state: Arc<State>,
     store: Arc<JsonStore>,
     persister: Arc<Persister>,
-    registry: Option<PathBuf>,
+    registration: Option<Registration>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), std::io::Error>>,
 }
@@ -1943,11 +1992,8 @@ impl ServerHandle {
         if ours {
             self.store.clear_daemon_info()?;
         }
-        if let Some(path) = &self.registry
-            && let Err(error) =
-                Registry::load(path).and_then(|mut r| r.unregister(std::process::id()))
-        {
-            tracing::warn!(%error, "could not leave the daemon registry");
+        if let Some(registration) = self.registration.take() {
+            registration.leave().await;
         }
         match result {
             Ok(Ok(())) => Ok(()),
@@ -2000,6 +2046,9 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
         mcp_url: mcp_url(addr),
         repo_root: options.repo_root.display().to_string(),
     };
+    // Each MCP request carries a hangup tied to its response, so a call
+    // that waits notices a caller that disconnected (ADR-0031).
+    let mcp = axum::routing::any_service(mcp).layer(axum::middleware::from_fn(hangup::layer));
     let router = dashboard::router(context).nest_service("/mcp", mcp);
 
     let info = DaemonInfo {
@@ -2011,21 +2060,23 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
     };
     store.write_daemon_info(&info)?;
 
-    // Announce this daemon to the tray's registry. Best effort: a registry
-    // that cannot be written must not stop a daemon.
-    if let Some(path) = &options.registry {
-        let entry = DaemonEntry {
-            root: options.repo_root.clone(),
-            url: info.url,
-            dashboard_url: info.dashboard_url,
-            pid: info.pid,
-            version: info.version,
-            started_at: info.started_at,
-        };
-        if let Err(error) = Registry::load(path).and_then(|mut r| r.register(entry)) {
-            tracing::warn!(%error, "could not register in the daemon registry");
+    // Announce this daemon to the tray's registry, and keep it there while
+    // it runs. Best effort: a registry that cannot be written must not stop
+    // a daemon.
+    let registration = match options.registry {
+        Some(path) => {
+            let entry = DaemonEntry {
+                root: options.repo_root.clone(),
+                url: info.url,
+                dashboard_url: info.dashboard_url,
+                pid: info.pid,
+                version: info.version,
+                started_at: info.started_at,
+            };
+            Some(Registration::start(path, entry, REREGISTER_EVERY).await)
         }
-    }
+        None => None,
+    };
 
     let (tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
@@ -2041,7 +2092,7 @@ pub async fn start(options: ServeOptions) -> Result<ServerHandle, ServeError> {
         state,
         store,
         persister,
-        registry: options.registry,
+        registration,
         shutdown: Some(tx),
         task,
     })

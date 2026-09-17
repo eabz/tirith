@@ -160,7 +160,10 @@ too_many_lines = "allow"        # length is reviewed by humans, not counted
     small, does it pull a tree we do not need? Add a comment in
     `Cargo.toml` after the entry saying what it is for.
 35. Pin to a caret version (`"1"` style is fine); commit `Cargo.lock`.
-36. Current approved set: `rmcp`, `tokio`, `axum`, `serde`, `serde_json`,
+36. Current approved set: `rmcp`, `tokio`, `axum`, `http-body` (body
+    types axum does not re-export, for the hangup middleware,
+    [ADR-0031](../5-decisions/0031-waits-end-when-the-caller-goes.md)),
+    `serde`, `serde_json`,
     `schemars`, `clap`, `thiserror`, `anyhow` (binary only), `chrono`,
     `uuid`, `tracing`, `tracing-subscriber`, `reqwest` (no TLS; the MCP
     client transport and localhost health checks),

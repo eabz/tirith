@@ -4,12 +4,14 @@
 Usage: fake_worker_hubs.py <run_dir> <agent> [--rogue]
 
 It follows the hubs WORKER_PROMPT protocol mechanically for the run's arm
-(meta.json: claims file|symbol, wait sleep|server): pull a task, and for
-each shared file claim the file or the task's anchors in it, copy those
+(meta.json claims, hold, wait, pull; see fake_common.py): pull a task, and
+for each shared file claim the file or the task's anchors in it, copy those
 top-level symbols from reference/ into the file (read, splice, atomic
-write), release, write a trivial test file, publish a notice for the
-breaking task, mark done, release. Unlike the Forge fake it really
-implements the tasks, so a clean run reaches full hidden acceptance.
+write), check, release (edit windows) or hold everything until done
+(--hold task); write a trivial test file, publish a notice for the breaking
+task, mark done, release. Unlike a marker-only fake it really implements the
+tasks, so a clean run reaches full hidden acceptance. Tool calls and writes
+go to a synthetic transcript for the turn and violation scorers.
 
 --rogue simulates the failure the scenario must detect: it claims nothing,
 copies its files as they were at the baseline commit, waits until every
@@ -20,20 +22,15 @@ overwriting everyone else's edits to the same files.
 import ast
 import json
 import os
-import random
-import subprocess
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_common import FakeWorker  # noqa: E402
 
-def tb(run, agent, tool, args):
-    proc = subprocess.run([str(run / "tb"), tool, json.dumps(args)], capture_output=True, text=True,
-                          env=dict(os.environ, TB_RUN=str(run), TB_AGENT=agent), timeout=180)
-    try:
-        return json.loads(proc.stdout.strip().splitlines()[-1])
-    except (json.JSONDecodeError, IndexError):
-        return {"status": "error", "message": (proc.stderr or proc.stdout)[:300]}
+PLACEHOLDER_TEST = ("import unittest\n\n\nclass FakeTest(unittest.TestCase):\n"
+                    "    def test_placeholder(self):\n        pass\n")
 
 
 def symbol_span(tree, name):
@@ -79,77 +76,53 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def claim(run, agent, meta, keys, reason):
-    args = {"paths": keys, "reason": reason, "ttl_secs": 1800}
-    if meta.get("wait") == "server":
-        args["wait_secs"] = 120
-    for _ in range(240):
-        response = tb(run, agent, "claim", args)
-        if response.get("status") == "ok":
-            return True
-        time.sleep(0.5)
-    return False
+def steps_for(spec, scen):
+    """[(rel, anchors, apply)] for one task: its anchor groups, its test file, and for the break tests/test_money.py."""
+    groups = {}
+    for anchor in spec["anchors"]:
+        path, _, symbol = anchor.partition("#")
+        groups.setdefault(path, []).append(symbol)
+    steps = []
+    for path, symbols in groups.items():
+        reference = (scen / "reference" / path).read_text()
+        steps.append((path, ["%s#%s" % (path, s) for s in symbols],
+                      lambda text, reference=reference, symbols=symbols: splice(text, reference, symbols)))
+    steps.append(("tests/test_%s.py" % spec["key"].replace("-", "_"), None, lambda text: PLACEHOLDER_TEST))
+    if spec["title"].startswith("BREAKING"):
+        money_tests = (scen / "reference" / "tests" / "test_money.py").read_text()
+        steps.append(("tests/test_money.py", ["tests/test_money.py"], lambda text: money_tests))
+    return steps
 
 
 def main():
     if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "--rogue"):
         raise SystemExit("usage: fake_worker_hubs.py <run_dir> <agent> [--rogue]")
-    run, agent, rogue = Path(sys.argv[1]).resolve(), sys.argv[2], len(sys.argv) == 4
-    meta = json.loads((run / "meta.json").read_text())
-    scen = Path(meta["scenario_dir"])
+    worker = FakeWorker(sys.argv[1], sys.argv[2])
+    rogue = len(sys.argv) == 4
+    scen = Path(worker.meta["scenario_dir"])
     specs = {t["title"]: t for t in json.loads((scen / "tasks.json").read_text())["tasks"]}
-    repo = run / "repo"
     if rogue:
         time.sleep(2)  # let the honest workers take the first tasks
-    tb(run, agent, "memory_search", {})
-    idle = 0
-    while idle < 120:
-        pulled = tb(run, agent, "task_pull", {})
-        if pulled.get("status") != "ok":
-            if tb(run, agent, "task_list", {"status": "todo"}).get("total", 0) == 0:
-                break
-            idle += 1
-            time.sleep(0.5)
-            continue
-        task = pulled["task"]
+    worker.tb("memory_search", {})
+    while True:
+        task = worker.pull()
+        if task is None:
+            break
         spec = specs[task["title"]]
-        groups = {}
-        for anchor in spec["anchors"]:
-            path, _, symbol = anchor.partition("#")
-            groups.setdefault(path, []).append(symbol)
+        steps = steps_for(spec, scen)
         if rogue:
-            stale = {p: subprocess.run(["git", "-C", str(repo), "show", "HEAD:" + p], capture_output=True,
-                                       text=True).stdout for p in groups}
-            others = len(specs) - 1
-            for _ in range(600):
-                if tb(run, agent, "task_list", {"status": "done", "limit": 50}).get("total", 0) >= others:
-                    break
-                time.sleep(0.5)
-        for path, symbols in groups.items():
-            keys = [path] if meta.get("claims") != "symbol" else ["%s#%s" % (path, s) for s in symbols]
-            if not rogue and not claim(run, agent, meta, keys, task["title"]):
-                raise SystemExit("%s: gave up claiming %s" % (agent, keys))
-            target = repo / path
-            base = stale[path] if rogue else target.read_text()
-            write_atomic(target, splice(base, (scen / "reference" / path).read_text(), symbols))
-            time.sleep(random.uniform(1.0, 2.5))
-            if not rogue:
-                tb(run, agent, "release", {"paths": keys})
-        test_path = "tests/test_%s.py" % spec["key"].replace("-", "_")
-        if not rogue:
-            claim(run, agent, meta, [test_path], task["title"])
-        write_atomic(repo / test_path, "import unittest\n\n\nclass FakeTest(unittest.TestCase):\n"
-                                       "    def test_placeholder(self):\n        pass\n")
+            worker.do_rogue(task, steps, others=len(specs) - 1)
+            continue
+        notice = None
         if spec["title"].startswith("BREAKING"):
-            if not rogue:
-                claim(run, agent, meta, ["tests/test_money.py"], task["title"])
-                (repo / "tests" / "test_money.py").write_text((scen / "reference" / "tests" / "test_money.py").read_text())
-            tb(run, agent, "notice_publish", {"kind": "signature", "summary": "round_money(amount, currency): currency is now required",
-                                              "from": "round_money(amount)", "to": "round_money(amount, currency)",
-                                              "affected_paths": ["tally/money.py", "tally/pricing.py"]})
-        tb(run, agent, "task_update", {"task_id": task["id"], "status": "done", "note": "fake worker"})
-        tb(run, agent, "release", {})
-    print("%s finished" % agent)
+            def notice():
+                worker.tb("notice_publish", {
+                    "kind": "signature", "summary": "round_money(amount, currency): currency is now required",
+                    "from": "round_money(amount)", "to": "round_money(amount, currency)",
+                    "affected_paths": ["tally/money.py", "tally/pricing.py"]})
+        worker.do_task(task, steps, before_done=notice)
+    worker.transcript.text("%s finished: %s" % (worker.agent, dict(worker.stats)))
+    print("%s finished %s" % (worker.agent, json.dumps(dict(worker.stats), sort_keys=True)))
 
 
 if __name__ == "__main__":

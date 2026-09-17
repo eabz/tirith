@@ -32,8 +32,11 @@ src/cli.rs         CLI (clap): serve, stdio, tray, update, plus one
 src/update.rs      `tirith update`: re-runs the release installer in place.
 src/server.rs      MCP surface (rmcp): tool inputs, outcome formatting,
                    and `start`, which wires everything into one HTTP server.
+src/hangup.rs      Middleware on `/mcp` that ties a hangup signal to each
+                   response, so a waiting call stops when its caller leaves.
 src/dashboard.rs   `/` (embedded dashboard.html), `/logo.png`, `/api/state`,
-                   `/api/health`, `/api/lead`, `/api/human`.
+                   `/api/health`, `/api/lead`, `/api/human`, and
+                   `POST /api/human/{id}/done`, its one write.
 src/registry.rs    Per-user registry of running daemons (every platform).
 src/tray.rs        `tirith tray`, the macOS menu bar icon (feature `tray`).
 src/client.rs      MCP client used by the CLI and integration tests.
@@ -72,7 +75,11 @@ Rules that keep the layers honest:
 
 Agents identify themselves with a caller-supplied `agent` string on every
 call. MCP sessions reconnect, and HTTP gives no reliable signal when a
-client dies, so identity cannot hang off the transport.
+client dies, so identity cannot hang off the transport. The transport is
+used only to end a call still in flight: a `claim` or `task_pull` waiting
+with `wait_secs` stops when its request is cancelled or its connection or
+session closes
+([ADR-0031](../5-decisions/0031-waits-end-when-the-caller-goes.md)).
 
 Claims are leases with a TTL (default 10 minutes). Any call from the owning
 agent renews the lease, but a lease cannot live longer than four TTLs (at
@@ -161,10 +168,13 @@ favicon.
 to decide whether the daemon recorded in `daemon.json` is still alive.
 `/api/lead` returns the swarm lead (the holder of `.tirith/lead`) and the
 newest rows of the lead decision log; the header of the page shows the
-lead and its lease. `/api/human` returns the human queue, the escalations
-routed to the human and not yet answered; the same list is `needs_you` in
-`/api/state`, shown first on the page as "Needs you" and counted in the
-macOS tray, which posts a notification when a daemon's queue grows.
+lead and its lease. `/api/human` returns the human queue: messages sent to
+`human`, and escalations raised while there was no lead, not yet answered.
+The same list is `needs_you` in `/api/state`, shown first on the page as
+"Needs you" with a Done button and a reply box per item, and listed in the
+macOS tray, which posts a notification naming the sender and first line of
+each new item. `POST /api/human/{id}/done` answers one; it is the only
+route that writes, and it takes same-origin JSON only.
 
 ## Transport and port
 

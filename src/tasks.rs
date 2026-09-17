@@ -255,9 +255,31 @@ pub struct Hold {
 pub struct Pulled {
     /// The task, now in progress.
     pub task: Task,
-    /// Held paths overlapping the task's paths. Empty unless every
-    /// candidate was held, in which case the caller waits for these.
+    /// Held paths overlapping the task's paths, sorted and deduplicated,
+    /// which the caller waits for. Empty when the task was free. Otherwise
+    /// other agents' in-progress task paths, plus their live claims when
+    /// every candidate overlapped one.
     pub waiting_on: Vec<Hold>,
+}
+
+/// Why [`TaskBoard::pull_ready`] assigned nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotReady {
+    /// No task is `todo`: no claim ending or dependency finishing can free
+    /// one, so there is nothing to wait for.
+    NoTodo,
+    /// Some task is `todo`, but each one waits on unfinished dependencies
+    /// or overlaps another agent's live claim.
+    Held,
+}
+
+/// The candidate a pull takes, before it is assigned.
+struct Choice {
+    id: TaskId,
+    waiting_on: Vec<Hold>,
+    /// Whether it overlaps another agent's live claim, which a choice only
+    /// does when every candidate does.
+    claim_held: bool,
 }
 
 /// The holds overlapping any of `task`'s paths under the claim rule
@@ -370,43 +392,96 @@ impl TaskBoard {
             .all(|d| matches!(self.get(*d).map(|t| &t.state), Some(TaskState::Done { .. })))
     }
 
-    /// Assigns the next unblocked `todo` task to `agent` and marks it in
+    /// Assigns the best unblocked `todo` task to `agent` and marks it in
     /// progress (ADR-0028). Candidates go in [`candidates`](Self::candidates)
-    /// order, but one whose paths overlap `holds` (other agents' live claims,
-    /// supplied by the caller) or another agent's in-progress task is
-    /// skipped: a free lower-priority task beats a held higher-priority one.
-    /// A task with no paths is never held. When every candidate is held, the
-    /// first is assigned anyway and [`Pulled::waiting_on`] says what it
-    /// waits for.
-    pub fn pull(&mut self, agent: AgentId, holds: &[Hold], now: DateTime<Utc>) -> Option<Pulled> {
-        let holds = self.with_task_holds(&agent, holds);
-        let candidates = self.candidates();
-        let first = candidates.first()?;
-        let (id, waiting_on) = candidates
-            .iter()
-            .find(|t| blockers(t, &holds).is_empty())
-            .map_or_else(
-                || (first.id, blockers(first, &holds)),
-                |t| (t.id, Vec::new()),
-            );
-        let task = self.pull_id(agent, id, now)?.clone();
-        Some(Pulled { task, waiting_on })
+    /// order and are ranked in three tiers: a task no hold overlaps first;
+    /// then one whose only overlaps are other agents' in-progress task
+    /// paths, listed in [`Pulled::waiting_on`]; then, when every candidate
+    /// overlaps a live claim in `claims` (other agents' claims, supplied by
+    /// the caller), the first of them, with every hold it overlaps. A task
+    /// with no paths is never held, and the caller's own claims and tasks
+    /// never hold.
+    pub fn pull(&mut self, agent: AgentId, claims: &[Hold], now: DateTime<Utc>) -> Option<Pulled> {
+        let choice = self.choose(&agent, claims)?;
+        self.assign(agent, choice, now)
     }
 
-    /// Unblocked `todo` tasks in pull order that no path in `holds` or in
-    /// another agent's in-progress task overlaps.
-    pub fn free_candidates(&self, agent: &AgentId, holds: &[Hold]) -> Vec<&Task> {
-        let holds = self.with_task_holds(agent, holds);
-        self.candidates()
-            .into_iter()
-            .filter(|t| blockers(t, &holds).is_empty())
-            .collect()
+    /// [`pull`](Self::pull) for a caller that can wait (ADR-0028, revised):
+    /// assigns a task only while no live claim in `claims` overlaps it, so a
+    /// claimed file is waited for rather than handed out. When nothing is
+    /// ready, says whether waiting can help: [`NotReady::Held`] while a
+    /// `todo` task waits on a claim or on dependencies, [`NotReady::NoTodo`]
+    /// when the board holds no `todo` task at all.
+    pub fn pull_ready(
+        &mut self,
+        agent: AgentId,
+        claims: &[Hold],
+        now: DateTime<Utc>,
+    ) -> Result<Pulled, NotReady> {
+        let ready = self
+            .choose(&agent, claims)
+            .filter(|choice| !choice.claim_held)
+            .and_then(|choice| self.assign(agent, choice, now));
+        match ready {
+            Some(pulled) => Ok(pulled),
+            None if self.tasks.iter().any(|t| t.state == TaskState::Todo) => Err(NotReady::Held),
+            None => Err(NotReady::NoTodo),
+        }
     }
 
-    /// `holds` plus the paths of in-progress tasks owned by agents other
-    /// than `agent`.
-    fn with_task_holds(&self, agent: &AgentId, holds: &[Hold]) -> Vec<Hold> {
-        let mut all = holds.to_vec();
+    /// The candidate [`pull`](Self::pull) takes, in its tier order, or
+    /// `None` when no `todo` task is unblocked.
+    fn choose(&self, agent: &AgentId, claims: &[Hold]) -> Option<Choice> {
+        let tasks = self.task_holds(agent);
+        let mut behind_tasks: Option<Choice> = None;
+        let mut behind_claims: Option<Choice> = None;
+        for task in self.candidates() {
+            let by_claims = blockers(task, claims);
+            let by_tasks = blockers(task, &tasks);
+            match (by_claims.is_empty(), by_tasks.is_empty()) {
+                (true, true) => {
+                    return Some(Choice {
+                        id: task.id,
+                        waiting_on: Vec::new(),
+                        claim_held: false,
+                    });
+                }
+                (true, false) if behind_tasks.is_none() => {
+                    behind_tasks = Some(Choice {
+                        id: task.id,
+                        waiting_on: by_tasks,
+                        claim_held: false,
+                    });
+                }
+                (false, _) if behind_claims.is_none() => {
+                    let mut waiting_on = by_claims;
+                    waiting_on.extend(by_tasks);
+                    waiting_on.sort();
+                    waiting_on.dedup();
+                    behind_claims = Some(Choice {
+                        id: task.id,
+                        waiting_on,
+                        claim_held: true,
+                    });
+                }
+                _ => {}
+            }
+        }
+        behind_tasks.or(behind_claims)
+    }
+
+    /// Takes `choice`, unless another agent pulled it in between.
+    fn assign(&mut self, agent: AgentId, choice: Choice, now: DateTime<Utc>) -> Option<Pulled> {
+        let task = self.pull_id(agent, choice.id, now)?.clone();
+        Some(Pulled {
+            task,
+            waiting_on: choice.waiting_on,
+        })
+    }
+
+    /// The paths of in-progress tasks owned by agents other than `agent`.
+    fn task_holds(&self, agent: &AgentId) -> Vec<Hold> {
+        let mut all = Vec::new();
         for task in &self.tasks {
             if let TaskState::InProgress { owner } = &task.state
                 && owner != agent
@@ -811,7 +886,6 @@ mod tests {
             .unwrap()
             .id;
         let holds = [hold("src", "x")];
-        assert_eq!(board.free_candidates(&agent("b"), &holds)[0].id, pathless);
         assert_eq!(
             board.pull(agent("b"), &holds, t0()).unwrap().task.id,
             pathless
@@ -834,15 +908,15 @@ mod tests {
             .unwrap()
             .id;
         let holds = [hold("app/config.py#Config::from_env", "x")];
-        let free: Vec<TaskId> = board
-            .free_candidates(&agent("b"), &holds)
-            .iter()
-            .map(|t| t.id)
-            .collect();
-        assert_eq!(free, vec![sibling]);
         let pulled = board.pull(agent("b"), &holds, t0()).unwrap();
         assert_eq!(pulled.task.id, sibling);
-        assert_ne!(pulled.task.id, whole);
+        assert!(pulled.waiting_on.is_empty());
+        // The anchored claim still holds the whole-file task for a waiter.
+        assert_eq!(
+            board.pull_ready(agent("c"), &holds, t0()),
+            Err(NotReady::Held)
+        );
+        assert_eq!(board.get(whole).unwrap().state, TaskState::Todo);
     }
 
     #[test]
@@ -882,5 +956,105 @@ mod tests {
         let pulled = board.pull(agent("b"), &[], t0()).unwrap();
         assert_eq!(pulled.task.id, next);
         assert!(pulled.waiting_on.is_empty());
+    }
+
+    #[test]
+    fn a_task_behind_task_paths_beats_one_behind_a_claim() {
+        let mut board = TaskBoard::default();
+        board
+            .create(agent("a"), at("taken", 10, &["src/hub.rs"]), t0())
+            .unwrap();
+        board
+            .create(agent("a"), at("claimed", 9, &["src/claims.rs"]), t0())
+            .unwrap();
+        let behind_task = board
+            .create(agent("a"), at("same hub", 5, &["src/hub.rs"]), t0())
+            .unwrap()
+            .id;
+        board.pull(agent("x"), &[], t0()).unwrap();
+        let claims = [hold("src/claims.rs", "y")];
+
+        let pulled = board.pull_ready(agent("b"), &claims, t0()).unwrap();
+        assert_eq!(pulled.task.id, behind_task);
+        assert_eq!(pulled.waiting_on, vec![hold("src/hub.rs", "x")]);
+    }
+
+    #[test]
+    fn a_free_task_beats_one_behind_task_paths() {
+        let mut board = TaskBoard::default();
+        board
+            .create(agent("a"), at("taken", 10, &["src/hub.rs"]), t0())
+            .unwrap();
+        board
+            .create(agent("a"), at("same hub", 9, &["src/hub.rs"]), t0())
+            .unwrap();
+        let free = board
+            .create(agent("a"), at("elsewhere", 1, &["src/leaf.rs"]), t0())
+            .unwrap()
+            .id;
+        board.pull(agent("x"), &[], t0()).unwrap();
+        let pulled = board.pull_ready(agent("b"), &[], t0()).unwrap();
+        assert_eq!(pulled.task.id, free);
+        assert!(pulled.waiting_on.is_empty());
+    }
+
+    #[test]
+    fn a_ready_pull_leaves_claimed_tasks_that_a_plain_pull_hands_out() {
+        let mut board = TaskBoard::default();
+        let top = board
+            .create(agent("a"), at("top", 9, &["src/state.rs"]), t0())
+            .unwrap()
+            .id;
+        board
+            .create(agent("a"), at("taken", 10, &["src/state.rs"]), t0())
+            .unwrap();
+        board.pull(agent("x"), &[], t0()).unwrap();
+        let claims = [hold("src/state.rs", "y")];
+
+        assert_eq!(
+            board.pull_ready(agent("b"), &claims, t0()),
+            Err(NotReady::Held)
+        );
+        assert_eq!(board.get(top).unwrap().state, TaskState::Todo);
+        // A plain pull hands it out anyway, with every hold it overlaps.
+        let pulled = board.pull(agent("b"), &claims, t0()).unwrap();
+        assert_eq!(pulled.task.id, top);
+        assert_eq!(
+            pulled.waiting_on,
+            vec![hold("src/state.rs", "x"), hold("src/state.rs", "y")]
+        );
+    }
+
+    #[test]
+    fn a_ready_pull_waits_only_while_a_todo_task_is_left() {
+        let mut board = TaskBoard::default();
+        assert_eq!(
+            board.pull_ready(agent("b"), &[], t0()),
+            Err(NotReady::NoTodo)
+        );
+
+        let first = board
+            .create(agent("a"), task("first", 0, vec![]), t0())
+            .unwrap()
+            .id;
+        let second = board
+            .create(agent("a"), task("second", 0, vec![first]), t0())
+            .unwrap()
+            .id;
+        board.pull(agent("x"), &[], t0()).unwrap();
+        // `second` waits on `first`: not a candidate, but worth waiting for.
+        assert_eq!(board.pull_ready(agent("b"), &[], t0()), Err(NotReady::Held));
+        board
+            .update(agent("x"), first, TaskStatus::Done, None, false, t0())
+            .unwrap();
+        assert_eq!(
+            board.pull_ready(agent("b"), &[], t0()).unwrap().task.id,
+            second
+        );
+        // Everything is in progress or done: nothing left to wait for.
+        assert_eq!(
+            board.pull_ready(agent("c"), &[], t0()),
+            Err(NotReady::NoTodo)
+        );
     }
 }

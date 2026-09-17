@@ -1,0 +1,1 @@
+Run `tb task_pull '{"wait_secs":120}'`. When no task is free, the server waits up to 120 seconds for one (a dependency finishing, a claim released) and then hands it to you, or returns `none`. On `none`, run `tb task_list '{"status":"todo"}'`. If `total` is 0, stop: there is no work left. Otherwise pull again with `"wait_secs":120`, for at most 15 minutes of waiting in total.

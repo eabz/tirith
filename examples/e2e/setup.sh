@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# setup.sh <run_dir> <port> [--scenario forge|hubs] [--claims file|symbol] [--wait sleep|server]
+# setup.sh <run_dir> <port> [--scenario forge|hubs] [--arm baseline|windows|symbols]
+#          [--claims file|symbol] [--hold task|edit] [--wait sleep|server] [--pull poll|wait]
 #          [--protocol manual|hooks]
 #
 # Prepares one benchmark run: a fresh git repo copy of the scenario, a
@@ -9,43 +10,56 @@
 # --scenario forge (default) is the shared-files and breaking-change
 #   scenario at the kit root; hubs is the sub-file contention scenario in
 #   scenarios/hubs/.
-# --claims file|symbol (hubs only, default file) selects the claim
-#   granularity paragraph of the worker prompt; symbol requires a daemon
-#   that supports `path#Symbol` anchors (probed here).
-# --wait sleep|server (hubs only; default server) selects how workers wait
-#   for refused claims: claim `wait_secs` 120 (probed here), or a foreground
-#   python sleep and retry for daemons without wait_secs. Both claims arms of
-#   a comparison must use the same value.
+# The worker protocol is four prompt paragraphs (prompt/*.md), one option each:
+# --claims file|symbol (default file): claim granularity; symbol requires a
+#   daemon that supports `path#Symbol` anchors (probed here).
+# --hold task|edit (default: forge task, hubs edit): hold claims for the
+#   whole task, or only while editing (edit windows).
+# --wait sleep|server (default: forge sleep, hubs server): on a refused claim,
+#   sleep 30 s in the foreground and retry, or claim with `wait_secs` 120
+#   (probed here).
+# --pull poll|wait (default poll): `task_pull` without wait_secs and a 30 s
+#   sleep when nothing is free, or `task_pull` with `wait_secs` 120 (probed).
+# --arm sets all four for the coordination benchmark (README.md,
+#   "Coordination benchmark"); an explicit option that contradicts it is refused:
+#   baseline = file, task, sleep, poll   (Tirith 1.0.3 behavior)
+#   windows  = file, edit, server, wait  (edit windows and server waits)
+#   symbols  = symbol, edit, server, wait (windows plus ADR-0029 anchors)
 # --protocol manual|hooks (default manual): hooks writes Claude Code hook
 #   settings into <run_dir>/repo/.claude/settings.json (and <run_dir>/hooks/
 #   settings.json) that claim, release, and feed tasks for the worker; see
 #   hooks/README.md. Hooks claim whole files with wait_secs (probed here), so
-#   it needs --claims file and implies --wait server. Only the run directory
-#   is touched; a run directory inside the Tirith repository is refused.
+#   it needs --claims file and implies --wait server (--arm, --hold and --pull
+#   do not apply). Only the run directory is touched; a run directory inside
+#   the Tirith repository is refused.
 #   HOOKS_CONFIG='{...}' overrides hooks/common.py DEFAULTS for the run.
 #
-# Env: TIRITH_BIN (default ~/.cargo/bin/tirith), TIRITH_REPO (the Tirith
-# checkout, used to refuse hook runs inside it; default: the repository this
-# kit lives in).
+# Env: TIRITH_BIN (default ~/.cargo/bin/tirith; a `$TIRITH_BIN.build.json`
+# sidecar from bench/freeze_bin.sh is copied into meta.json as tirith_build),
+# TIRITH_REPO (the Tirith checkout, used to refuse hook runs inside it;
+# default: the repository this kit lives in).
 # UNSAFE_SKIP_ANCHOR_PROBE=1 lets --claims symbol run on a daemon without
 # anchor support, for plumbing checks only: such a daemon treats `f#X` as a
 # path unrelated to `f`, so the run measures nothing. meta.json records it.
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <run_dir> <port> [--scenario forge|hubs] [--claims file|symbol] [--wait sleep|server] [--protocol manual|hooks]" >&2
+  echo "usage: $0 <run_dir> <port> [--scenario forge|hubs] [--arm baseline|windows|symbols] [--claims file|symbol] [--hold task|edit] [--wait sleep|server] [--pull poll|wait] [--protocol manual|hooks]" >&2
   exit 2
 }
 [ $# -ge 2 ] || usage
 RUN_ARG=$1 PORT=$2
 shift 2
-SCENARIO=forge CLAIMS=file WAIT= CLAIMS_SET= PROTOCOL=manual
+SCENARIO=forge ARM= CLAIMS= HOLD= WAIT= PULL= PROTOCOL=manual
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
   case "$1" in
     --scenario) SCENARIO=$2 ;;
-    --claims) CLAIMS=$2 CLAIMS_SET=1 ;;
+    --arm) ARM=$2 ;;
+    --claims) CLAIMS=$2 ;;
+    --hold) HOLD=$2 ;;
     --wait) WAIT=$2 ;;
+    --pull) PULL=$2 ;;
     --protocol) PROTOCOL=$2 ;;
     *) usage ;;
   esac
@@ -53,19 +67,34 @@ while [ $# -gt 0 ]; do
 done
 case "$PORT" in ''|*[!0-9]*) usage ;; esac
 case "$SCENARIO" in forge|hubs) ;; *) usage ;; esac
-case "$CLAIMS" in file|symbol) ;; *) usage ;; esac
 case "$PROTOCOL" in manual|hooks) ;; *) usage ;; esac
 if [ "$PROTOCOL" = hooks ]; then
-  [ "$CLAIMS" = file ] || { echo "--protocol hooks claims whole files; use --claims file" >&2; exit 2; }
+  [ -z "$ARM$HOLD$PULL" ] || { echo "--arm, --hold and --pull do not apply to --protocol hooks" >&2; exit 2; }
+  [ "${CLAIMS:-file}" = file ] || { echo "--protocol hooks claims whole files; use --claims file" >&2; exit 2; }
   [ "$WAIT" != sleep ] || { echo "--protocol hooks waits with claim wait_secs; drop --wait sleep" >&2; exit 2; }
+  CLAIMS=file WAIT=server
 fi
-if [ "$SCENARIO" = forge ]; then
-  if [ -n "$CLAIMS_SET" ] || [ -n "$WAIT" ]; then echo "--claims and --wait apply to --scenario hubs only" >&2; exit 2; fi
-  WAIT=sleep
-fi
-WAIT=${WAIT:-server}
-if [ "$PROTOCOL" = hooks ]; then WAIT=server; fi
+# An arm fixes all four protocol paragraphs; explicit options may only repeat it.
+arm_value() {  # arm_value <VARIABLE> <option> <value the arm sets>
+  local given=${!1}
+  if [ -n "$given" ] && [ "$given" != "$3" ]; then echo "--arm $ARM sets --$2 $3, not $given" >&2; exit 2; fi
+  printf -v "$1" '%s' "$3"
+}
+set_arm() { arm_value CLAIMS claims "$1"; arm_value HOLD hold "$2"; arm_value WAIT wait "$3"; arm_value PULL pull "$4"; }
+case "$ARM" in
+  '') ;;
+  baseline) set_arm file task sleep poll ;;
+  windows) set_arm file edit server wait ;;
+  symbols) set_arm symbol edit server wait ;;
+  *) usage ;;
+esac
+# Defaults without an arm keep the scenarios' original prompts.
+CLAIMS=${CLAIMS:-file} PULL=${PULL:-poll}
+if [ "$SCENARIO" = forge ]; then HOLD=${HOLD:-task} WAIT=${WAIT:-sleep}; else HOLD=${HOLD:-edit} WAIT=${WAIT:-server}; fi
+case "$CLAIMS" in file|symbol) ;; *) usage ;; esac
+case "$HOLD" in task|edit) ;; *) usage ;; esac
 case "$WAIT" in sleep|server) ;; *) usage ;; esac
+case "$PULL" in poll|wait) ;; *) usage ;; esac
 
 KIT=$(cd "$(dirname "$0")" && pwd)
 if [ "$SCENARIO" = forge ]; then SCEN=$KIT; else SCEN=$KIT/scenarios/$SCENARIO; fi
@@ -138,6 +167,12 @@ if [ "$WAIT" = server ]; then
   call probe-a release '{}' > /dev/null 2>&1 || true; call probe-b release '{}' > /dev/null 2>&1 || true
   perl -e "exit(($T1 - $T0) >= 0.8 ? 0 : 1)" || fail "--wait server / --protocol hooks: this daemon ignores claim wait_secs"
 fi
+if [ "$PULL" = wait ] && [ "$PROTOCOL" = manual ]; then
+  # By the tool description: timing a pull would need a held task on the board
+  # (an empty board answers none at once), and a probe task would stay there.
+  "$TIRITH_BIN" --url "$URL" --json tools | jq -e 'map(select(.[0] == "task_pull"))[0][1] | test("wait_secs")' \
+    > /dev/null || fail "--pull wait: this daemon's task_pull does not take wait_secs"
+fi
 if [ "$CLAIMS" = symbol ]; then
   call probe-a claim '{"paths":["zz-probe/a.py"],"reason":"setup probe","brief":false}' > /dev/null
   NESTED=$(call probe-b claim '{"paths":["zz-probe/a.py#f"],"reason":"setup probe","brief":false}' 2>/dev/null | jq -r .status || true)
@@ -176,18 +211,25 @@ cp "$KIT/tb" "$RUN/tb"
 chmod +x "$RUN/tb"
 : > "$RUN/coord.jsonl"
 : > "$RUN/coord_full.jsonl"
-# Scenarios with per-task anchors score lost writes from done-time snapshots.
-if jq -e '[.tasks[] | has("anchors")] | any' "$SCEN/tasks.json" > /dev/null; then mkdir -p "$RUN/snapshots"; fi
+# Lost writes are scored from done-time code snapshots (tb takes them).
+mkdir -p "$RUN/snapshots"
+BUILD='null'
+if [ -f "$TIRITH_BIN.build.json" ]; then BUILD=$(jq -c . "$TIRITH_BIN.build.json") || fail "bad $TIRITH_BIN.build.json"; fi
+if [ "$PROTOCOL" = hooks ]; then HOLD= PULL=; fi
 jq -n --arg url "$URL" --argjson port "$PORT" --argjson pid "$PID" \
   --arg base "$BASE" --arg kit "$KIT" --arg bin "$TIRITH_BIN" \
   --arg version "$("$TIRITH_BIN" --version)" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg scenario "$SCENARIO" --arg scen "$SCEN" --arg claims "$CLAIMS" --arg wait "$WAIT" \
   --arg probe "${ANCHOR_PROBE:-}" --arg protocol "$PROTOCOL" \
+  --arg arm "$ARM" --arg hold "$HOLD" --arg pull "$PULL" --argjson build "$BUILD" \
   '{url:$url, port:$port, pid:$pid, base_commit:$base, kit:$kit, tirith_bin:$bin,
-    tirith_version:$version, setup_at:$at, scenario:$scenario, scenario_dir:$scen,
-    claims:(if $scenario == "forge" then null else $claims end), wait:$wait,
+    tirith_version:$version, tirith_commit:($build.commit // null), tirith_build:$build,
+    setup_at:$at, scenario:$scenario, scenario_dir:$scen,
+    arm:(if $arm == "" then null else $arm end), claims:$claims,
+    hold:(if $hold == "" then null else $hold end), wait:$wait,
+    pull:(if $pull == "" then null else $pull end),
     anchor_probe:(if $probe == "" then null else $probe end), protocol:$protocol}' \
   > "$RUN/meta.json"
 
-echo "scenario=$SCENARIO claims=$CLAIMS wait=$WAIT protocol=$PROTOCOL pid=$PID run=$RUN"
+echo "scenario=$SCENARIO arm=${ARM:--} claims=$CLAIMS hold=${HOLD:--} wait=$WAIT pull=${PULL:--} protocol=$PROTOCOL pid=$PID run=$RUN"
 echo "$URL"

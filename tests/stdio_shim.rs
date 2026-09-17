@@ -7,6 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tirith::registry::Registry;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
@@ -28,7 +29,12 @@ async fn rpc(
         .expect("reply within 30s")
         .unwrap()
         .expect("a reply line");
-    Some(serde_json::from_str(&line).unwrap())
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        reply["id"], message["id"],
+        "a reply to another request: {reply}"
+    );
+    Some(reply)
 }
 
 /// Stops the daemon recorded under `root` when dropped, so a failing
@@ -81,10 +87,26 @@ impl Drop for DaemonGuard {
     }
 }
 
+/// The built binary, kept away from the user's machine-wide state: the
+/// daemons it starts launch no menu bar tray and register in a registry
+/// inside the test's own directory instead of the user's.
+fn tirith(root: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tirith"));
+    command
+        .env("TIRITH_NO_TRAY", "1")
+        .env("TIRITH_STATE_DIR", state_dir(root));
+    command
+}
+
+/// The daemon registry directory for the test repository at `root`.
+fn state_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("machine-state")
+}
+
 #[tokio::test]
 async fn shim_starts_daemon_and_proxies_tools() {
     let dir = tempfile::tempdir().unwrap();
-    let _daemon = DaemonGuard::new(dir.path());
+    let daemon = DaemonGuard::new(dir.path());
     let (child, mut stdin, mut lines, init) = shim(dir.path(), "127.0.0.1:0").await;
     assert_eq!(init["result"]["serverInfo"]["name"], "tirith", "{init}");
     assert!(
@@ -130,6 +152,19 @@ async fn shim_starts_daemon_and_proxies_tools() {
     .unwrap();
     let pid = u32::try_from(info["pid"].as_u64().unwrap()).unwrap();
     assert_ne!(pid, child.id().unwrap(), "daemon is a separate process");
+    // It registered in the registry TIRITH_STATE_DIR names, not the user's,
+    // and TIRITH_NO_TRAY kept it from probing the tray lock beside it.
+    let registry_file = state_dir(dir.path()).join("daemons.json");
+    let registry = Registry::load(&registry_file).unwrap();
+    assert!(
+        registry.entries().iter().any(|e| e.pid == pid),
+        "{:?}",
+        registry.entries()
+    );
+    assert!(
+        !state_dir(dir.path()).join("tray.lock").exists(),
+        "no tray was launched"
+    );
     let health = reqwest::Client::new()
         .get(format!(
             "{}api/health",
@@ -141,7 +176,7 @@ async fn shim_starts_daemon_and_proxies_tools() {
     assert!(health.status().is_success());
 
     // A second shim finds the existing daemon instead of starting another.
-    let (_second, mut stdin2, mut lines2, _) = shim(dir.path(), "127.0.0.1:0").await;
+    let (second, mut stdin2, mut lines2, _) = shim(dir.path(), "127.0.0.1:0").await;
     let listed = rpc(
         &mut stdin2,
         &mut lines2,
@@ -161,6 +196,12 @@ async fn shim_starts_daemon_and_proxies_tools() {
     )
     .unwrap();
     assert_eq!(info_after["pid"], info["pid"], "no second daemon");
+
+    // Stopped cleanly, the daemon leaves no entry behind.
+    drop((child, second));
+    drop(daemon);
+    let registry = Registry::load(&registry_file).unwrap();
+    assert!(registry.entries().is_empty(), "{:?}", registry.entries());
 }
 
 /// The daemon record, once the daemon has written it.
@@ -188,7 +229,7 @@ async fn shim(
     tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     Value,
 ) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tirith"))
+    let mut child = tirith(root)
         .args(["stdio", "--root"])
         .arg(root)
         .args(["--bind", bind])
@@ -225,7 +266,7 @@ async fn shim_replaces_a_daemon_of_another_version() {
     let dir = tempfile::tempdir().unwrap();
     let _daemon = DaemonGuard::new(dir.path());
     // A real daemon of this binary, standing in for the previous release.
-    let mut old = Command::new(env!("CARGO_BIN_EXE_tirith"))
+    let mut old = tirith(dir.path())
         .args(["serve", "--root"])
         .arg(dir.path())
         .args(["--bind", "127.0.0.1:0"])
@@ -333,7 +374,7 @@ async fn shim_leaves_another_repositorys_daemon_alone() {
     let _daemon_a = DaemonGuard::new(a.path());
     let _daemon_b = DaemonGuard::new(b.path());
     // Repository A's daemon: healthy, current, and not ours to stop.
-    let _daemon_a = Command::new(env!("CARGO_BIN_EXE_tirith"))
+    let _daemon_a = tirith(a.path())
         .args(["serve", "--root"])
         .arg(a.path())
         .args(["--bind", "127.0.0.1:0"])
@@ -411,4 +452,226 @@ async fn shim_leaves_another_repositorys_daemon_alone() {
         !log.contains("stopping daemon"),
         "A was never signalled:\n{log}"
     );
+}
+
+/// A `tools/call` request line with `id`.
+fn tool_call(id: u64, tool: &str, arguments: &Value) -> Value {
+    json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": tool, "arguments": arguments }
+    })
+}
+
+/// Writes one message without waiting for a reply.
+async fn send(stdin: &mut tokio::process::ChildStdin, message: &Value) {
+    stdin
+        .write_all(format!("{message}\n").as_bytes())
+        .await
+        .unwrap();
+}
+
+/// `holder` claims `src/a.rs` and `planner` adds the task `freed` on it, so
+/// a pull by anyone else has a task to wait for. Uses ids 2 and 3.
+async fn hold_a_task(
+    stdin: &mut tokio::process::ChildStdin,
+    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+) {
+    let held = rpc(
+        stdin,
+        lines,
+        tool_call(
+            2,
+            "claim",
+            &json!({ "agent": "holder", "paths": ["src/a.rs"], "reason": "r" }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        held["result"]["structuredContent"]["status"], "ok",
+        "{held}"
+    );
+    let created = rpc(
+        stdin,
+        lines,
+        tool_call(
+            3,
+            "task_create",
+            &json!({ "agent": "planner", "title": "freed", "paths": ["src/a.rs"] }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        created["result"]["structuredContent"]["status"], "ok",
+        "{created}"
+    );
+}
+
+/// The two calls that wait, both by `ghost` on what [`hold_a_task`] set up:
+/// a pull whose only task is claimed and a claim on the claimed path, with
+/// ids 10 and 11.
+async fn start_waiting_calls(stdin: &mut tokio::process::ChildStdin) {
+    send(
+        stdin,
+        &tool_call(
+            10,
+            "task_pull",
+            &json!({ "agent": "ghost", "wait_secs": 30 }),
+        ),
+    )
+    .await;
+    send(
+        stdin,
+        &tool_call(
+            11,
+            "claim",
+            &json!({ "agent": "ghost", "paths": ["src/a.rs"], "reason": "r", "wait_secs": 30 }),
+        ),
+    )
+    .await;
+    // Long enough for both to reach the daemon and start waiting.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+}
+
+/// Waits up to 5 s for the daemon's lead log to show the claim's wait
+/// ended as `cancelled`, so the test frees the paths only after that.
+async fn wait_for_cancelled_claim(root: &std::path::Path) {
+    let info = wait_for_daemon(root).await.expect("daemon record");
+    let url = format!(
+        "{}api/lead?event=claim_waited",
+        info["dashboard_url"].as_str().unwrap()
+    );
+    let mut log = Value::Null;
+    for _ in 0..50 {
+        log = reqwest::get(&url).await.unwrap().json().await.unwrap();
+        if !log["entries"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let row = &log["entries"][0];
+    assert_eq!(
+        row["agent"], "ghost",
+        "the waiting claim never ended: {log}"
+    );
+    assert_eq!(row["details"]["outcome"], "cancelled", "{log}");
+}
+
+/// Frees what `ghost` waited for, through the shim on `stdin`, then checks
+/// that `ghost` got none of it and that the task is still there for `bob`.
+/// Uses ids from 20.
+async fn assert_ghost_took_nothing(
+    stdin: &mut tokio::process::ChildStdin,
+    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+) {
+    let released = rpc(
+        stdin,
+        lines,
+        tool_call(20, "release", &json!({ "agent": "holder" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        released["result"]["structuredContent"]["status"], "ok",
+        "{released}"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let claims = rpc(
+        stdin,
+        lines,
+        tool_call(22, "claims_list", &json!({ "agent": "planner" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        claims["result"]["structuredContent"]["count"], 0,
+        "{claims}"
+    );
+    let bob = rpc(
+        stdin,
+        lines,
+        tool_call(23, "task_pull", &json!({ "agent": "bob" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        bob["result"]["structuredContent"]["task"]["title"], "freed",
+        "the task was still free: {bob}"
+    );
+}
+
+/// The shim's log lines about cancels it forwarded.
+fn forwarded_cancels(root: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(root.join(".tirith/runtime/serve.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.starts_with("[tirith stdio] cancelled request"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[tokio::test]
+async fn shim_forwards_a_cancel_so_a_waiting_call_takes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let _daemon = DaemonGuard::new(dir.path());
+    let (_child, mut stdin, mut lines, _) = shim(dir.path(), "127.0.0.1:0").await;
+    hold_a_task(&mut stdin, &mut lines).await;
+
+    start_waiting_calls(&mut stdin).await;
+    for id in [10, 11] {
+        send(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": { "requestId": id, "reason": "user pressed escape" }
+            }),
+        )
+        .await;
+    }
+    wait_for_cancelled_claim(dir.path()).await;
+    // A cancelled request gets no reply, so the next line answers id 20.
+    assert_ghost_took_nothing(&mut stdin, &mut lines).await;
+    let cancels = forwarded_cancels(dir.path());
+    assert_eq!(cancels.len(), 2, "{cancels:?}");
+    assert!(
+        cancels
+            .iter()
+            .all(|l| l.ends_with("the client cancelled it")),
+        "{cancels:?}"
+    );
+}
+
+#[tokio::test]
+async fn shim_cancels_waiting_calls_when_its_client_closes_stdin() {
+    let dir = tempfile::tempdir().unwrap();
+    let _daemon = DaemonGuard::new(dir.path());
+    let (mut leaving, mut stdin, _leaving_lines, _) = shim(dir.path(), "127.0.0.1:0").await;
+    let (_staying, mut stdin2, mut lines2, _) = shim(dir.path(), "127.0.0.1:0").await;
+    hold_a_task(&mut stdin2, &mut lines2).await;
+
+    start_waiting_calls(&mut stdin).await;
+    let closed = std::time::Instant::now();
+    drop(stdin);
+    let exit = tokio::time::timeout(Duration::from_secs(10), leaving.wait())
+        .await
+        .expect("the shim exits once its client is gone")
+        .unwrap();
+    assert!(exit.success(), "{exit}");
+    assert!(
+        closed.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        closed.elapsed()
+    );
+    // The shim itself told the daemon, before exiting.
+    let cancels = forwarded_cancels(dir.path());
+    assert_eq!(cancels.len(), 2, "{cancels:?}");
+    assert!(
+        cancels
+            .iter()
+            .all(|l| l.ends_with("the client closed stdin")),
+        "{cancels:?}"
+    );
+    wait_for_cancelled_claim(dir.path()).await;
+    assert_ghost_took_nothing(&mut stdin2, &mut lines2).await;
 }

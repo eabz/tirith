@@ -1,0 +1,1 @@
+Claim at the start of each task, before you edit anything, everything the task will change (as described in Claims), including your test files. Keep those claims until the task is done, and release them with `tb release '{}'` right after the `task_update` to done. If you find you need something else, claim it before touching it and keep it until the task is done as well.

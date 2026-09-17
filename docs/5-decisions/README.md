@@ -28,15 +28,17 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0016](0016-shim-replaces-stale-daemon.md) | The stdio shim replaces a daemon of another version and refuses one of another repository | Accepted |
 | [0017](0017-tool-result-and-schema-budget.md) | Tool results travel once, and tool schemas have a byte budget | Accepted; refined by 0013 |
 | [0018](0018-task-ownership-and-contract-republish.md) | Tasks belong to their owner until they go silent; contract republishes are guarded | Accepted |
-| [0019](0019-menu-bar-tray.md) | A per-user daemon registry and a macOS menu bar tray | Accepted |
+| [0019](0019-menu-bar-tray.md) | A per-user daemon registry and a macOS menu bar tray | Accepted; refined by 0032 |
 | [0020](0020-agent-messages.md) | Agent-to-agent messages, delivered on the next call | Accepted |
 | [0021](0021-notice-acks-log.md) | Notices are seen when delivered; the seen log is runtime-only | Accepted |
 | [0022](0022-decisions-as-markdown.md) | Decisions are one Markdown file each, in the memory-note format | Accepted |
 | [0023](0023-stable-toolchain-for-release-containers.md) | A `rust-toolchain.toml` pins the stable channel so release containers meet `rust-version` | Accepted |
 | [0025](0025-no-release-build-cache.md) | Release builds drop the dependency cache | Accepted |
 | [0027](0027-swarm-lead-and-escalation.md) | Every swarm has a lead; escalations, the human queue, and the lead log are deterministic | Accepted |
-| [0028](0028-claim-aware-task-pull.md) | `task_pull` skips tasks whose paths another agent holds | Accepted |
+| [0028](0028-claim-aware-task-pull.md) | `task_pull` prefers tasks whose paths no other agent holds; it waits only behind claims | Accepted; revised 2026-09-17 |
 | [0029](0029-symbol-anchored-claims.md) | Symbol-anchored claims and edit-window holds | Proposed |
+| [0031](0031-waits-end-when-the-caller-goes.md) | A waiting `claim` or `task_pull` ends when its caller cancels or disconnects | Accepted |
+| [0032](0032-tray-single-instance-lock.md) | One tray per state directory, held by an OS lock; test daemons stay off the user's machine state | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

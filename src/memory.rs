@@ -924,9 +924,12 @@ impl MemoryBook {
 
     /// Writes a note, creating it or replacing an existing one.
     ///
-    /// The permalink decides which: an explicit `permalink` targets that
-    /// note and fails if it is gone, otherwise the title's slug is used
-    /// and a matching note is updated in place.
+    /// An explicit `permalink` targets that note and fails if it is gone.
+    /// Otherwise the title decides: a note with exactly this title is
+    /// updated in place, whatever its permalink (the one at the title's
+    /// slug first, else the most recently updated), and a new note takes
+    /// the slug, or the slug with its id appended when another title holds
+    /// it.
     ///
     /// `now` is truncated to whole seconds, which is the precision the
     /// frontmatter stores. That keeps the note held in memory byte-identical
@@ -962,11 +965,17 @@ impl MemoryBook {
             match self.position(&link) {
                 // Same slug, same title: the caller means this note.
                 Some(index) if self.notes[index].title == title => (link, Some(index)),
-                // Same slug, different title: two titles that slugify alike.
-                // Overwriting one with the other would lose a note, so the
-                // newcomer gets its own address.
-                Some(_) => (link.disambiguated(id), None),
-                None => (link, None),
+                slug => match self.titled(&title) {
+                    // The title lives at another address: filed in a folder,
+                    // disambiguated earlier, or a title with no slug. It is
+                    // still the note the caller means.
+                    Some(index) => (self.notes[index].permalink.clone(), Some(index)),
+                    // Same slug, different title: two titles that slugify
+                    // alike. Overwriting one with the other would lose a
+                    // note, so the newcomer gets its own address.
+                    None if slug.is_some() => (link.disambiguated(id), None),
+                    None => (link, None),
+                },
             }
         };
 
@@ -1152,6 +1161,19 @@ impl MemoryBook {
 
     fn position(&self, link: &Permalink) -> Option<usize> {
         self.by_permalink.get(link).copied()
+    }
+
+    /// The most recently updated note titled exactly `title`.
+    ///
+    /// A scan, so [`MemoryBook::write`] asks only when the title's slug
+    /// does not lead to the note.
+    fn titled(&self, title: &str) -> Option<usize> {
+        self.notes
+            .iter()
+            .enumerate()
+            .filter(|(_, note)| note.title.trim() == title)
+            .max_by_key(|(index, note)| (note.updated_at, *index))
+            .map(|(index, _)| index)
     }
 }
 
@@ -1805,6 +1827,62 @@ mod tests {
         assert_eq!(updated.note.permalink, link);
         assert_eq!(updated.note.title, "A completely different title");
         assert_eq!(book.len(), 1);
+    }
+
+    /// A note whose permalink is not its title's slug (filed in a folder,
+    /// disambiguated, or with a title that slugifies to nothing) is still
+    /// the note a write with its exact title means.
+    #[test]
+    fn writing_an_existing_title_updates_a_note_with_a_custom_permalink() {
+        let mut filed = write(&mut MemoryBook::default(), "Lease renewal", "First.");
+        filed.permalink = Permalink::parse("design/lease-renewal-notes").unwrap();
+        let mut book = MemoryBook::from_notes(vec![filed.clone()]);
+        let again = book
+            .write(agent("b"), note("Lease renewal", "Second."), at(1))
+            .unwrap();
+        assert!(!again.created, "{:?}", again.note.permalink);
+        assert_eq!(book.len(), 1);
+        assert_eq!(again.note.id, filed.id);
+        assert_eq!(again.note.permalink, filed.permalink);
+        assert_eq!(book.get(filed.permalink.as_str()).unwrap().body, "Second.");
+
+        // The newcomer that got a disambiguated address keeps getting it.
+        write(&mut book, "Storage design", "First.");
+        let alike = write(&mut book, "Storage  design!", "Second.");
+        let alike_again = book
+            .write(agent("a"), note("Storage  design!", "Third."), at(2))
+            .unwrap();
+        assert!(!alike_again.created);
+        assert_eq!(alike_again.note.permalink, alike.permalink);
+
+        let unsluggable = write(&mut book, "Заметка", "First.");
+        let unsluggable_again = book
+            .write(agent("a"), note("Заметка", "Second."), at(2))
+            .unwrap();
+        assert!(!unsluggable_again.created);
+        assert_eq!(unsluggable_again.note.permalink, unsluggable.permalink);
+        assert_eq!(book.len(), 4);
+    }
+
+    /// When several notes share a title and none sits at its slug, the
+    /// most recently updated one is the one a write by title updates.
+    #[test]
+    fn a_title_shared_by_several_notes_updates_the_most_recent_one() {
+        let mut older = write(&mut MemoryBook::default(), "Shared title", "Older.");
+        older.permalink = Permalink::parse("a/shared-title").unwrap();
+        let mut newer = older.clone();
+        newer.id = MemoryId::new();
+        newer.permalink = Permalink::parse("b/shared-title").unwrap();
+        newer.updated_at = at(5);
+        newer.body = "Newer.".into();
+        let mut book = MemoryBook::from_notes(vec![newer.clone(), older.clone()]);
+        let written = book
+            .write(agent("a"), note("Shared title", "Updated."), at(6))
+            .unwrap();
+        assert!(!written.created);
+        assert_eq!(written.note.id, newer.id);
+        assert_eq!(book.get("a/shared-title").unwrap().body, "Older.");
+        assert_eq!(book.len(), 2);
     }
 
     #[test]

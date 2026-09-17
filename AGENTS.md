@@ -96,7 +96,9 @@ not optional:
 the reserved path `.tirith/lead` first (`ttl_secs: 3600`, reason naming
 the swarm), re-claims it on `lost`, and releases it last. Workers never
 claim `.tirith/lead`; they escalate to its holder (`status` reports it as
-`lead`) with `message_send`. See ADR-0027.
+`lead`) with `message_send`. Only the lead relays to the human, with
+`message_send` to `human` and a text written for the human; workers never
+message `human`. See ADR-0027.
 
 Leases end after their TTL without activity, and after four TTLs (at most
 four hours) regardless; long sessions re-claim or `renew`. If any response

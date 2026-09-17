@@ -206,6 +206,10 @@ pub enum ClaimError {
     /// The requested TTL is outside the allowed range.
     #[error("ttl_secs must be between 1 and {MAX_TTL_SECS}, got {0}")]
     InvalidTtl(u64),
+    /// The caller went away while the claim waited for its paths
+    /// (`wait_secs`), so nothing was claimed (ADR-0031).
+    #[error("the caller went away while the claim waited; nothing was claimed")]
+    Cancelled,
 }
 
 fn join(paths: &[RepoPath]) -> String {

@@ -1,4 +1,5 @@
-//! A read-only HTTP dashboard served next to the MCP endpoint.
+//! An HTTP dashboard served next to the MCP endpoint. It only reads,
+//! except for answering human queue items.
 //!
 //! `GET /` returns a single self-contained page that polls
 //! `GET /api/state` every two seconds. Memory notes are sent as
@@ -12,10 +13,16 @@
 //! `?event=task_requested` narrow it. It reads the state on each request,
 //! so it is for humans and `tirith lead log`, not for polling.
 //!
-//! `GET /api/human` returns the human queue: escalations the lead policy
-//! routed to the human and nobody has answered yet, ranked by how many
-//! agents each blocks, then by how long it has waited (ADR-0027). The same
-//! list rides `/api/state` as `needs_you`, which the page and the tray read.
+//! `GET /api/human` returns the human queue: messages sent to `human`, and
+//! escalations raised while the swarm had no lead, that nobody has
+//! answered yet, ranked by how many agents each blocks, then by how long
+//! it has waited (ADR-0027). The same list rides `/api/state` as
+//! `needs_you`, which the page and the tray read.
+//! `POST /api/human/{id}/done` marks one item answered; a JSON body
+//! `{"reply": "..."}` also delivers the reply to its sender as a message
+//! from `human`. It is the page's Done button and `tirith lead human done`.
+//! It takes only same-origin JSON requests, so another site open in the
+//! browser cannot post to it.
 //!
 //! `/api/state` is served from a cached, pre-serialized view that a
 //! background task rebuilds whenever the persister writes something, so
@@ -26,14 +33,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use axum::Router;
-use axum::extract::{Query, State as Extract};
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State as Extract};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::lead::{LOG_PAGE_DEFAULT, LeadEvent, human_queue_of};
+use crate::lead::{
+    AnswerError, EntryId, LOG_PAGE_DEFAULT, LeadEvent, answer_human, human_queue_of,
+};
 use crate::memory::MemoryNote;
 use crate::server::VERSION;
 use crate::state::State;
@@ -105,7 +115,9 @@ impl Shared {
     }
 
     /// Rebuilds the view from the current state. Called by the refresh
-    /// task after every write attempt, never by a request handler.
+    /// task after every write attempt, and by the handler that answers a
+    /// human queue item so the next poll no longer shows it; never by a
+    /// handler that only reads.
     fn refresh(&self) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let view = Arc::new(build_view(&self.context, generation));
@@ -126,7 +138,7 @@ impl Shared {
 }
 
 /// Routes: `/`, `/logo.png`, `/api/state`, `/api/health`, `/api/lead`,
-/// `/api/human`.
+/// `/api/human`, and `POST /api/human/{id}/done`.
 ///
 /// Must be called on a Tokio runtime: it spawns the task that refreshes
 /// the cached view after each write.
@@ -146,6 +158,7 @@ pub fn router(context: DashboardContext) -> Router {
         .route("/api/health", get(health))
         .route("/api/lead", get(api_lead))
         .route("/api/human", get(api_human))
+        .route("/api/human/{id}/done", post(api_human_done))
         .with_state(shared)
 }
 
@@ -208,6 +221,86 @@ async fn api_human(Extract(shared): Extract<Shared>) -> Response {
         "items": items,
     });
     ([(header::CACHE_CONTROL, "no-cache")], Json(body)).into_response()
+}
+
+/// Body of `POST /api/human/{id}/done`; empty means no reply.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DoneBody {
+    reply: Option<String>,
+}
+
+/// Marks human queue item `id` answered, delivering the reply, if any, to
+/// its sender. `404` when no open item has that id, `400` for a bad body
+/// or reply, `403` for a request that is not same-origin JSON.
+async fn api_human_done(
+    Extract(shared): Extract<Shared>,
+    Path(id): Path<u64>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let refuse = |status: StatusCode, label: &str, message: String| {
+        (status, Json(json!({ "status": label, "message": message }))).into_response()
+    };
+    if let Err(why) = same_origin_json(&headers) {
+        return refuse(StatusCode::FORBIDDEN, "forbidden", why.to_owned());
+    }
+    let body: DoneBody = if body.iter().all(u8::is_ascii_whitespace) {
+        DoneBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(body) => body,
+            Err(error) => return refuse(StatusCode::BAD_REQUEST, "invalid", error.to_string()),
+        }
+    };
+    match answer_human(
+        &shared.context.state,
+        EntryId::from(id),
+        body.reply.as_deref(),
+    ) {
+        Ok(answered) => {
+            shared.refresh();
+            (
+                [(header::CACHE_CONTROL, "no-cache")],
+                Json(json!({ "status": "ok", "answered": answered })),
+            )
+                .into_response()
+        }
+        Err(error @ AnswerError::NotOpen(_)) => {
+            refuse(StatusCode::NOT_FOUND, "not_found", error.to_string())
+        }
+        Err(error) => refuse(StatusCode::BAD_REQUEST, "invalid", error.to_string()),
+    }
+}
+
+/// Accepts a request only when it is JSON and, if a browser sent it, from
+/// this dashboard's own origin. A cross-site page can neither send
+/// `application/json` without a CORS preflight, which this server never
+/// grants, nor forge `Origin`.
+fn same_origin_json(headers: &HeaderMap) -> Result<(), &'static str> {
+    let json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(';')
+                .next()
+                .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"))
+        });
+    if !json {
+        return Err("send Content-Type: application/json");
+    }
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return Ok(());
+    };
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    let origin = origin.to_str().ok().and_then(|o| {
+        o.strip_prefix("http://")
+            .or_else(|| o.strip_prefix("https://"))
+    });
+    match (origin, host) {
+        (Some(origin), Some(host)) if origin.eq_ignore_ascii_case(host) => Ok(()),
+        _ => Err("cross-origin requests are refused"),
+    }
 }
 
 /// Serializes everything the page shows. Takes the state lock twice
@@ -384,6 +477,72 @@ mod tests {
             Some(1),
             "{view}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn done_answers_an_item_and_delivers_the_reply_from_the_human() {
+        use crate::lead::NewEntry;
+        let (shared, _dir) = shared();
+        let state = &shared.context.state;
+        // A row routed by the old phrase rules stays answerable.
+        let id = state.lead_log_append(
+            NewEntry::new(LeadEvent::EscalationRaised, "queued for the human")
+                .with_rule("human:credentials")
+                .with_agent(AgentId::new("worker").unwrap())
+                .with_details(json!({ "trigger": "task_blocked", "text": "need a key", "delivered": ["human_queue", "lead"] })),
+        );
+        let json_headers = |origin: Option<&str>| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+            headers.insert(header::HOST, "127.0.0.1:7477".parse().unwrap());
+            if let Some(origin) = origin {
+                headers.insert(header::ORIGIN, origin.parse().unwrap());
+            }
+            headers
+        };
+        let done = |id: u64, headers: HeaderMap, body: &'static str| {
+            api_human_done(
+                Extract(shared.clone()),
+                Path(id),
+                headers,
+                Bytes::from_static(body.as_bytes()),
+            )
+        };
+
+        let mut plain = json_headers(None);
+        plain.insert(header::CONTENT_TYPE, "text/plain".parse().unwrap());
+        let out = done(id.get(), plain, "{}").await;
+        assert_eq!(out.status(), StatusCode::FORBIDDEN);
+        let out = done(id.get(), json_headers(Some("http://evil.example")), "{}").await;
+        assert_eq!(out.status(), StatusCode::FORBIDDEN);
+        let out = done(id.get() + 1, json_headers(None), "").await;
+        assert_eq!(out.status(), StatusCode::NOT_FOUND);
+        assert_eq!(human_queue_of(state).len(), 1, "nothing answered yet");
+
+        let out = done(
+            id.get(),
+            json_headers(Some("http://127.0.0.1:7477")),
+            r#"{"reply": "the key is in the keychain"}"#,
+        )
+        .await;
+        assert_eq!(out.status(), StatusCode::OK);
+        let out = tokio::task::block_in_place(|| body(out));
+        assert_eq!(out["answered"]["reply"]["from"], "human", "{out}");
+        assert!(human_queue_of(state).is_empty());
+        let inbox = state.take_inbox(&AgentId::new("worker").unwrap());
+        assert_eq!(inbox.messages.len(), 1);
+        assert_eq!(inbox.messages[0].text, "the key is in the keychain");
+        let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
+        let outcome = row.outcome.as_ref().unwrap();
+        assert_eq!(
+            (&outcome["answered_by"], &outcome["via"]),
+            (&json!("human"), &json!("reply"))
+        );
+        let view: Value = serde_json::from_slice(&shared.current().bytes).unwrap();
+        assert_eq!(view["needs_you"], json!([]), "refreshed at once");
+        let again = done(id.get(), json_headers(None), "").await;
+        assert_eq!(again.status(), StatusCode::NOT_FOUND, "answered once");
+        shared.context.persister.stop();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

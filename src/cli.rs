@@ -89,7 +89,9 @@ enum Command {
         #[arg(long, default_value_t = tirith::state::DEFAULT_TASK_ORPHAN_SECS)]
         task_orphan_secs: u64,
         /// Do not start the menu bar tray (macOS) alongside this daemon.
-        #[arg(long)]
+        /// `TIRITH_NO_TRAY=1` does the same, for tests and tooling; empty,
+        /// 0, false, no, n, f and off leave the tray on.
+        #[arg(long, env = "TIRITH_NO_TRAY", value_parser = clap::builder::FalseyValueParser::new())]
         no_tray: bool,
     },
     /// Serve MCP over stdin/stdout for clients that spawn servers themselves,
@@ -399,16 +401,34 @@ enum LeadCommand {
         #[arg(long)]
         event: Option<String>,
     },
-    /// Show the human queue: escalations routed to the human and not yet
-    /// answered, most agents blocked first, from `/api/human`.
-    Human,
+    /// Show the human queue, most agents blocked first, from `/api/human`:
+    /// messages sent to `human`, and escalations raised while nobody held
+    /// `.tirith/lead`, not yet answered.
+    Human {
+        #[command(subcommand)]
+        command: Option<HumanCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum HumanCommand {
+    /// Mark a human queue item answered. With `--reply`, its sender gets
+    /// the reply as a message from `human` on their next call.
+    Done {
+        /// The item's id, as `tirith lead human` prints it (`#7` or `7`).
+        id: String,
+        /// What to tell the sender, at most 1000 characters.
+        #[arg(long)]
+        reply: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum MessageCommand {
     /// Send a message; it reaches the recipient on their next tool call.
     Send {
-        /// An agent name, or `*` for every agent active in the last hour.
+        /// An agent name, `*` for every agent active in the last hour, or
+        /// `human` for the human queue.
         to: String,
         /// The message, at most 1000 characters.
         text: String,
@@ -481,8 +501,14 @@ pub(crate) async fn run() -> Result<ExitCode> {
             command: LeadCommand::Log { limit, event },
         } => return lead_log(&remote, limit, event).await,
         Command::Lead {
-            command: LeadCommand::Human,
+            command: LeadCommand::Human { command: None },
         } => return lead_human(&remote).await,
+        Command::Lead {
+            command:
+                LeadCommand::Human {
+                    command: Some(HumanCommand::Done { id, reply }),
+                },
+        } => return lead_human_done(&remote, &id, reply).await,
         Command::Call { tool, arguments } => {
             let mut value: Value =
                 serde_json::from_str(&arguments).context("arguments must be a JSON object")?;
@@ -899,6 +925,31 @@ async fn lead_human(remote: &Remote) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `tirith lead human done`: answers one item through the dashboard's
+/// `POST /api/human/{id}/done`, with the reply when given.
+async fn lead_human_done(remote: &Remote, id: &str, reply: Option<String>) -> Result<ExitCode> {
+    let id: u64 = id
+        .trim()
+        .trim_start_matches('#')
+        .parse()
+        .context("the id is the number `tirith lead human` prints, e.g. 7 or #7")?;
+    let url = format!("{}/api/human/{id}/done", dashboard_base(remote));
+    let body = post_json(&url, &json!({ "reply": reply })).await?;
+    if remote.json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        let answered = &body["answered"];
+        match answered["reply"].as_object() {
+            Some(reply) => println!(
+                "#{id} done; reply sent to {}",
+                reply.get("to").map_or("-", |to| to.as_str().unwrap_or("-"))
+            ),
+            None => println!("#{id} done"),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// The dashboard origin next to the MCP endpoint.
 fn dashboard_base(remote: &Remote) -> &str {
     let base = remote.url.strip_suffix("mcp").unwrap_or(&remote.url);
@@ -929,6 +980,29 @@ fn human_lines(body: &Value) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// POSTs `body` as JSON to `url` on the daemon and parses its JSON answer.
+async fn post_json(url: &str, body: &Value) -> Result<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let response = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_vec(body)?)
+        .send()
+        .await
+        .with_context(|| format!("no daemon answered at {url}"))?;
+    let status = response.status();
+    let text = response.text().await?;
+    let parsed: Option<Value> = serde_json::from_str(&text).ok();
+    let message = parsed
+        .as_ref()
+        .and_then(|v| v["message"].as_str())
+        .unwrap_or(&text);
+    anyhow::ensure!(status.is_success(), "{url}: HTTP {status}: {message}");
+    parsed.context("the daemon sent invalid JSON")
 }
 
 /// GETs `url` from the daemon and parses its JSON body.
@@ -1431,6 +1505,57 @@ fn excerpt(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serve_no_tray_is_a_flag() {
+        // TIRITH_NO_TRAY feeds the same parser; the environment is not set
+        // here (edition 2024 makes that unsafe), and the stdio shim tests
+        // cover it end to end.
+        let parsed = Cli::try_parse_from(["tirith", "serve", "--no-tray"]);
+        assert!(matches!(
+            parsed,
+            Ok(Cli {
+                command: Command::Serve { no_tray: true, .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn lead_human_lists_and_lead_human_done_answers() {
+        assert!(matches!(
+            Cli::try_parse_from(["tirith", "lead", "human"]),
+            Ok(Cli {
+                command: Command::Lead {
+                    command: LeadCommand::Human { command: None }
+                },
+                ..
+            })
+        ));
+        let done = Cli::try_parse_from([
+            "tirith",
+            "lead",
+            "human",
+            "done",
+            "#7",
+            "--reply",
+            "use the keychain",
+        ]);
+        assert!(
+            matches!(
+                &done,
+                Ok(Cli {
+                    command: Command::Lead {
+                        command: LeadCommand::Human {
+                            command: Some(HumanCommand::Done { id, reply: Some(reply) }),
+                        },
+                    },
+                    ..
+                }) if id == "#7" && reply == "use the keychain"
+            ),
+            "{done:?}"
+        );
+    }
 
     #[test]
     fn the_human_queue_renders_one_line_per_item() {

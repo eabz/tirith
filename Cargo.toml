@@ -31,6 +31,9 @@ rmcp = { version = "3.4.0", features = ["server", "client", "transport-streamabl
 tokio = { version = "1.53.1", features = ["full"] }
 # HTTP router hosting the MCP endpoint and the dashboard.
 axum = "0.8.9"
+# Body trait types (Frame, SizeHint) axum does not re-export, to tie a hangup
+# signal to MCP response bodies; already in the tree through axum and hyper.
+http-body = "1.1.0"
 # Serialization of state, tool inputs, and tool outputs.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

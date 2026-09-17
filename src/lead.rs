@@ -18,6 +18,11 @@
 //! behalf: it waits for free tasks, pushes notices to the holders they
 //! affect, and raises and routes escalations, acting through `State` and
 //! logging each decision. `server.rs` calls it and formats the result.
+//!
+//! **Human queue.** Only intentional items reach the human while there is
+//! a lead: messages sent to [`HUMAN`]. With no lead, blocked tasks and
+//! repeated claim refusals go there too. [`human_queue`] lists the open
+//! items and [`answer_human`] closes one, delivering the human's reply.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -27,13 +32,14 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
 use crate::claims::{Claim, Conflict, Granted};
-use crate::messages::Message;
+use crate::messages::{HUMAN, Message, MessageError, NewMessage};
 use crate::notices::Notice;
 use crate::state::{MAX_CLAIM_WAIT_SECS, State};
-use crate::tasks::{Pulled, Task, TaskState};
-use crate::types::{AgentId, RepoPath, TaskId};
+use crate::tasks::{NotReady, Pulled, Task, TaskState};
+use crate::types::{AgentId, MessageId, RepoPath, TaskId};
 
 /// The reserved path whose holder is the swarm lead. Workers never claim it.
 pub const LEAD_PATH: &str = ".tirith/lead";
@@ -76,8 +82,8 @@ impl Lead {
 pub enum LeadEvent {
     /// A notice was pushed to the holders of the paths it affects.
     NoticePublished,
-    /// A worker escalated: blocked, asked the lead for the human, or was
-    /// refused repeatedly (ADR-0027 section 3).
+    /// An agent escalated: blocked, was refused repeatedly, or sent a
+    /// message to the human (ADR-0027 section 3).
     EscalationRaised,
     /// A claim was granted (new or renewed paths).
     ClaimGranted,
@@ -121,6 +127,12 @@ impl EntryId {
     /// The number.
     pub fn get(self) -> u64 {
         self.0
+    }
+}
+
+impl From<u64> for EntryId {
+    fn from(id: u64) -> Self {
+        Self(id)
     }
 }
 
@@ -341,21 +353,43 @@ pub fn claim_refused(
     .with_details(serde_json::json!({ "reason": reason, "conflicts": overlaps }))
 }
 
+/// How a claim that waited (`wait_secs`) for conflicting leases ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitOutcome {
+    /// Every overlapping lease ended and the claim was granted.
+    Granted,
+    /// The wait ran out with the paths still held.
+    Refused,
+    /// The caller went away first, so nothing was claimed (ADR-0031).
+    Cancelled,
+}
+
+impl WaitOutcome {
+    /// The name used in the log.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::Refused => "refused",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 /// The log row for a claim that waited `waited` of `wait` for conflicting
-/// leases to end, and was `granted` or not.
+/// leases to end, and how that wait ended.
 pub fn claim_waited(
     agent: &AgentId,
     paths: &[RepoPath],
     wait: Duration,
     waited: Duration,
-    granted: bool,
+    outcome: WaitOutcome,
 ) -> NewEntry {
     NewEntry::new(
         LeadEvent::ClaimWaited,
-        if granted {
-            "granted after waiting"
-        } else {
-            "still refused after waiting"
+        match outcome {
+            WaitOutcome::Granted => "granted after waiting",
+            WaitOutcome::Refused => "still refused after waiting",
+            WaitOutcome::Cancelled => "cancelled while waiting: the caller went away",
         },
     )
     .with_agent(agent.clone())
@@ -363,7 +397,7 @@ pub fn claim_waited(
     .with_details(serde_json::json!({
         "wait_secs": wait.as_secs(),
         "waited_ms": u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
-        "outcome": if granted { "granted" } else { "refused" },
+        "outcome": outcome.as_str(),
     }))
 }
 
@@ -422,29 +456,31 @@ impl LeadPolicy {
         }
     }
 
-    /// [`State::task_pull`], but while no candidate is free (none is
-    /// unblocked, or every one is held, ADR-0028) waits up to `wait`
-    /// (capped at [`MAX_CLAIM_WAIT_SECS`]) for a claim to end or a task to
-    /// be created or change status, then pulls. When the wait ends it
-    /// returns whatever a plain pull returns then, `None` or a held task
-    /// with `waiting_on`. Nothing is assigned before that pull, so dropping
-    /// the future while it waits assigns nothing, and no lock is held
-    /// across an await.
+    /// [`State::task_pull`], but while every candidate overlaps another
+    /// agent's live claim, or the only `todo` tasks wait on dependencies,
+    /// waits up to `wait` (capped at [`MAX_CLAIM_WAIT_SECS`]) for a claim to
+    /// end or a task to be created or change status, then pulls (ADR-0028,
+    /// revised). Nothing else is waited for: a task whose only overlaps are
+    /// other agents' in-progress task paths is assigned at once with
+    /// `waiting_on`, and a board with no `todo` task answers `None` at once.
+    /// When the wait ends it returns whatever a plain pull returns then,
+    /// `None` or a held task with `waiting_on`. A task is assigned only in a
+    /// synchronous attempt under the state lock, so dropping the future
+    /// while it waits assigns nothing, and no lock is held across an await.
     pub async fn task_pull_waiting(&self, agent: AgentId, wait: Duration) -> Option<Pulled> {
         let wait = wait.min(Duration::from_secs(MAX_CLAIM_WAIT_SECS));
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            // Watched before the check, so a change in between still wakes.
+            // Watched before the attempt, so a change in between still wakes.
             let watch = self.state.watch_board();
-            let over = tokio::time::Instant::now() >= deadline;
-            if over || !self.state.task_candidates(&agent).is_empty() {
-                let pulled = self.state.task_pull(agent.clone());
-                // `None` here means another agent took the free task first.
-                if pulled.is_some() || over {
-                    return pulled;
-                }
+            if tokio::time::Instant::now() >= deadline {
+                return self.state.task_pull(agent);
             }
-            watch.changed(&agent, deadline).await;
+            match self.state.task_pull_ready(agent.clone()) {
+                Ok(pulled) => return Some(pulled),
+                Err(NotReady::NoTodo) => return None,
+                Err(NotReady::Held) => watch.changed(&agent, deadline).await,
+            }
         }
     }
 
@@ -510,11 +546,23 @@ impl LeadPolicy {
         }
     }
 
-    /// A message was sent. One to an agent answers that agent's open
-    /// escalations. One to the lead by name, from anyone else, raises an
-    /// escalation only when its text matches a human rule; otherwise the
-    /// lead already has it and nothing more is done.
+    /// A message was sent. One to [`HUMAN`] becomes a human queue item
+    /// whose text is the message. One to an agent answers that agent's
+    /// open escalations. A message to the lead is never an escalation,
+    /// whatever it says: the lead already has it.
     pub fn message_sent(&self, message: &Message) {
+        if message.is_to_human() {
+            self.raise(
+                &Escalation::new(
+                    Trigger::MessageToHuman,
+                    message.from.clone(),
+                    message.text.clone(),
+                )
+                .with_paths(message.paths.clone())
+                .with_message(message.id),
+            );
+            return;
+        }
         if message.is_broadcast() {
             return;
         }
@@ -527,22 +575,6 @@ impl LeadPolicy {
                 &message.from,
                 "message",
             );
-        }
-        let to_lead = self
-            .state
-            .lead()
-            .is_some_and(|lead| lead.agent == to && lead.agent != message.from);
-        if !to_lead {
-            return;
-        }
-        let escalation = Escalation::new(
-            Trigger::MessageToLead,
-            message.from.clone(),
-            message.text.clone(),
-        )
-        .with_paths(message.paths.clone());
-        if human_rule(&escalation.rule_text()).is_some() {
-            self.raise(&escalation);
         }
     }
 
@@ -580,8 +612,8 @@ impl LeadPolicy {
             })
             .map(|c| c.owner.as_str().to_owned())
             .collect();
-        // The holders' own reasons stay out of the text, so the human rules
-        // judge only what this agent asked for.
+        // The holders' own reasons stay out of the text, so a human rule
+        // tags only what this agent asked for.
         let text = format!(
             "claim on {} refused {count} times; reason: {reason}; held by {}",
             key.iter()
@@ -626,15 +658,15 @@ impl LeadPolicy {
     }
 
     /// Routes `escalation` (ADR-0027 section 3), delivers it through
-    /// Tirith, and logs one decision row. Text matching a
-    /// [human rule](human_rule) goes to the human queue and the lead is
-    /// told; anything else goes to the lead's inbox. With no lead, or when
-    /// the lead is the agent escalating, it goes to the human queue. Called
-    /// by the triggers above; public for a stop hook.
+    /// Tirith, and logs one decision row. A message to [`HUMAN`] goes to
+    /// the human queue. Anything else goes to the lead's inbox while there
+    /// is a lead, tagged with the [human rule](human_rule) its text
+    /// matches, if any, which never changes the route; the lead's own
+    /// escalations are only logged. With no lead it goes to the human
+    /// queue. Called by the triggers above; public for a stop hook.
     pub fn raise(&self, escalation: &Escalation) {
         let text: String = escalation.text.chars().take(ESCALATION_TEXT_MAX).collect();
         let worker = &escalation.agent;
-        let lead = self.state.lead().filter(|l| l.agent != *worker);
         let tasks = self.state.tasks(None, None, None);
         let task = escalation
             .task
@@ -647,41 +679,41 @@ impl LeadPolicy {
                     ) && t.state.owner() == Some(worker)
                 })
             });
-        let about = task.map_or_else(String::new, |t| format!(" on task {}", t.id.short()));
-        let quote = clip(&text);
-        let rule = human_rule(&escalation.rule_text()).map(|rule| format!("human:{rule}"));
+        let tag = human_rule(&escalation.rule_text());
         let mut delivered = Vec::new();
-        let mut entry = NewEntry::new(LeadEvent::EscalationRaised, "").with_agent(worker.clone());
-        let (route, action) = match (rule, &lead) {
-            (None, Some(lead)) => {
+        let (route, rule, action) = match (escalation.trigger, self.state.lead()) {
+            (Trigger::MessageToHuman, _) => {
+                delivered.push("human_queue");
+                (Route::Human, "to_human", "queued for the human".to_owned())
+            }
+            (_, Some(lead)) if lead.agent == *worker => (
+                Route::Lead,
+                "lead_itself",
+                "logged only: the lead raised it".to_owned(),
+            ),
+            (trigger, Some(lead)) => {
+                let about = task.map_or_else(String::new, |t| format!(" on task {}", t.id.short()));
+                let tagged = tag.map_or_else(String::new, |t| format!("; may need the human: {t}"));
                 let told = self.tell(
                     &lead.agent,
                     format!(
-                        "escalation from {worker}{about} ({}): {quote}",
-                        escalation.trigger.as_str()
+                        "escalation from {worker}{about} ({}{tagged}): {}",
+                        trigger.as_str(),
+                        clip(&text)
                     ),
                 );
                 if told {
                     delivered.push("lead");
                 }
-                (Route::Lead, format!("told the lead {}", lead.agent))
+                (
+                    Route::Lead,
+                    "live_lead",
+                    format!("told the lead {}", lead.agent),
+                )
             }
-            (rule, lead) => {
-                entry = entry.with_rule(rule.unwrap_or_else(|| "no_lead".to_owned()));
+            (_, None) => {
                 delivered.push("human_queue");
-                if let Some(lead) = lead {
-                    let told = self.tell(
-                        &lead.agent,
-                        format!(
-                            "needs the human: escalation from {worker}{about} is in the human \
-                             queue (tirith lead human): {quote}"
-                        ),
-                    );
-                    if told {
-                        delivered.push("lead");
-                    }
-                }
-                (Route::Human, "queued for the human".to_owned())
+                (Route::Human, "no_lead", "queued for the human".to_owned())
             }
         };
         let details = serde_json::json!({
@@ -689,22 +721,31 @@ impl LeadPolicy {
             "text": text,
             "task": task.map(|t| t.id.to_string()),
             "paths": escalation.paths,
+            "message": escalation.message,
+            "tag": tag,
             "route": route.as_str(),
             "delivered": delivered,
         });
-        self.state
-            .lead_log_append(entry.with_details(details).with_action(action));
+        self.state.lead_log_append(
+            NewEntry::new(LeadEvent::EscalationRaised, action)
+                .with_agent(worker.clone())
+                .with_rule(rule)
+                .with_details(details),
+        );
     }
 
     /// Fills the outcome of every open escalation row `matches` picks:
-    /// answered by `by`, through `via`, after how long.
+    /// answered by `by`, through `via`, after how long. A message to the
+    /// human stays open: only the human answers it ([`answer_human`]).
     fn answer_open(&self, matches: impl Fn(&LeadEntry) -> bool, by: &AgentId, via: &str) {
         let now = self.state.now();
+        let to_human =
+            |e: &LeadEntry| details_str(e, "trigger") == Some(Trigger::MessageToHuman.as_str());
         for entry in self
             .state
             .lead_log(LOG_PAGE_MAX, Some(LeadEvent::EscalationRaised))
             .iter()
-            .filter(|e| e.outcome.is_none() && matches(e))
+            .filter(|e| e.outcome.is_none() && !to_human(e) && matches(e))
         {
             let outcome = serde_json::json!({
                 "answered_by": by,
@@ -751,9 +792,10 @@ pub const REFUSAL_WINDOW_SECS: u64 = 3 * MAX_CLAIM_WAIT_SECS;
 pub const ESCALATION_TEXT_MAX: usize = 1000;
 
 /// The deterministic human rules (ADR-0027 section 3), in one place: an
-/// escalation whose text contains one of a rule's phrases goes to the human
-/// queue. Phrases match case-insensitively at word boundaries. Spending
-/// also matches a dollar amount such as `$20`.
+/// escalation to the lead whose text contains one of a rule's phrases is
+/// tagged "may need the human" with the rule's name. A tag never routes.
+/// Phrases match case-insensitively at word boundaries. Spending also
+/// matches a dollar amount such as `$20`.
 pub const HUMAN_RULES: [(&str, &[&str]); 5] = [
     (
         "credentials",
@@ -906,8 +948,9 @@ fn has_amount(text: &str) -> bool {
 pub enum Trigger {
     /// `task_update` to `blocked` with a note.
     TaskBlocked,
-    /// A message to the lead by name whose text matches a human rule.
-    MessageToLead,
+    /// A `message_send` to [`HUMAN`]. Rows logged before 2026-09-17 may
+    /// carry `message_to_lead` instead, a trigger that no longer exists.
+    MessageToHuman,
     /// The same claim refused [`REFUSALS_TO_ESCALATE`] times within
     /// [`REFUSAL_WINDOW_SECS`].
     ClaimsRefused,
@@ -918,7 +961,7 @@ impl Trigger {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::TaskBlocked => "task_blocked",
-            Self::MessageToLead => "message_to_lead",
+            Self::MessageToHuman => "message_to_human",
             Self::ClaimsRefused => "claims_refused",
         }
     }
@@ -928,9 +971,9 @@ impl Trigger {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Route {
-    /// The lead agent's inbox.
+    /// The lead agent's inbox, or nowhere when the lead raised it.
     Lead,
-    /// The human queue, and the lead agent's inbox when there is a lead.
+    /// The human queue.
     Human,
 }
 
@@ -952,6 +995,7 @@ pub struct Escalation {
     text: String,
     task: Option<TaskId>,
     paths: Vec<RepoPath>,
+    message: Option<MessageId>,
 }
 
 impl Escalation {
@@ -963,6 +1007,7 @@ impl Escalation {
             text: text.into(),
             task: None,
             paths: Vec::new(),
+            message: None,
         }
     }
 
@@ -980,6 +1025,13 @@ impl Escalation {
         self
     }
 
+    /// The message that raised it, which the human's reply answers.
+    #[must_use]
+    pub fn with_message(mut self, message: MessageId) -> Self {
+        self.message = Some(message);
+        self
+    }
+
     /// What the human rules read: the text, cut to
     /// [`ESCALATION_TEXT_MAX`] characters, and the paths.
     fn rule_text(&self) -> String {
@@ -989,8 +1041,8 @@ impl Escalation {
     }
 }
 
-/// One item of the human queue: an escalation routed to the human and not
-/// answered yet.
+/// One item of the human queue: a message to [`HUMAN`], or an escalation
+/// raised with no lead, not answered yet.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HumanItem {
     /// The decision log row.
@@ -1007,6 +1059,8 @@ pub struct HumanItem {
     pub task: Value,
     /// What the agent said.
     pub text: Value,
+    /// The message that queued it, if a message did.
+    pub message: Option<MessageId>,
     /// The deterministic rule that sent it here, if any.
     pub rule: Option<String>,
     /// The agents it holds up: the one that escalated, others escalating
@@ -1052,6 +1106,9 @@ pub fn human_queue(entries: &[LeadEntry], tasks: &[Task], now: DateTime<Utc>) ->
                 trigger: details["trigger"].clone(),
                 task: details["task"].clone(),
                 text: details["text"].clone(),
+                message: details["message"]
+                    .as_str()
+                    .and_then(|m| MessageId::parse(m).ok()),
                 rule: e.rule.clone(),
                 blocked_agents: blocked.into_iter().collect(),
             }
@@ -1070,6 +1127,72 @@ pub fn human_queue(entries: &[LeadEntry], tasks: &[Task], now: DateTime<Utc>) ->
 pub fn human_queue_of(state: &State) -> Vec<HumanItem> {
     let entries = state.lead_log(LOG_PAGE_MAX, Some(LeadEvent::EscalationRaised));
     human_queue(&entries, &state.tasks(None, None, None), state.now())
+}
+
+/// Why [`answer_human`] refused.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AnswerError {
+    /// No open human queue item has that id: it never existed, was
+    /// answered already, or aged out of the log.
+    #[error("no open human queue item #{0}")]
+    NotOpen(EntryId),
+    /// The item names nobody to deliver the reply to.
+    #[error("human queue item #{0} names no sender to reply to")]
+    NoSender(EntryId),
+    /// The reply could not be sent, e.g. it is too long.
+    #[error(transparent)]
+    Reply(#[from] MessageError),
+}
+
+/// What [`answer_human`] did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Answered {
+    /// The item marked answered.
+    pub id: EntryId,
+    /// The reply delivered to the item's sender, if any.
+    pub reply: Option<Message>,
+}
+
+/// Marks human queue item `id` answered by the human (ADR-0027 section 3),
+/// however it was queued, including rows routed by older rules. A
+/// non-blank `reply` is first sent to whoever raised the item, as a
+/// message from [`HUMAN`] answering the message that queued it when that
+/// message is still kept; nothing is marked when it cannot be sent.
+pub fn answer_human(
+    state: &State,
+    id: EntryId,
+    reply: Option<&str>,
+) -> Result<Answered, AnswerError> {
+    let item = human_queue_of(state)
+        .into_iter()
+        .find(|i| i.id == id)
+        .ok_or(AnswerError::NotOpen(id))?;
+    let reply = match reply.map(str::trim).filter(|r| !r.is_empty()) {
+        None => None,
+        Some(text) => {
+            let to = item.agent.as_ref().ok_or(AnswerError::NoSender(id))?;
+            let mut new = NewMessage::new(to.as_str(), text);
+            if let Some(original) = item
+                .message
+                .filter(|m| state.resolve_message(&m.to_string()).is_ok())
+            {
+                new = new.with_reply_to(original);
+            }
+            Some(state.message_from_human(new)?)
+        }
+    };
+    let now = state.now();
+    let outcome = serde_json::json!({
+        "answered_by": HUMAN,
+        "via": if reply.is_some() { "reply" } else { "done" },
+        "at": now,
+        "after_secs": (now - item.at).num_seconds().max(0),
+        "reply": reply.as_ref().map(|m| m.id),
+    });
+    if !state.lead_log_outcome(id, outcome) {
+        return Err(AnswerError::NotOpen(id));
+    }
+    Ok(Answered { id, reply })
 }
 
 /// Where a routed escalation row says it was delivered.
@@ -1210,7 +1333,7 @@ mod tests {
         use super::*;
         use crate::clock::ManualClock;
         use crate::state::Snapshot;
-        use crate::tasks::NewTask;
+        use crate::tasks::{Hold, NewTask};
 
         fn agent(name: &str) -> AgentId {
             AgentId::new(name).unwrap()
@@ -1252,20 +1375,93 @@ mod tests {
         #[tokio::test]
         async fn a_waiting_pull_takes_a_task_created_while_it_waits() {
             let (policy, state) = policy();
+            // `db` goes to another agent and `w` claims `auth`'s path, so
+            // the pull has a claimed task to wait for.
+            let (db, _) = board(&state);
+            assert_eq!(state.task_pull(agent("x")).unwrap().task.id, db.id);
             let waiter = Arc::clone(&policy);
             let started = tokio::time::Instant::now();
             let pulling = tokio::spawn(async move {
                 waiter
-                    .task_pull_waiting(agent("w"), Duration::from_secs(30))
+                    .task_pull_waiting(agent("y"), Duration::from_secs(30))
                     .await
             });
             tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!pulling.is_finished(), "a claimed task is waited for");
             let late = state
                 .task_create(agent("boss"), NewTask::new("late"))
                 .unwrap();
             let pulled = pulling.await.unwrap().unwrap();
             assert_eq!(pulled.task.id, late.id);
+            assert!(pulled.waiting_on.is_empty());
             assert!(started.elapsed() < Duration::from_secs(5));
+        }
+
+        #[tokio::test]
+        async fn a_waiting_pull_takes_a_task_behind_another_agents_task_at_once() {
+            let (policy, state) = policy();
+            let hub = |title: &str| {
+                state
+                    .task_create(
+                        agent("boss"),
+                        NewTask::new(title).with_paths(vec![path("src/hub.rs")]),
+                    )
+                    .unwrap()
+            };
+            hub("hub a");
+            let second = hub("hub b");
+            state.task_pull(agent("x")).unwrap();
+
+            // No claim covers `src/hub.rs`, only `x`'s task: not worth a wait.
+            let started = tokio::time::Instant::now();
+            let pulled = policy
+                .task_pull_waiting(agent("y"), Duration::from_secs(120))
+                .await
+                .unwrap();
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_eq!(pulled.task.id, second.id);
+            assert_eq!(
+                pulled.waiting_on,
+                vec![Hold {
+                    path: path("src/hub.rs"),
+                    owner: agent("x"),
+                }]
+            );
+        }
+
+        #[tokio::test]
+        async fn a_waiting_pull_waits_for_a_dependency_to_finish() {
+            let (policy, state) = policy();
+            let first = state
+                .task_create(agent("boss"), NewTask::new("first"))
+                .unwrap();
+            let second = state
+                .task_create(
+                    agent("boss"),
+                    NewTask::new("second").with_depends_on(vec![first.id]),
+                )
+                .unwrap();
+            state.task_pull(agent("x")).unwrap();
+
+            let waiter = Arc::clone(&policy);
+            let pulling = tokio::spawn(async move {
+                waiter
+                    .task_pull_waiting(agent("y"), Duration::from_secs(30))
+                    .await
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!pulling.is_finished(), "a blocked todo task is waited for");
+            state
+                .task_update(
+                    agent("x"),
+                    first.id,
+                    crate::tasks::TaskStatus::Done,
+                    None,
+                    false,
+                )
+                .unwrap();
+            let pulled = pulling.await.unwrap().unwrap();
+            assert_eq!(pulled.task.id, second.id);
         }
 
         #[tokio::test]
@@ -1309,15 +1505,42 @@ mod tests {
             assert!(pulled.waiting_on.is_empty());
         }
 
+        /// With no `todo` task, no claim ending or dependency finishing can
+        /// free one, so the pull answers at once instead of idling out its
+        /// wait (ADR-0028, revised).
         #[tokio::test]
-        async fn a_waiting_pull_with_nothing_to_pull_ends_in_none() {
-            let (policy, _state) = policy();
+        async fn a_waiting_pull_with_no_todo_task_ends_in_none_at_once() {
+            let (policy, state) = policy();
             let started = tokio::time::Instant::now();
-            let pulled = policy
-                .task_pull_waiting(agent("w"), Duration::from_millis(150))
-                .await;
-            assert!(pulled.is_none());
-            assert!(started.elapsed() >= Duration::from_millis(150));
+            let wait = Duration::from_secs(120);
+            assert!(policy.task_pull_waiting(agent("w"), wait).await.is_none());
+            state
+                .task_create(agent("boss"), NewTask::new("taken"))
+                .unwrap();
+            state.task_pull(agent("x")).unwrap();
+            assert!(policy.task_pull_waiting(agent("w"), wait).await.is_none());
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+
+        #[tokio::test]
+        async fn a_waiting_pull_ends_in_none_when_the_last_todo_task_is_taken() {
+            let (policy, state) = policy();
+            let (db, auth) = board(&state);
+            assert_eq!(state.task_pull(agent("x")).unwrap().task.id, db.id);
+            let waiter = Arc::clone(&policy);
+            let pulling = tokio::spawn(async move {
+                waiter
+                    .task_pull_waiting(agent("y"), Duration::from_secs(30))
+                    .await
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!pulling.is_finished(), "a claimed task is waited for");
+            // `w` takes the task on its own claim: nothing is left to wait for.
+            assert_eq!(state.task_pull(agent("w")).unwrap().task.id, auth.id);
+            let ended = tokio::time::timeout(Duration::from_secs(1), pulling)
+                .await
+                .expect("the wait ends once the board has no todo task");
+            assert!(ended.unwrap().is_none());
         }
 
         #[test]
@@ -1361,12 +1584,14 @@ mod tests {
         #[test]
         fn escalations_go_to_the_lead_or_the_human_queue() {
             let (policy, state) = policy();
+            let last =
+                |state: &State| state.lead_log(1, Some(LeadEvent::EscalationRaised))[0].clone();
             policy.raise(&Escalation::new(
                 Trigger::TaskBlocked,
                 agent("w"),
                 "which order?",
             ));
-            let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
+            let row = last(&state);
             assert_eq!(row.rule.as_deref(), Some("no_lead"));
             assert_eq!(row.details.as_ref().unwrap()["route"], "human");
 
@@ -1378,32 +1603,105 @@ mod tests {
                 agent("w"),
                 "which order?",
             ));
-            let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
+            let row = last(&state);
+            assert_eq!(row.rule.as_deref(), Some("live_lead"));
             assert_eq!(row.details.as_ref().unwrap()["route"], "lead");
             assert_eq!(row.details.as_ref().unwrap()["delivered"], json!(["lead"]));
+            assert!(row.details.as_ref().unwrap()["tag"].is_null());
 
+            // A human rule only tags what the lead is told.
             policy.raise(&Escalation::new(
                 Trigger::TaskBlocked,
                 agent("w"),
                 "need the API key",
             ));
-            let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
-            assert_eq!(row.rule.as_deref(), Some("human:credentials"));
-            assert_eq!(
-                row.details.as_ref().unwrap()["delivered"],
-                json!(["human_queue", "lead"])
-            );
+            let row = last(&state);
+            assert_eq!(row.rule.as_deref(), Some("live_lead"));
+            assert_eq!(row.details.as_ref().unwrap()["tag"], "credentials");
+            assert_eq!(row.details.as_ref().unwrap()["delivered"], json!(["lead"]));
 
-            // The lead escalating itself has nobody else to ask.
+            // The lead escalating itself is only logged.
             policy.raise(&Escalation::new(
                 Trigger::TaskBlocked,
                 agent("boss"),
                 "stuck",
             ));
+            let row = last(&state);
+            assert_eq!(row.rule.as_deref(), Some("lead_itself"));
+            assert_eq!(row.details.as_ref().unwrap()["delivered"], json!([]));
+            // Both messages were sent at the same instant, so their inbox
+            // order is not defined.
+            let texts: Vec<String> = state
+                .take_inbox(&agent("boss"))
+                .messages
+                .into_iter()
+                .map(|m| m.text)
+                .collect();
+            assert_eq!(texts.len(), 2);
+            assert!(
+                texts.iter().any(|t| t.ends_with(
+                    "(task_blocked; may need the human: credentials): need the API key"
+                )),
+                "{texts:?}"
+            );
+            assert_eq!(human_queue_of(&state).len(), 1, "only the one with no lead");
+        }
+
+        #[test]
+        fn a_message_to_the_human_is_queued_and_only_the_human_answers_it() {
+            let (policy, state) = policy();
+            state
+                .claim(agent("boss"), vec![path(LEAD_PATH)], "swarm".into(), None)
+                .unwrap();
+            let text = "The headless CLI is not logged in; run `claude login` on the host.";
+            let sent = state
+                .message_send(agent("boss"), NewMessage::new(HUMAN, text))
+                .unwrap();
+            policy.message_sent(&sent);
+            let queue = human_queue_of(&state);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].text, json!(text));
+            assert_eq!(queue[0].rule.as_deref(), Some("to_human"));
+            assert_eq!(queue[0].message, Some(sent.id));
+            assert_eq!(queue[0].agent, Some(agent("boss")));
+
+            // Talking to the sender does not answer it; only the human does.
+            let chat = state
+                .message_send(
+                    agent("w"),
+                    NewMessage::new("boss", "done, grant/assign nothing"),
+                )
+                .unwrap();
+            policy.message_sent(&chat);
+            assert_eq!(human_queue_of(&state).len(), 1);
+
+            let missing = EntryId(queue[0].id.get() + 100);
+            assert_eq!(
+                answer_human(&state, missing, None),
+                Err(AnswerError::NotOpen(missing))
+            );
+            let long = "x".repeat(crate::messages::MAX_TEXT + 1);
+            assert!(matches!(
+                answer_human(&state, queue[0].id, Some(&long)),
+                Err(AnswerError::Reply(MessageError::TooLong { .. }))
+            ));
+            assert_eq!(
+                human_queue_of(&state).len(),
+                1,
+                "a failed reply marks nothing"
+            );
+
+            let answered = answer_human(&state, queue[0].id, Some("logged in now")).unwrap();
+            let reply = answered.reply.unwrap();
+            assert_eq!((reply.from.as_str(), reply.to.as_str()), (HUMAN, "boss"));
+            assert_eq!(reply.reply_to, Some(sent.id));
+            assert!(human_queue_of(&state).is_empty());
             let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
-            assert_eq!(row.details.as_ref().unwrap()["route"], "human");
-            assert_eq!(state.take_inbox(&agent("boss")).messages.len(), 2);
-            assert_eq!(human_queue_of(&state).len(), 3);
+            assert_eq!(row.outcome.as_ref().unwrap()["via"], "reply");
+            assert_eq!(
+                answer_human(&state, queue[0].id, None),
+                Err(AnswerError::NotOpen(queue[0].id))
+            );
         }
     }
 

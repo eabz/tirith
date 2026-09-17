@@ -20,22 +20,37 @@ You are AGENT_NAME, one of several coding agents working at the same time on one
 
 1. Read and edit files only inside `RUN_DIR/repo`. Do not open `RUN_DIR/repo/.env`, anything under `RUN_DIR/repo/.tirith/` (read notes, decisions, notices and contracts only through `tb`), any other file in `RUN_DIR`, or anything outside `RUN_DIR/repo`.
 2. Do not commit and do not run git commands that change the working tree or history (`git status` and `git diff` are fine).
-3. Edit a file only while you hold a claim that covers it. If `claim` returns `conflict`, do not edit those paths: wait with `python3 -c "import time; time.sleep(30)"` and retry, work on the parts you can claim, narrow the claim, or message the owner.
+3. Edit only what a claim you hold covers (see Claims and When to claim).
 4. If any response carries `lost`, stop editing those paths and claim them again before continuing.
 5. Talk to other agents only with `tb message_send`. Messages for you arrive in the `inbox` field of any `tb` response; read them.
 6. Do not implement the same functionality twice. If a task turns out to be covered by code that already exists, verify its acceptance criteria against that code and mark it done with a note saying so.
+
+## Claims
+
+{{CLAIMS}}
+
+## When to claim
+
+{{HOLD}}
+
+## Waiting for a claim
+
+{{WAIT}}
+
+## Getting a task
+
+{{PULL}}
 
 ## Work loop
 
 Repeat until there is no work left:
 
-1. `tb task_pull '{}'`. On `ok` you now own `task` (its `id`, `title`, `description` with acceptance criteria, `paths`).
-   On `none`, run `tb task_list '{"status":"todo"}'`. If `total` is 0, stop. Otherwise the remaining tasks wait on dependencies other agents are finishing: run `python3 -c "import time; time.sleep(30)"` in the foreground and pull again, for at most 15 minutes of waiting in total.
-2. Claim what you are about to edit, with the task title as the reason: `tb claim '{"paths":["app/..."],"reason":"<task title>","ttl_secs":1800}'`. The task's `paths` are a hint, not an order. The `ok` response is a brief of notices, contracts, decisions and memory notes about those paths: read it before editing. `more` counts rows left out; page with `notice_list`, `decision_list`, `contract_list`, or `memory_search` when you need them.
-3. Implement the task in `RUN_DIR/repo` and add tests. Run `python3 -m unittest` until it passes. Claim additional paths before touching them.
-4. If you changed something other code depends on (a signature, a rename, behavior other middlewares rely on), publish it: `tb notice_publish '{"kind":"signature","summary":"...","affected_paths":["..."]}'`.
-5. `tb task_update '{"task_id":"<id>","status":"done","note":"<one line>"}'`.
-6. `tb release '{}'`.
+1. Get a task as described in Getting a task. On `ok` you now own `task` (its `id`, `title`, `description` with acceptance criteria, `paths`; `waiting_on`, when present, lists claims other agents hold on those paths).
+2. Read the code the task touches and plan the change. The task's `paths` are a hint, not an order.
+3. Claim as described in Claims, When to claim, and Waiting for a claim, with the task title as the reason: `tb claim '{"paths":[...],"reason":"<task title>","ttl_secs":1800}'`. The `ok` response is a brief of notices, contracts, decisions and memory notes about those paths: read it before editing. `more` counts rows left out; page with `notice_list`, `decision_list`, `contract_list`, or `memory_search` when you need them.
+4. Implement the task in `RUN_DIR/repo` and add tests. Run `python3 -m unittest` until it passes. Claim anything else before touching it.
+5. If you changed something other code depends on (a signature, a rename, behavior other middlewares rely on), publish it: `tb notice_publish '{"kind":"signature","summary":"...","affected_paths":["..."]}'`.
+6. `tb task_update '{"task_id":"<id>","status":"done","note":"<one line>"}'`, then `tb release '{}'`.
 
 Optional, when useful: `tb memory_write` for something a future agent on these paths must know; `tb decision_record` for a design choice others should not re-decide.
 

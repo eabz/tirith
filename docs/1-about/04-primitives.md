@@ -13,7 +13,8 @@ are RFC 3339 in UTC. Schemas may still change before 1.0.
 ## Conventions shared by every tool
 
 **Outcomes are status JSON, never MCP errors.** Every result has a
-top-level `status`: `ok`, `conflict`, `not_found`, `none`, or `invalid`.
+top-level `status`: `ok`, `conflict`, `not_found`, `none`, or `invalid`
+(and `cancelled` for a wait whose caller went away, which nobody reads).
 The structured content carries the outcome; the text block is a one-line
 summary. If the change could not be written to disk, a mutating result
 also carries `persist_error` and its summary starts with
@@ -77,6 +78,18 @@ With `wait_secs`, the result is `ok` as soon as every overlapping lease has
 ended (each retry is atomic, so another agent can still win the paths
 first), or the last `conflict` once the wait is over. The daemon holds no
 lock while it waits: a release or an expiry wakes waiting claims.
+
+**What ends a wait** (`claim` and `task_pull` alike,
+[ADR-0031](../5-decisions/0031-waits-end-when-the-caller-goes.md)): the
+grant or free task, the end of `wait_secs`, a cancel, or a disconnect. A
+cancel is the client's MCP `notifications/cancelled` for the request; a
+disconnect is the HTTP connection carrying the call closing, or its MCP
+session closing. The last two grant and assign nothing, write no partial
+state, and leave lost-lease reports and inbox messages for the next call;
+the result, status `cancelled`, has no reader. `tirith stdio` forwards its
+client's cancels, and when its client closes stdin it cancels every call
+still waiting before it exits. A grant made in the instant before the
+caller left stands, as for any call.
 
 **Symbol anchors (experimental, [ADR-0029](../5-decisions/0029-symbol-anchored-claims.md), Proposed).**
 A `paths` entry may name a symbol inside a file: `path#Anchor`, for
@@ -192,7 +205,7 @@ built.
 | Tool | Purpose |
 |---|---|
 | `task_create` | `title`, `description`, `priority` (higher pulls first, default 0), `depends_on[]` (task ids), `paths[]` (hint for claims). Returns `task` |
-| `task_pull` | Returns the highest-priority `todo` task whose dependencies are all `done`, assigns it to `agent`, marks it `in_progress`. Ties go to the oldest task. A task whose `paths` overlap another agent's live claim or in-progress task is skipped for the next free one; when every candidate is held, the first is returned anyway with `waiting_on` (`path`, `owner`). Status `none` if nothing is unblocked. Optional `wait_secs` (default 0, max 120, larger values are capped) waits for a free task first; see below |
+| `task_pull` | Returns the highest-priority `todo` task whose dependencies are all `done`, assigns it to `agent`, marks it `in_progress`. Ties go to the oldest task. A free task beats one whose `paths` overlap another agent's in-progress task, which beats one under another agent's live claim; a held task comes back with `waiting_on` (`path`, `owner`). Status `none` if nothing is unblocked. Optional `wait_secs` (default 0, max 120, larger values are capped) waits while every candidate is claimed or the `todo` tasks wait on dependencies; see below |
 | `task_update` | `task_id`, `status` in `todo`, `in_progress`, `blocked`, `done`, plus optional `note` and `force`. `in_progress` makes the caller the owner; `blocked` keeps the current owner and stores the note as `reason`. Changing a task another agent has `in_progress` returns `conflict` with `owner` and `since` unless `force` is true, which records who forced it in the notes |
 | `task_list` | Filter by `status` or `owner`; most recently updated first, paged (`limit`, `before`). Returns `count`, `total`, `truncated`, `next_before`, and `tasks` |
 
@@ -211,26 +224,40 @@ counts as silent since its task last changed. See
 [ADR-0018](../5-decisions/0018-task-ownership-and-contract-republish.md).
 
 `task_pull` looks at claims so a puller is not sent straight into a
-refused `claim`. Candidates keep their order, but a free lower-priority
-task beats a held higher-priority one: held means one of its `paths`
-overlaps (as claims do) a live claim of another agent or the `paths` of
-another agent's `in_progress` task. The caller's own claims and tasks
-never hold anything, and a task with no `paths` is never held. If every
-candidate is held, the old pick is assigned and `waiting_on` lists the
-overlapping held paths and their owners. See
-[ADR-0028](../5-decisions/0028-claim-aware-task-pull.md).
+refused `claim`. Overlap is the claim rule (symbol anchors included), and
+candidates keep their order (priority, then age) within three tiers; the
+pull takes the first task of the highest tier:
 
-**Waiting for work.** With `wait_secs`, a `task_pull` that finds no free
-task (none unblocked, or every candidate held) does not answer at once.
-The daemon waits, up to `wait_secs`, for something that could free one: a
-claim released or expiring, a task created, or a task changing status.
-Each time, it checks again, and as soon as a free task exists the pull
-goes through the normal claim-aware path above; if another agent takes
-that task first, it keeps waiting. On timeout it returns what a pull
-without `wait_secs` returns: `none`, or a held task with `waiting_on`.
-Nothing is assigned while it waits, and nothing is held against the
-caller. Idle workers call it this way instead of ending their turn or
-sleeping between pulls.
+1. **Free:** none of its `paths` overlaps another agent's live claim or
+   the `paths` of another agent's `in_progress` task.
+2. **Behind tasks:** its only overlaps are other agents' `in_progress`
+   task paths. It is assigned with `waiting_on` listing those paths and
+   owners: task paths forecast what another agent will edit, and shared
+   files are coordinated with short claims when the edit happens.
+3. **Behind a claim:** every candidate overlaps a live claim. The first
+   is assigned with `waiting_on` listing every claim and task path it
+   overlaps.
+
+The caller's own claims and tasks never hold anything, and a task with no
+`paths` is never held. See
+[ADR-0028](../5-decisions/0028-claim-aware-task-pull.md), revised
+2026-09-17.
+
+**Waiting for work.** With `wait_secs`, a `task_pull` waits only for what
+waiting can change. A free or behind-tasks candidate is assigned at once.
+When no task is `todo` at all (the board is empty, or every task is in
+progress, blocked, or done), it answers `none` at once. Otherwise, while
+every candidate is behind a claim, or the only `todo` tasks wait on
+unfinished dependencies, the daemon waits up to `wait_secs` for something
+that could change that: a claim released or expiring, a task created,
+pulled, or changing status. Each time it tries again: it takes a task as
+soon as one is free or only behind tasks, and it answers `none` as soon as
+no `todo` task is left. On timeout it returns what a pull without
+`wait_secs` returns: `none`, or a claimed task with `waiting_on`. Nothing
+is assigned while it waits, and nothing is held against the caller. Idle
+workers call it this way instead of ending their turn or sleeping between
+pulls. The wait ends early, assigning nothing, when the caller cancels or
+disconnects (see "What ends a wait" under `claim`).
 
 ## Contracts
 
@@ -306,10 +333,16 @@ escape `.tirith/memory/`.
 | `permalink` | string, optional | Overwrite this note instead of matching on the title |
 | `if_updated_at` | string, optional | RFC 3339. Refuse the write unless the note was last updated at exactly this instant |
 
-Returns `ok` with `note` and `created`. Writing a title whose permalink
-already exists updates that note in place, keeping its id and
-`created_at`; `author` stays the first writer and `updated_by` becomes the
-caller. An explicit `permalink` that does not exist is `not_found`.
+Returns `ok` with `note` and `created`. Writing a title that a note
+already has (exactly, after trimming) updates that note in place, whatever
+its permalink: a note filed in a folder, or one whose permalink got an id
+suffix because another title slugified alike, is found by its title too.
+When several notes share the title, the one at the title's slug wins,
+otherwise the most recently updated; the returned `note.permalink` says
+which, and `permalink` targets another. An update keeps the note's id,
+permalink and `created_at`; `author` stays the first writer and
+`updated_by` becomes the caller. An explicit `permalink` that does not
+exist is `not_found`.
 
 Two agents editing the same note would otherwise silently lose one body.
 Pass back the `updated_at` you read as `if_updated_at`: if the note changed
@@ -392,7 +425,7 @@ and dropped after 24 hours. See
 
 | Tool | Purpose |
 |---|---|
-| `message_send` | `to` (an agent name, or `*` for every agent seen in the last hour), `text` (at most 1000 characters), optional `reply_to` (a message id or unique prefix) and `paths[]`. Returns `message` |
+| `message_send` | `to` (an agent name, `*` for every agent seen in the last hour, or `human` for the [human queue](#escalation-routing)), `text` (at most 1000 characters), optional `reply_to` (a message id or unique prefix) and `paths[]`. Returns `message` |
 | `message_list` | Your own conversations: messages you sent or received, newest first, paged (`limit`, `before`). Filter by `with` (the other agent), `since` (RFC 3339), or `unread` (to you, not yet received). Returns `count`, `total`, `truncated`, `next_before`, and `messages` |
 
 Delivery needs no tool. The recipient's next result, whatever it asked
@@ -404,6 +437,13 @@ after a restart anything still within retention is delivered again. A
 broadcast is addressed, at send time, to every agent that made a call in
 the previous hour, minus the sender; agents that show up later do not
 receive it. Nothing is attached when nothing is waiting.
+
+`human` is not an agent. A message to it, in any case, is stored with
+`to: "human"`, reaches no inbox, and becomes a human queue item; a
+broadcast never reaches it; and a call whose `agent` is `human` is refused
+as `invalid`. The human's reply arrives as a message from `human` that
+answers the one that queued the item, and `message_list` with
+`with: "human"` shows that conversation.
 
 ## Status
 
@@ -446,8 +486,9 @@ Events:
 
 - `claim_granted` (`details`: new, renewed and absorbed paths, reason,
   `ttl_secs`), `claim_refused` (the conflicts and their owners),
-  `claim_waited` (a `wait_secs` claim: `waited_ms` and whether it was
-  granted), `claim_released`, and `lease_ended` (rule
+  `claim_waited` (a `wait_secs` claim that met a conflict: `waited_ms`
+  and `outcome`, `granted`, `refused`, or `cancelled` when the caller went
+  away), `claim_released`, and `lease_ended` (rule
   `ttl_without_activity` or `max_lease_age`), so claims stay auditable
   after they are gone.
 - `notice_published`: a notice pushed to the holders of its affected
@@ -469,39 +510,65 @@ parameter was added.
   360 s, three full claim waits, including a refused `wait_secs` claim.
   One escalation per run of refusals; the text names the paths, the
   claim's reason, and who holds them.
-- A `message_send` to the lead (the holder of `.tirith/lead`) by name,
-  from anyone else, **only** when its text matches a human rule. Any other
-  message to the lead is just delivered.
+- A `message_send` to `human`; the message is the text.
+
+A message to the lead is never an escalation, whatever it says.
 
 **Routes.**
 
-| condition | route | delivery |
-|---|---|---|
-| the text (and paths) match a human rule | `human` | the human queue, and a message from `tirith` to the lead |
-| no human rule matches, and there is a lead other than the escalating agent | `lead` | a message from `tirith` to the lead |
-| no lead, or the lead is the escalating agent | `human` | the human queue (rule `no_lead`) |
+| condition | route | rule | delivery |
+|---|---|---|---|
+| a message to `human` | `human` | `to_human` | the human queue |
+| a lead other than the escalating agent | `lead` | `live_lead` | a message from `tirith` to the lead |
+| the lead is the escalating agent | `lead` | `lead_itself` | none, logged only |
+| no lead | `human` | `no_lead` | the human queue |
+
+While there is a lead nothing reaches the human queue on its own: the
+lead relays what needs the human with `message_send` to `human`.
 
 The human rules match phrases at word boundaries: credentials,
 permissions, spending, a destructive or irreversible step, or a text
-addressed to the human. The phrase list is `lead::HUMAN_RULES`; the row's
-`rule` is `human:<category>`. Workers never see routes or rules.
+addressed to the human (`lead::HUMAN_RULES`). They never route. A match
+tags the lead's message, `escalation from w on task 9f0c1d2e
+(task_blocked; may need the human: credentials): ...`, and is logged as
+`details.tag`. Workers never see routes, rules or tags.
 
-**The log row** has `agent` and `details`: `trigger` (`task_blocked`,
-`message_to_lead`, `claims_refused`), `text` (at most 1000 characters),
-`task`, `paths`, `route`, and `delivered` (`lead`, `human_queue`). Its
-`outcome` is filled in when the escalation is answered: a message to the
-escalating agent from anyone (`via: message`), its task leaving `blocked`
-(`via: task_in_progress`, `task_done`, `task_todo`), or the refused claim
-granted (`via: claim_granted`), with `answered_by` and `after_secs`.
+**The log row** has `agent`, `rule`, and `details`: `trigger`
+(`task_blocked`, `claims_refused`, `message_to_human`; rows logged before
+this revision may say `message_to_lead`), `text` (at most 1000
+characters), `task`, `paths`, `message` (the message that queued it, or
+null), `tag` (a human rule category, or null), `route`, and `delivered`
+(`lead`, `human_queue`). Its `outcome` is filled in when the escalation is
+answered, with `answered_by`, `via`, `at` and `after_secs`: a message to
+the escalating agent from anyone (`via: message`), its task leaving
+`blocked` (`via: task_in_progress`, `task_done`, `task_todo`), the refused
+claim granted (`via: claim_granted`), or the human (`answered_by: human`,
+`via: done` or `reply`, and `reply`, the reply's message id). A message to
+`human` is answered only by the human.
 
 **The human queue** is every `escalation_raised` row delivered to
 `human_queue` with no outcome yet, ranked by how many agents it blocks
 (the escalating agent, others escalating on the same task, and owners of
 open tasks that depend on it), then by how long it has waited. Read it
-with `GET /api/human` (`lead`, `count`, `items`), `tirith lead human`, the
-dashboard's "Needs you" list (`needs_you` in `/api/state`), or the macOS
-tray, which shows the count per daemon and posts a notification when it
-grows.
+with `GET /api/human` (`lead`, `count`, `items`; each item has `id`, `at`,
+`waited_secs`, `agent`, `trigger`, `task`, `text`, `message`, `rule`, and
+`blocked_agents`), `tirith lead human`, the dashboard's "Needs you" list
+(`needs_you` in `/api/state`), or the macOS tray, which lists each item's
+sender and first line under its daemon and posts a notification naming
+the sender and first line of each new item.
+
+**Answering.** `POST /api/human/{id}/done` on the dashboard port, with
+`Content-Type: application/json` and an optional body `{"reply": "..."}`,
+marks item `id` answered, however it was queued (rows routed by the
+earlier phrase rules too). A non-blank reply is first sent to the item's
+`agent` as a message from `human`, with `reply_to` set to the message that
+queued it while that message is kept. It returns `200` with
+`{"status": "ok", "answered": {"id", "reply"}}`, `404` (`not_found`) when
+no open item has that id, `400` (`invalid`) for a bad body or a reply over
+1000 characters (nothing is marked), and `403` for a request that is not
+JSON or comes from another origin. The dashboard's Done button (with an
+optional reply box) and `tirith lead human done <id> [--reply TEXT]` call
+it.
 
 ## Resources — Planned
 

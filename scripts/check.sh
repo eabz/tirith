@@ -120,6 +120,9 @@ if [ "${1:-}" = --digest ]; then
 fi
 cd "$(dirname "$0")/.."
 logdir=${CARGO_TARGET_DIR:-target}
+# A daemon a test spawns must never start the menu bar tray (ADR-0019):
+# several agents running this at once used to leave duplicate icons.
+export TIRITH_NO_TRAY=1
 status=0
 
 # step NAME DIGEST CMD...: run CMD, keep its output in $logdir/check-NAME.log,

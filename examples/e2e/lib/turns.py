@@ -17,8 +17,10 @@ Kinds:
   work         any other tool call
   text         no tool call (thinking or a final answer)
 
-coordination_only_with_a_mechanical_call is the looser count: coordination-only
-turns (mechanical or coordination) with at least one of the four mechanical tools.
+coordination_only is mechanical + coordination: every turn whose tool calls
+only talk to Tirith. coordination_only_with_a_mechanical_call is the looser
+count of the hook protocol's savings: coordination-only turns with at least
+one of the four mechanical tools.
 """
 
 import json
@@ -112,6 +114,7 @@ def summarize(paths):
     for kind in kinds:
         out[kind] = {"turns": 0, "cost_units": 0.0}
     loose = {"turns": 0, "cost_units": 0.0}
+    coordination_only = {"turns": 0, "cost_units": 0.0}
     for path in paths:
         for turn in load_turns(path):
             kind, tb_tools = classify(turn)
@@ -120,11 +123,15 @@ def summarize(paths):
             out["cost_units"] += units
             out[kind]["turns"] += 1
             out[kind]["cost_units"] += units
-            if kind in ("mechanical", "coordination") and MECHANICAL_TOOLS & set(tb_tools):
-                loose["turns"] += 1
-                loose["cost_units"] += units
+            if kind in ("mechanical", "coordination"):
+                coordination_only["turns"] += 1
+                coordination_only["cost_units"] += units
+                if MECHANICAL_TOOLS & set(tb_tools):
+                    loose["turns"] += 1
+                    loose["cost_units"] += units
+    out["coordination_only"] = coordination_only
     out["coordination_only_with_a_mechanical_call"] = loose
-    for kind in kinds + ("coordination_only_with_a_mechanical_call",):
+    for kind in kinds + ("coordination_only", "coordination_only_with_a_mechanical_call"):
         row = out[kind]
         row["cost_units"] = round(row["cost_units"])
         row["turn_share"] = round(row["turns"] / out["turns"], 3) if out["turns"] else None
@@ -159,7 +166,8 @@ def per_worker(run):
         return None
     workers = {agent: summarize(paths) for agent, paths in sorted(found.items())}
     return {"per_worker": workers, "total": summarize([p for paths in found.values() for p in paths]),
-            "note": "mechanical = turns whose only tool calls are tb claim/release/task_pull/task_update"}
+            "note": "mechanical = turns whose only tool calls are tb claim/release/task_pull/task_update; "
+                    "coordination_only = mechanical + turns whose only tool calls are other tb calls"}
 
 
 if __name__ == "__main__":

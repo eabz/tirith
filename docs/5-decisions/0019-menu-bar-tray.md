@@ -5,7 +5,21 @@ launched by `tirith serve` (`tray::launch_if_absent`, skipped with
 `--no-tray`), not by the stdio shim, and since 04:15Z a click on the icon
 always shows the daemon list, with a row opening that daemon's dashboard
 (decision by eabz, code by agent-3). The launch and left-click paragraphs
-below describe the first version.
+below describe the first version. Refined by
+[ADR-0032](0032-tray-single-instance-lock.md): a lock on `tray.lock`
+replaces the pid file, registry changes re-read the file under a lock,
+and `TIRITH_NO_TRAY` and `TIRITH_STATE_DIR` keep test daemons off the
+user's tray and registry. Refined 2026-09-17 (task 6cbbe8a1), replacing
+the pruning paragraph below: one missed 800 ms answer used to prune a busy
+daemon, and nothing put it back until it restarted. A daemon that does not
+answer now stays listed as `<folder>  not responding` with its `Stop` row;
+the tray prunes it only when its root is gone, its pid is gone (`ps -o
+stat= -p <pid>` finds no process, or a zombie; nothing is signalled), or
+it stayed silent for 60 polls (five minutes, for a pid reused by another
+process). Every daemon checks its entry once a minute under the registry
+lock and puts it back if missing, so a wrong prune heals; the newest
+daemon for a root keeps the root. The tray asks all daemons at once, so
+silent daemons cost one timeout per poll between them.
 
 ## Context
 
@@ -30,7 +44,8 @@ not tied to any one repository, and a small native UI that reads it.
   daemon can leave one behind.
 - **The tray prunes.** Every poll it drops entries whose `/api/health`
   does not answer or whose root no longer exists, so a crashed daemon
-  disappears within five seconds without anybody cleaning up.
+  disappears within five seconds without anybody cleaning up. (First
+  version; see the status note for the pid check and re-registration.)
 - **`tirith tray`**, `src/tray.rs`, macOS only, behind the cargo feature
   `tray` (on by default; the module and its dependencies are gated on
   `target_os = "macos"`, so Linux and Windows builds contain nothing of
@@ -86,6 +101,9 @@ not tied to any one repository, and a small native UI that reads it.
   binary-size deltas.
 - `cargo test --all-features` on Linux compiles none of the tray; on macOS
   the tray has no GUI tests, only the registry's unit tests.
+- A crashed daemon still leaves the menu within one poll, since its pid
+  is gone; a daemon that is only slow shows as not responding instead of
+  vanishing, and one pruned by mistake returns within a minute.
 - A second Tirith binary on the machine (a dev build from a checkout)
   shares the registry with the installed one, which is intended: the tray
   shows every daemon, whatever started it.

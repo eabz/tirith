@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anchors as anchor_metrics  # noqa: E402
+import benchstats  # noqa: E402
 import turns as turn_metrics  # noqa: E402
+import violations as violation_metrics  # noqa: E402
 
 RUNNER = r"""
 import json, sys, unittest
@@ -92,6 +94,26 @@ def hook_metrics(run):
             "errors": len(errors.read_text().splitlines()) if errors.is_file() else 0}
 
 
+def worker_rollup(worker_turns, violations):
+    """One row per worker: turns, coordination-only and mechanical turns, cost units, unclaimed writes."""
+    turns_by = (worker_turns or {}).get("per_worker", {})
+    writes_by = (violations or {}).get("per_worker", {})
+    if not turns_by and not writes_by:
+        return None
+    rows = {}
+    for agent in sorted(set(turns_by) | set(writes_by)):
+        t, v = turns_by.get(agent), writes_by.get(agent)
+        rows[agent] = {
+            "turns": t["turns"] if t else None,
+            "coordination_only_turns": t["coordination_only"]["turns"] if t else None,
+            "mechanical_turns": t["mechanical"]["turns"] if t else None,
+            "cost_units": t["cost_units"] if t else None,
+            "coordination_only_cost_share": t["coordination_only"]["cost_share"] if t else None,
+            "unclaimed_writes": v["unclaimed"] if v else None,
+        }
+    return rows
+
+
 def parse_ts(ts):
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -159,7 +181,7 @@ def main():
     summary = {"run": str(run), "tirith_version": meta.get("tirith_version"),
                "protocol": meta.get("protocol", "manual")}
     if meta.get("scenario"):
-        summary.update({"scenario": meta["scenario"], "claims": meta.get("claims"), "wait": meta.get("wait")})
+        summary.update({key: meta.get(key) for key in ("scenario", "arm", "claims", "hold", "wait", "pull")})
 
     # Task board, from the live daemon.
     listing = cli(run, "task_list", {"limit": 200})
@@ -216,9 +238,10 @@ def main():
             "note": tasks_doc.get("acceptance_note", "2 ctx-interface regression tests pass on the untouched baseline"),
         }
 
-        # Sub-file scenarios: which passing tests were lost after a done-time snapshot.
+        # Which passing tests were lost after a done-time snapshot (tb takes them when
+        # setup created <run>/snapshots; every scenario since the bench arms).
         lost = None
-        if any("anchors" in t for t in tasks_spec):
+        if (run / "snapshots").is_dir():
             final = {name: set(r["passed"]) for name, r in results.items()}
             counter = [0]
 
@@ -321,7 +344,8 @@ def main():
     }
     summary["wall_time_s"] = wall
 
-    if any("anchors" in t for t in tasks_spec):
+    # Claim metrics for every scenario (per_anchor and per_file stay empty without task anchors).
+    if lines:
         anchors = anchor_metrics.claim_metrics(tasks_spec, lines, full) or {"per_anchor": {}}
         if lost is not None:
             per_anchor = anchors["per_anchor"]
@@ -339,7 +363,12 @@ def main():
     # Model turns per worker from Claude Code transcripts (<run>/transcripts/<agent>*.jsonl, or the
     # transcript paths hooks recorded); mechanical = only tb claim/release/task_pull/task_update.
     summary["worker_turns"] = turn_metrics.per_worker(run)
+    # Repository writes without the writer's own live claim (lib/violations.py); null without transcripts.
+    summary["violations"] = violation_metrics.per_worker(run)
+    summary["workers"] = worker_rollup(summary["worker_turns"], summary["violations"])
     summary["hooks"] = hook_metrics(run)
+    # The flat numbers the benchmark arms are compared on (lib/benchstats.py, read by lib/aggregate.py).
+    summary["bench"] = benchstats.block(summary, meta, run, lines, full)
     summary["worker_llm"] = {"tokens_in": None, "tokens_out": None, "cost_usd": None, "wall_time_s": None,
                              "note": "filled in by the runner from the agent runtime; not visible to the kit"}
     print(json.dumps(summary, indent=2))

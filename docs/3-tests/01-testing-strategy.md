@@ -12,7 +12,7 @@ are tested as such. The transport is tested once, end to end.
 | State | `src/state.rs` tests | Atomicity of multi-path claims, lazy reaping, renew-on-activity, which primitives a delta carries, renewals folded into the next delta | None |
 | Store | `src/store.rs` tests | Round-trip to a temp dir, deltas append or rewrite only their own files, the persister coalesces bursts and flushes, reports and recovers from a failed write, loading a corrupt file is an error, not a panic | tokio (for `spawn_blocking`) |
 | Integration | `tests/http_roundtrip.rs` | Start the real server on an ephemeral localhost port, drive it with `tirith::client`: refusal and release, restart, lease expiry, the task/contract/notice flow, paging and id prefixes, task ownership and contract republish guards, claim-aware `task_pull` and its `wait_secs` wait, lost leases and the four-TTL cap, briefs, messages, shutdown with an open SSE stream, the daemon registry, the dashboard, and the two budgets also pinned in `tests/budgets.rs` | tokio + localhost network |
-| Escalations | `tests/lead_escalation.rs` | The deterministic lead policy (ADR-0027) through a real daemon: each trigger (blocked task, third refusal of a claim, a message to the lead that matches a human rule), routing to the lead or the human queue with and without a lead, the human queue's ranking, and the outcome filled in when an escalation is answered | tokio + localhost network |
+| Escalations | `tests/lead_escalation.rs` | The deterministic lead policy (ADR-0027) through a real daemon: each trigger (blocked task, third refusal of a claim, a message to `human`), routing to the lead (tagged by the human rules) or the human queue with and without a lead, messages to the lead never escalating (with the done report that once reached the human), answering an item with `POST /api/human/{id}/done` and a reply, and the outcome filled in when an escalation is answered | tokio + localhost network |
 | Anchored claims | `tests/anchored_claims.rs` | Experimental `path#Symbol` claims (ADR-0029) through a real daemon: conflicts with the file and enclosing symbols only, `wait_secs` waking on an anchor release, a whole-file waiter not queued ahead of new anchors (today's behavior), `task_pull` holds, and briefs matching on the file | tokio + localhost network |
 | Budgets | `tests/budgets.rs` | One test per row of the ADR-0013 table against a daemon seeded with 300 claims, notices and decisions: `tools/list` size, status-line text blocks, 20 compact rows with a cursor, `status`, `claims_list`, `renew`, brief, and search rows without bodies | tokio + localhost network |
 | Persistence | `tests/persistence.rs` | The legacy decisions.jsonl importing into one file per decision, fifty agents claiming at once, reads that do not rewrite logs, lease renewals reaching disk by shutdown, seen marks that never rewrite the notice log, a bad line reported instead of stopping the daemon, a failed write reported on the response, everything surviving a restart | tokio + localhost network |
@@ -30,6 +30,12 @@ are tested as such. The transport is tested once, end to end.
   store tests, its own temp dir (`tempfile` crate).
 - **Integration tests bind port 0** and read the assigned port back. Never
   hard-code 7477 in tests.
+- **A spawned binary stays off the user's machine state.** A test that
+  runs the built `tirith` sets `TIRITH_NO_TRAY=1` and points
+  `TIRITH_STATE_DIR` at its temp directory (`tirith(root)` in
+  `tests/stdio_shim.rs`), so its daemons start no menu bar tray and never
+  register in the user's daemon registry (ADR-0032). No test starts a real
+  tray; `AppKit` needs a GUI session.
 - **Every bug fix adds a test** that fails before the fix.
 - **Every tool has at least one integration test** covering the happy path
   and one refusal or error path.
@@ -93,7 +99,8 @@ cargo test -- --nocapture        # see server logs
 same order CI runs: `cargo fmt --check`, `cargo clippy --all-targets
 --all-features -- -D warnings`, `cargo test --all-features`, `cargo doc
 --no-deps` with `RUSTDOCFLAGS=-D warnings`, `cargo machete`, `cargo deny
-check`; it also fails if a test left a `tirith serve` daemon running.
+check`; it also fails if a test left a `tirith serve` daemon running. It
+exports `TIRITH_NO_TRAY=1`, so no daemon a test starts can launch a tray.
 There is no coverage step. Each step's raw output goes to
 `target/check-<step>.log`. A failing clippy, test, or doc step prints a
 digest under its `FAIL` line: the first panic per location with its

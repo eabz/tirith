@@ -29,17 +29,17 @@ use crate::contracts::{
     Contract, ContractError, ContractKind, ContractRegistry, NewContract, Published,
 };
 use crate::decisions::{Decision, DecisionError, DecisionLog, NewDecision};
-use crate::lead::{self, EntryId, Lead, LeadEntry, LeadEvent, LeadLog, NewEntry};
+use crate::lead::{self, EntryId, Lead, LeadEntry, LeadEvent, LeadLog, NewEntry, WaitOutcome};
 use crate::memory::{MemoryBook, MemoryError, MemoryNote, MemorySearch, MemoryWritten, NewMemory};
 use crate::messages::{
-    BROADCAST_WINDOW, Inbox, Message, MessageBoard, MessageError, MessageFilter, NewMessage,
+    BROADCAST_WINDOW, HUMAN, Inbox, Message, MessageBoard, MessageError, MessageFilter, NewMessage,
 };
 use crate::notices::{
     NewNotice, Notice, NoticeBoard, NoticeError, NoticeFilter, NoticeKind, NoticeSeen,
     coalesce_contract_versions,
 };
 use crate::store::LoadError;
-use crate::tasks::{Hold, NewTask, Pulled, Task, TaskBoard, TaskError, TaskStatus};
+use crate::tasks::{Hold, NewTask, NotReady, Pulled, Task, TaskBoard, TaskError, TaskStatus};
 use crate::types::{
     AgentId, ClaimId, ContractId, DecisionId, MemoryId, MessageId, NoticeId, Page, PrefixError,
     RepoPath, TaskId,
@@ -787,6 +787,12 @@ impl State {
     /// or to expire, retrying atomically each time one ends. Returns the
     /// last conflict if the paths are still held when the wait is over.
     /// No lock is held while waiting.
+    ///
+    /// The wait also ends when `gone` completes, which the server ties to
+    /// the caller going away (ADR-0031). Nothing is claimed then, and the
+    /// error is [`ClaimError::Cancelled`]: a claim is only ever granted in
+    /// one synchronous attempt, never across an await. A wait that met a
+    /// conflict logs one `claim_waited` row however it ended.
     pub async fn claim_waiting(
         &self,
         agent: AgentId,
@@ -794,31 +800,51 @@ impl State {
         reason: String,
         ttl_secs: Option<u64>,
         wait: std::time::Duration,
+        gone: impl Future<Output = ()>,
     ) -> Result<Granted, ClaimError> {
         let wait = wait.min(std::time::Duration::from_secs(MAX_CLAIM_WAIT_SECS));
         let started = tokio::time::Instant::now();
         let deadline = started + wait;
-        let (result, conflicted) = self
-            .claim_waiting_loop(&agent, &paths, &reason, ttl_secs, wait, deadline)
-            .await;
+        let mut conflicted = false;
+        let result = {
+            let waiting = self.claim_waiting_loop(
+                &agent,
+                &paths,
+                &reason,
+                ttl_secs,
+                deadline,
+                &mut conflicted,
+            );
+            tokio::select! {
+                biased;
+                () = gone => Err(ClaimError::Cancelled),
+                result = waiting => result,
+            }
+        };
         // One row for the whole wait; a claim granted at once is only a grant.
         if conflicted {
-            let row = lead::claim_waited(&agent, &paths, wait, started.elapsed(), result.is_ok());
+            let outcome = match &result {
+                Ok(_) => WaitOutcome::Granted,
+                Err(ClaimError::Cancelled) => WaitOutcome::Cancelled,
+                Err(_) => WaitOutcome::Refused,
+            };
+            let row = lead::claim_waited(&agent, &paths, wait, started.elapsed(), outcome);
             self.lead_log_append(row);
         }
         result
     }
 
+    /// The attempts of [`State::claim_waiting`]. Sets `conflicted` at the
+    /// first conflict. Dropping it at an await claims nothing.
     async fn claim_waiting_loop(
         &self,
         agent: &AgentId,
         paths: &[RepoPath],
         reason: &str,
         ttl_secs: Option<u64>,
-        wait: std::time::Duration,
         deadline: tokio::time::Instant,
-    ) -> (Result<Granted, ClaimError>, bool) {
-        let mut conflicted = false;
+        conflicted: &mut bool,
+    ) -> Result<Granted, ClaimError> {
         loop {
             // Registered before the attempt, so a release between the
             // attempt and the wait still wakes it.
@@ -834,12 +860,12 @@ impl State {
             );
             let conflicts = match attempt {
                 Err(ClaimError::Conflict(conflicts)) => conflicts,
-                other => return (other, conflicted),
+                other => return other,
             };
-            conflicted = true;
+            *conflicted = true;
             let now = tokio::time::Instant::now();
             if now >= deadline {
-                return (Err(ClaimError::Conflict(conflicts)), conflicted);
+                return Err(ClaimError::Conflict(conflicts));
             }
             // A lease can end with nobody calling to reap it, so also wake
             // just after the first overlapping lease would expire.
@@ -848,7 +874,7 @@ impl State {
                 .iter()
                 .map(|c| (c.expires_at - clock_now).to_std().unwrap_or_default())
                 .min()
-                .unwrap_or(wait);
+                .unwrap_or(deadline - now);
             let wake = deadline.min(now + expiry + EXPIRY_SLACK);
             tokio::select! {
                 () = &mut freed => {}
@@ -909,18 +935,42 @@ impl State {
         created
     }
 
-    /// Pulls the next unblocked task for `agent`.
-    /// Tasks whose paths overlap another agent's live claim or in-progress
-    /// task are skipped (ADR-0028). See [`TaskBoard::pull`].
+    /// Pulls the next unblocked task for `agent`. A task whose paths overlap
+    /// another agent's live claim or in-progress task loses to a free one
+    /// (ADR-0028). See [`TaskBoard::pull`].
     pub fn task_pull(&self, agent: AgentId) -> Option<Pulled> {
-        self.access(Some(&agent.clone()), |inner, now| {
+        let pulled = self.access(Some(&agent.clone()), |inner, now| {
             let holds = claim_holds(&inner.claims, &agent);
             let pulled = inner.tasks.pull(agent, &holds, now);
             if pulled.is_some() {
                 inner.tasks_dirty = true;
             }
             pulled
-        })
+        });
+        if pulled.is_some() {
+            // One fewer task on the board: a waiting pull may now have
+            // nothing left to wait for.
+            self.tasks_changed.notify_waiters();
+        }
+        pulled
+    }
+
+    /// [`State::task_pull`] for a caller that can wait: takes a task only
+    /// while no other agent's live claim overlaps it, and otherwise says
+    /// whether waiting can still help. See [`TaskBoard::pull_ready`].
+    pub fn task_pull_ready(&self, agent: AgentId) -> Result<Pulled, NotReady> {
+        let pulled = self.access(Some(&agent.clone()), |inner, now| {
+            let holds = claim_holds(&inner.claims, &agent);
+            let pulled = inner.tasks.pull_ready(agent, &holds, now);
+            if pulled.is_ok() {
+                inner.tasks_dirty = true;
+            }
+            pulled
+        });
+        if pulled.is_ok() {
+            self.tasks_changed.notify_waiters();
+        }
+        pulled
     }
 
     /// Updates a task's status.
@@ -1262,20 +1312,6 @@ impl State {
         });
     }
 
-    /// Unblocked `todo` tasks in pull order that no other agent holds a
-    /// path of (ADR-0028), without taking any.
-    pub fn task_candidates(&self, agent: &AgentId) -> Vec<Task> {
-        self.access(Some(agent), |inner, _| {
-            let holds = claim_holds(&inner.claims, agent);
-            inner
-                .tasks
-                .free_candidates(agent, &holds)
-                .into_iter()
-                .cloned()
-                .collect()
-        })
-    }
-
     /// Every agent other than `notice`'s publisher holding a claim on one
     /// of the notice's affected paths, or on an ancestor or descendant of
     /// one, in name order.
@@ -1329,6 +1365,16 @@ impl State {
                 .messages
                 .send(from, NewMessage::new(to.as_str(), text), Vec::new(), now)
                 .cloned()
+        })
+    }
+
+    /// A message from the human ([`HUMAN`]), such as the reply to a human
+    /// queue item (ADR-0027). Like [`State::notify`] it counts as nobody's
+    /// activity, so `human` never shows up as an agent.
+    pub fn message_from_human(&self, new: NewMessage) -> Result<Message, MessageError> {
+        let from = AgentId::new(HUMAN).map_err(|_| MessageError::BadRecipient(HUMAN.to_owned()))?;
+        self.access(None, |inner, now| {
+            inner.messages.send(from, new, Vec::new(), now).cloned()
         })
     }
 
@@ -2006,7 +2052,6 @@ mod tests {
         state
             .claim(agent("alice"), vec![path("src")], "x".into(), None)
             .unwrap();
-        assert_eq!(state.task_candidates(&agent("bob")).len(), 1);
         let pulled = state.task_pull(agent("bob")).unwrap();
         assert_eq!(pulled.task.id, pathless);
         assert!(pulled.waiting_on.is_empty());
@@ -2023,7 +2068,8 @@ mod tests {
         state
             .claim(agent("bob"), vec![path("src/claims.rs")], "x".into(), None)
             .unwrap();
-        assert!(state.task_candidates(&agent("carol")).is_empty());
+        // A pull that can wait takes neither claimed task.
+        assert_eq!(state.task_pull_ready(agent("carol")), Err(NotReady::Held));
         let pulled = state.task_pull(agent("carol")).unwrap();
         assert_eq!(pulled.task.id, top);
         assert_eq!(
@@ -2056,6 +2102,7 @@ mod tests {
                     "y".into(),
                     None,
                     std::time::Duration::from_secs(30),
+                    std::future::pending(),
                 )
                 .await
         });
@@ -2080,11 +2127,65 @@ mod tests {
                 "y".into(),
                 None,
                 std::time::Duration::from_millis(150),
+                std::future::pending(),
             )
             .await;
         assert!(matches!(refused, Err(ClaimError::Conflict(ref c)) if c.len() == 1));
         assert!(started.elapsed() >= std::time::Duration::from_millis(150));
         assert_eq!(state.claims(None, None).len(), 1, "nothing was claimed");
+        let rows = state.lead_log(10, Some(LeadEvent::ClaimWaited));
+        assert_eq!(rows[0].details.as_ref().unwrap()["outcome"], "refused");
+    }
+
+    #[tokio::test]
+    async fn a_waiting_claim_whose_caller_goes_away_claims_nothing() {
+        let (_, state) = state();
+        state
+            .claim(agent("alice"), vec![path("src")], "x".into(), None)
+            .unwrap();
+        let (gone_tx, gone_rx) = tokio::sync::oneshot::channel::<()>();
+        let started = tokio::time::Instant::now();
+        let waiting = state.claim_waiting(
+            agent("bob"),
+            vec![path("src/state.rs")],
+            "y".into(),
+            None,
+            std::time::Duration::from_secs(30),
+            async {
+                let _ = gone_rx.await;
+            },
+        );
+        let release_after_the_caller_left = async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            gone_tx.send(()).unwrap();
+            // The paths free up right after: the claim must not take them.
+            state.release(&agent("alice"), None).unwrap();
+        };
+        let (cancelled, ()) = tokio::join!(waiting, release_after_the_caller_left);
+        assert!(
+            matches!(cancelled, Err(ClaimError::Cancelled)),
+            "{cancelled:?}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(state.claims(None, None).is_empty(), "nothing was claimed");
+        let rows = state.lead_log(10, Some(LeadEvent::ClaimWaited));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].details.as_ref().unwrap()["outcome"], "cancelled");
+
+        // A caller already gone never even tries, and logs no wait.
+        let gone = state
+            .claim_waiting(
+                agent("carol"),
+                vec![path("src")],
+                "z".into(),
+                None,
+                std::time::Duration::from_secs(30),
+                std::future::ready(()),
+            )
+            .await;
+        assert!(matches!(gone, Err(ClaimError::Cancelled)));
+        assert!(state.claims(None, None).is_empty());
+        assert_eq!(state.lead_log(10, Some(LeadEvent::ClaimWaited)).len(), 1);
     }
 
     #[tokio::test]

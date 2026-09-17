@@ -127,13 +127,25 @@ shuts the daemon down cleanly; `Quit tray` removes the icon. Daemons find
 each other through a per-user
 registry at `~/Library/Application Support/tirith/daemons.json`
 (`$XDG_STATE_HOME/tirith/daemons.json` on other systems), which every
-daemon writes on start; a crashed daemon drops off the menu within one
-refresh. `tirith serve` (and so the stdio shim, which runs it) starts the tray the
+daemon writes on start and checks once a minute. A crashed daemon drops
+off the menu within one refresh; a daemon too busy to answer in time stays
+listed as `not responding` (with its `Stop` row) until it answers again,
+and is dropped only once its process is gone or after five minutes of
+silence, in which case it puts itself back within a minute if it is still
+running. `tirith serve` (and so the stdio shim, which runs it) starts the tray the
 first time a daemon comes up, unless it is already running or `--no-tray`
-was given; it stays until you choose Quit. The tray is built in by default
+was given; it stays until you choose Quit. Only one tray runs per state
+directory: it holds a lock on `tray.lock` beside the registry, and a second
+one exits at once. The tray is built in by default
 on macOS (cargo feature `tray`) and compiles to nothing elsewhere; there
 is no tray on Windows or Linux.
-Design: [ADR-0019](../5-decisions/0019-menu-bar-tray.md).
+
+Two environment variables keep scripts and tests away from your icon:
+`TIRITH_NO_TRAY=1` is `--no-tray` for every `tirith serve`, including the
+ones the stdio shim starts, and `TIRITH_STATE_DIR=<dir>` moves the registry
+(and the tray lock) to `<dir>/daemons.json`.
+Design: [ADR-0019](../5-decisions/0019-menu-bar-tray.md),
+[ADR-0032](../5-decisions/0032-tray-single-instance-lock.md).
 
 ## After installing
 

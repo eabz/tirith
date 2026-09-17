@@ -34,6 +34,7 @@ pub mod clock;
 pub mod contracts;
 pub mod dashboard;
 pub mod decisions;
+mod hangup;
 pub mod lead;
 pub mod memory;
 pub mod messages;

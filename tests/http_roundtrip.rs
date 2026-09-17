@@ -1245,6 +1245,8 @@ async fn a_claim_with_wait_secs_is_granted_when_the_lease_expires() {
 async fn a_task_pull_with_wait_secs_takes_a_task_created_while_it_waits() {
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
+    // The only task is under alice's claim, so bob's pull waits.
+    hold_a_task(&handle, "fix login").await;
     let started = std::time::Instant::now();
     let create_later = async {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -1362,10 +1364,112 @@ async fn a_task_pull_with_wait_secs_wakes_when_the_claim_on_its_paths_is_release
     handle.shutdown().await.unwrap();
 }
 
+/// With no `todo` task, nothing can free one, so a pull answers `none` at
+/// once whatever its `wait_secs`: agents no longer idle two minutes at the
+/// end of a run (ADR-0028, revised).
+#[tokio::test]
+async fn a_task_pull_with_wait_secs_answers_none_at_once_when_no_task_is_todo() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let pull = json!({ "agent": "bob", "wait_secs": 120 });
+    let started = std::time::Instant::now();
+    let bob = call(&handle, "task_pull", pull.clone()).await;
+    let waited = started.elapsed();
+    assert_eq!(bob["status"], "none", "{bob}");
+    assert!(
+        waited < std::time::Duration::from_millis(200),
+        "empty board: {waited:?}"
+    );
+
+    // One task done, one in progress: still nothing todo.
+    for title in ["finished", "underway"] {
+        call(
+            &handle,
+            "task_create",
+            json!({ "agent": "planner", "title": title }),
+        )
+        .await;
+        let alice = call(&handle, "task_pull", json!({ "agent": "alice" })).await;
+        assert_eq!(alice["task"]["title"], title);
+        if title == "finished" {
+            let id = alice["task"]["id"].as_str().unwrap();
+            call(
+                &handle,
+                "task_update",
+                json!({ "agent": "alice", "task_id": id, "status": "done" }),
+            )
+            .await;
+        }
+    }
+    let started = std::time::Instant::now();
+    let bob = call(&handle, "task_pull", pull).await;
+    let waited = started.elapsed();
+    assert_eq!(bob["status"], "none", "{bob}");
+    assert!(
+        waited < std::time::Duration::from_millis(200),
+        "no todo task: {waited:?}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+/// A candidate whose only overlap is another agent's in-progress task
+/// paths is handed out at once, with `waiting_on`; waiting would only
+/// serialize agents on shared files that edit windows already coordinate.
+#[tokio::test]
+async fn a_task_pull_with_wait_secs_takes_a_task_behind_another_agents_task_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    for title in ["register route a", "register route b"] {
+        call(
+            &handle,
+            "task_create",
+            json!({ "agent": "planner", "title": title, "paths": ["app/router.py"] }),
+        )
+        .await;
+    }
+    let alice = call(&handle, "task_pull", json!({ "agent": "alice" })).await;
+    assert_eq!(alice["task"]["title"], "register route a");
+
+    let started = std::time::Instant::now();
+    let bob = call(
+        &handle,
+        "task_pull",
+        json!({ "agent": "bob", "wait_secs": 120 }),
+    )
+    .await;
+    let waited = started.elapsed();
+    assert_eq!(bob["task"]["title"], "register route b", "{bob}");
+    assert_eq!(
+        bob["waiting_on"],
+        json!([{ "path": "app/router.py", "owner": "alice" }]),
+        "{bob}"
+    );
+    assert!(
+        waited < std::time::Duration::from_millis(200),
+        "waited {waited:?}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_task_pull_with_wait_secs_returns_none_when_the_wait_ends() {
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
+    // The only todo task waits on one alice has in progress.
+    let first = call(
+        &handle,
+        "task_create",
+        json!({ "agent": "planner", "title": "server side" }),
+    )
+    .await;
+    let first_id = first["task"]["id"].as_str().unwrap().to_owned();
+    call(
+        &handle,
+        "task_create",
+        json!({ "agent": "planner", "title": "client side", "depends_on": [first_id] }),
+    )
+    .await;
+    call(&handle, "task_pull", json!({ "agent": "alice" })).await;
     let started = std::time::Instant::now();
     let bob = call(
         &handle,
@@ -1383,39 +1487,240 @@ async fn a_task_pull_with_wait_secs_returns_none_when_the_wait_ends() {
 }
 
 #[tokio::test]
-async fn a_waiting_task_pull_that_is_cancelled_assigns_nothing() {
+async fn a_waiting_task_pull_or_claim_that_is_cancelled_takes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
-    // The client cancels the request, as an interrupted agent's client does.
-    let args = json!({ "agent": "ghost", "wait_secs": 30 });
-    let params =
-        CallToolRequestParams::new("task_pull").with_arguments(args.as_object().unwrap().clone());
+    hold_a_task(&handle, "after a cancel").await;
+    // The client cancels both requests, as an interrupted agent's client does.
     let client = raw_client(&handle.mcp_url()).await;
-    let request = client
-        .peer()
-        .send_cancellable_request(
-            ClientRequest::CallToolRequest(CallToolRequest::new(params)),
-            PeerRequestOptions::no_options(),
-        )
-        .await
-        .unwrap();
+    let mut requests = Vec::new();
+    for (tool, args) in [
+        ("task_pull", json!({ "agent": "ghost", "wait_secs": 30 })),
+        (
+            "claim",
+            json!({ "agent": "ghost", "paths": ["src/a.rs"], "reason": "r", "wait_secs": 30 }),
+        ),
+    ] {
+        let params =
+            CallToolRequestParams::new(tool).with_arguments(args.as_object().unwrap().clone());
+        let request = client
+            .peer()
+            .send_cancellable_request(
+                ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+                PeerRequestOptions::no_options(),
+            )
+            .await
+            .unwrap();
+        requests.push(request);
+    }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    request.cancel(None).await.unwrap();
+    for request in requests {
+        request.cancel(None).await.unwrap();
+    }
+    wait_for_cancelled_claim(&handle, 1).await;
 
-    // A task created after the cancel stays on the board for someone else.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    call(
-        &handle,
-        "task_create",
-        json!({ "agent": "planner", "title": "after a cancel" }),
+    // What frees up after the cancel stays free for someone else.
+    call(&handle, "release", json!({ "agent": "alice" })).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_ghost_took_nothing(&handle, "after a cancel").await;
+    handle.shutdown().await.unwrap();
+}
+
+/// A client whose HTTP connection drops while its `claim` or `task_pull`
+/// waits gets nothing: the daemon notices the dropped response and stops
+/// waiting (ADR-0031). Closing the session does the same.
+#[tokio::test]
+async fn a_waiting_call_whose_connection_drops_or_session_closes_takes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(options(dir.path(), None)).await.unwrap();
+    let url = handle.mcp_url();
+    hold_a_task(&handle, "after a hangup").await;
+
+    let session = open_session(&url).await;
+    let pull = start_call(
+        &url,
+        &session,
+        "task_pull",
+        json!({ "agent": "ghost", "wait_secs": 30 }),
+    )
+    .await;
+    let claim = start_call(
+        &url,
+        &session,
+        "claim",
+        json!({ "agent": "ghost", "paths": ["src/a.rs"], "reason": "r", "wait_secs": 30 }),
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let listed = call(&handle, "task_list", json!({ "agent": "planner" })).await;
-    assert_eq!(listed["tasks"][0]["status"], "todo", "{listed}");
-    let bob = call(&handle, "task_pull", json!({ "agent": "bob" })).await;
-    assert_eq!(bob["task"]["title"], "after a cancel");
+    drop(pull);
+    drop(claim);
+    wait_for_cancelled_claim(&handle, 1).await;
+
+    // Another wait in a second session, ended by closing the session.
+    let second = open_session(&url).await;
+    let _held_open = start_call(
+        &url,
+        &second,
+        "claim",
+        json!({ "agent": "ghost", "paths": ["src/a.rs"], "reason": "r", "wait_secs": 30 }),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let deleted = reqwest::Client::new()
+        .delete(&url)
+        .header("Mcp-Session-Id", &second)
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+    wait_for_cancelled_claim(&handle, 2).await;
+
+    call(&handle, "release", json!({ "agent": "alice" })).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_ghost_took_nothing(&handle, "after a hangup").await;
     handle.shutdown().await.unwrap();
+}
+
+/// Waits up to 5 s for `count` `claim_waited` rows with outcome
+/// `cancelled`, which is how a test knows the daemon stopped waiting
+/// before it frees the paths.
+async fn wait_for_cancelled_claim(handle: &tirith::server::ServerHandle, count: usize) {
+    let url = format!("{}api/lead?event=claim_waited", handle.dashboard_url());
+    let mut log = Value::Null;
+    let mut cancelled = 0;
+    for _ in 0..50 {
+        log = reqwest_get(&url).await;
+        cancelled = log["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["details"]["outcome"] == "cancelled")
+            .count();
+        if cancelled >= count {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(cancelled, count, "cancelled claim_waited rows: {log}");
+    let row = &log["entries"][0];
+    assert_eq!(row["agent"], "ghost", "{log}");
+    assert!(
+        row["details"]["waited_ms"].as_u64().unwrap() < 5_000,
+        "{log}"
+    );
+}
+
+/// `alice` claims `src/a.rs` and `planner` adds the task `title` on it, so
+/// a waiting `task_pull` or `claim` by anyone else has something to wait for.
+async fn hold_a_task(handle: &tirith::server::ServerHandle, title: &str) {
+    let claimed = call(
+        handle,
+        "claim",
+        json!({ "agent": "alice", "paths": ["src/a.rs"], "reason": "r" }),
+    )
+    .await;
+    assert_eq!(claimed["status"], "ok", "{claimed}");
+    let created = call(
+        handle,
+        "task_create",
+        json!({ "agent": "planner", "title": title, "paths": ["src/a.rs"] }),
+    )
+    .await;
+    assert_eq!(created["status"], "ok", "{created}");
+}
+
+/// `ghost` holds no claim and was assigned no task; the task titled
+/// `title` is still on the board for the next agent.
+async fn assert_ghost_took_nothing(handle: &tirith::server::ServerHandle, title: &str) {
+    let claims = call(handle, "claims_list", json!({ "agent": "planner" })).await;
+    assert_eq!(claims["count"], 0, "{claims}");
+    let listed = call(handle, "task_list", json!({ "agent": "planner" })).await;
+    assert_eq!(listed["tasks"][0]["status"], "todo", "{listed}");
+    let bob = call(handle, "task_pull", json!({ "agent": "bob" })).await;
+    assert_eq!(bob["task"]["title"], title, "{bob}");
+    let granted = format!("{}api/lead?event=claim_granted", handle.dashboard_url());
+    let granted = reqwest_get(&granted).await;
+    assert!(
+        granted["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["agent"] != "ghost"),
+        "{granted}"
+    );
+}
+
+/// Opens an MCP session with bare HTTP requests and returns its id.
+async fn open_session(url: &str) -> String {
+    let client = reqwest::Client::new();
+    let init = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#)
+        .send()
+        .await
+        .unwrap();
+    let session = init
+        .headers()
+        .get("mcp-session-id")
+        .expect("a session id")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    // Read the initialize reply before the session takes more.
+    init.text().await.unwrap();
+    let initialized = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session)
+        .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        initialized.status().is_success(),
+        "{}",
+        initialized.status()
+    );
+    session
+}
+
+/// Sends a `tools/call` in `session` on a connection of its own and
+/// returns that connection once the response has begun, so the test can
+/// drop it while the call waits.
+async fn start_call(url: &str, session: &str, tool: &str, args: Value) -> tokio::net::TcpStream {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let host = url_host(url);
+    let body = json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": { "name": tool, "arguments": args }
+    })
+    .to_string();
+    let mut stream = tokio::net::TcpStream::connect(&host).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMcp-Session-Id: {session}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut head = [0_u8; 512];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut head))
+        .await
+        .expect("response headers before the timeout")
+        .unwrap();
+    let head = String::from_utf8_lossy(&head[..n]);
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(
+        !head.contains("\"result\""),
+        "the call must still be waiting: {head}"
+    );
+    stream
 }
 
 /// A notice is pushed at once to every holder of an affected path, or of an

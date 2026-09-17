@@ -10,6 +10,7 @@ its run as the parent of its own directory. State lives in
   sessions/<id>.json     one per Claude Code session: agent, transcript paths
   agents/<agent>.json    per Tirith agent: current task, files held, counters
   events.jsonl           one line per hook decision (the plumbing log)
+  stdin.jsonl            raw hook input, only with config "log_stdin" (live verification)
 
 Every Tirith call goes through the run's `tb` with TB_ORIGIN=hook, so
 coord.jsonl keeps counting calls and marks the ones hooks made.
@@ -40,12 +41,14 @@ DEFAULTS = {
     "claim_ttl_secs": 1800,
     "stop_gate": "placeholder",
     "gate_max_continues": 3,     # gate "continue" verdicts per task before escalating
+    "gate_tests": "task",        # task: the task's own acceptance module; suite: test_command (stop_gate.py)
     "test_command": ["python3", "-m", "unittest"],
     "test_timeout_secs": 300,
     "poll_secs": 20,             # task_pull retry interval while tasks wait on dependencies
     "poll_slice_secs": 480,      # longest wait inside one Stop hook (its timeout is 600)
     "idle_budget_secs": 900,     # total waiting for dependencies per agent
     "autostart": True,           # UserPromptSubmit pulls the first task
+    "log_stdin": False,          # append every raw hook input to hooks_state/stdin.jsonl
     "final_report": ("No tasks remain on the board. Write your final report now: the tasks you completed "
                      "(id and title), the files you changed, the final `python3 -m unittest` result, the "
                      "notices and messages you sent, edits that were refused and how you resolved them, and "
@@ -64,9 +67,20 @@ def now_iso():
 
 def read_event():
     try:
-        return json.load(sys.stdin)
+        event = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError) as err:
         raise HookError("hook input is not JSON: %s" % err)
+    try:
+        run = run_dir()
+        if config(run).get("log_stdin"):
+            path = state_dir(run) / "stdin.jsonl"
+            line = json.dumps({"ts": now_iso(), "script": Path(sys.argv[0]).name, "event": event})
+            with flock(path.with_suffix(".lock")):
+                with open(str(path), "a") as handle:
+                    handle.write(line + "\n")
+    except (HookError, OSError, ValueError):
+        pass
+    return event
 
 
 def run_dir():

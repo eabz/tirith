@@ -1,10 +1,12 @@
 //! Escalation routing by the lead policy (ADR-0027 section 3) through a
 //! real daemon.
 //!
-//! Routing is deterministic: text matching a human rule goes to the human
-//! queue and the lead is told; anything else goes to the lead's inbox; with
-//! no lead it goes to the human queue. The tests check the triggers, every
-//! route's delivery, the human queue and the outcome fields.
+//! Routing is deterministic: while there is a lead, escalations go to its
+//! inbox, tagged when a human rule matches, and only a message to `human`
+//! reaches the human queue; with no lead, escalations go to the human
+//! queue. The tests check the triggers, every route's delivery, the human
+//! queue, answering it, and the outcome fields, with the texts that
+//! wrongly reached the human under the first rules as regression cases.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -84,6 +86,29 @@ fn details(row: &LeadEntry) -> &Value {
     row.details.as_ref().unwrap()
 }
 
+/// `GET /api/human`.
+async fn human(handle: &ServerHandle) -> Value {
+    let url = format!("{}api/human", handle.dashboard_url());
+    let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
+    serde_json::from_str(&body).unwrap()
+}
+
+/// `POST /api/human/{id}/done` with `body`, as the CLI sends it.
+async fn done(handle: &ServerHandle, id: u64, body: Value) -> Value {
+    let url = format!("{}api/human/{id}/done", handle.dashboard_url());
+    let text = reqwest::Client::new()
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
 #[tokio::test]
 async fn a_block_goes_to_the_lead_and_unblocking_answers_it() {
     let (_dir, handle, task) = swarm(true).await;
@@ -95,7 +120,7 @@ async fn a_block_goes_to_the_lead_and_unblocking_answers_it() {
     let row = &rows[0];
     assert_eq!(row.agent.as_ref().unwrap().as_str(), "worker");
     assert_eq!(row.action, "told the lead boss");
-    assert!(row.rule.is_none(), "{row:?}");
+    assert_eq!(row.rule.as_deref(), Some("live_lead"), "{row:?}");
     let details = details(row);
     assert_eq!(details["trigger"], "task_blocked");
     assert_eq!(details["task"], task.as_str());
@@ -126,60 +151,68 @@ async fn a_block_goes_to_the_lead_and_unblocking_answers_it() {
 }
 
 #[tokio::test]
-async fn a_human_rule_queues_the_item_tells_the_lead_and_an_answer_clears_it() {
+async fn with_a_lead_a_block_about_credentials_reaches_the_lead_tagged_not_the_human() {
     let (_dir, handle, task) = swarm(true).await;
     block(&handle, &task, "need a working API key in .env").await;
     let rows = escalations(&handle);
     let row = &rows[0];
-    assert_eq!(row.rule.as_deref(), Some("human:credentials"));
-    assert_eq!(row.action, "queued for the human");
-    assert_eq!(details(row)["route"], "human");
-    assert_eq!(details(row)["delivered"], json!(["human_queue", "lead"]));
+    assert_eq!(row.rule.as_deref(), Some("live_lead"));
+    assert_eq!(details(row)["route"], "lead");
+    assert_eq!(details(row)["tag"], "credentials");
+    assert_eq!(details(row)["delivered"], json!(["lead"]));
     let lead = from_tirith(&handle, "boss").await;
-    assert!(lead[0].starts_with("needs the human"), "{lead:?}");
+    assert_eq!(lead.len(), 1, "{lead:?}");
+    assert!(
+        lead[0].contains("(task_blocked; may need the human: credentials): need a working API key"),
+        "{lead:?}"
+    );
+    let queue = human(&handle).await;
+    assert_eq!(queue["count"], 0, "{queue}");
+    handle.shutdown().await.unwrap();
+}
 
-    let url = format!("{}api/human", handle.dashboard_url());
-    let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
-    let queue: Value = serde_json::from_str(&body).unwrap();
+#[tokio::test]
+async fn with_no_lead_an_escalation_goes_to_the_human_queue_and_an_answer_clears_it() {
+    let (_dir, handle, task) = swarm(false).await;
+    block(&handle, &task, "need a working API key in .env").await;
+    let rows = escalations(&handle);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].rule.as_deref(), Some("no_lead"));
+    assert_eq!(details(&rows[0])["route"], "human");
+    assert_eq!(details(&rows[0])["tag"], "credentials");
+    assert_eq!(details(&rows[0])["delivered"], json!(["human_queue"]));
+    let queue = human(&handle).await;
     assert_eq!(queue["count"], 1, "{queue}");
     assert_eq!(queue["items"][0]["agent"], "worker");
-    assert_eq!(queue["items"][0]["rule"], "human:credentials");
+    assert_eq!(queue["items"][0]["text"], "need a working API key in .env");
+    assert_eq!(queue["items"][0]["blocked_agents"], json!(["worker"]));
 
-    // The lead answering the worker takes the item off the human queue.
+    // Anyone answering the worker takes the item off the human queue.
     call(
         &handle,
         "message_send",
-        json!({ "agent": "boss", "to": "worker", "text": "the key is in the keychain" }),
+        json!({ "agent": "helper", "to": "worker", "text": "the key is in the keychain" }),
     )
     .await;
     assert!(human_queue_of(handle.state()).is_empty());
     let outcome = escalations(&handle)[0].outcome.clone().unwrap();
     assert_eq!(outcome["via"], "message");
-    assert_eq!(outcome["answered_by"], "boss");
+    assert_eq!(outcome["answered_by"], "helper");
     handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn with_no_lead_an_escalation_goes_to_the_human_queue() {
-    let (_dir, handle, task) = swarm(false).await;
-    block(&handle, &task, "which order?").await;
-    let rows = escalations(&handle);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].rule.as_deref(), Some("no_lead"));
-    assert_eq!(details(&rows[0])["route"], "human");
-    assert_eq!(details(&rows[0])["delivered"], json!(["human_queue"]));
-    let queue = human_queue_of(handle.state());
-    assert_eq!(queue.len(), 1);
-    assert_eq!(queue[0].blocked_agents.len(), 1);
-    handle.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn a_message_to_the_lead_escalates_only_when_it_needs_the_human() {
+async fn a_message_to_the_lead_is_never_an_escalation() {
     let (_dir, handle, _task) = swarm(true).await;
+    // The done report that reached the human under the first rules:
+    // "grant/assign nothing" matched the permissions phrase "grant".
+    let report = "Done: task 82f613bc. claim/task_pull with wait_secs now stop waiting \
+                  (grant/assign nothing, status \"cancelled\") when the caller cancels. \
+                  check.sh green; released all claims.";
     for (to, text) in [
+        ("boss", report),
+        ("boss", "can you grant my token repo:admin?"),
         ("someone", "need the API key"),
-        ("boss", "take t3 or t2?"),
         ("*", "can someone grant repo:admin?"),
     ] {
         let out = call(
@@ -191,24 +224,105 @@ async fn a_message_to_the_lead_escalates_only_when_it_needs_the_human() {
         assert_eq!(out["status"], "ok", "{out}");
     }
     assert!(escalations(&handle).is_empty());
-
-    call(
-        &handle,
-        "message_send",
-        json!({ "agent": "worker", "to": "boss", "text": "can you grant my token repo:admin?" }),
-    )
-    .await;
-    let rows = escalations(&handle);
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(details(&rows[0])["trigger"], "message_to_lead");
-    assert_eq!(rows[0].rule.as_deref(), Some("human:permissions"));
-    assert_eq!(details(&rows[0])["route"], "human");
-
-    // The lead has both messages from the worker and one from `tirith`.
+    assert_eq!(human(&handle).await["count"], 0);
     let lead = call(&handle, "status", json!({ "agent": "boss" })).await;
     let inbox = lead["inbox"].as_array().unwrap();
     let from = |who: &str| inbox.iter().filter(|m| m["from"] == who).count();
-    assert_eq!((from("worker"), from("tirith")), (3, 1), "{inbox:?}");
+    assert_eq!((from("worker"), from("tirith")), (3, 0), "{inbox:?}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_lead_relays_to_human_and_done_with_a_reply_answers_the_lead() {
+    let (_dir, handle, task) = swarm(true).await;
+    // The real need from the same swarm: the worker tells the lead, and the
+    // lead writes to the human.
+    block(
+        &handle,
+        &task,
+        "headless claude CLI is not logged in: `claude -p` says Please run /login",
+    )
+    .await;
+    assert_eq!(from_tirith(&handle, "boss").await.len(), 1);
+    assert_eq!(human(&handle).await["count"], 0);
+
+    let text = "The headless claude CLI on this machine is not logged in.\n\
+                Run `claude login` once so the workers can start.";
+    let sent = call(
+        &handle,
+        "message_send",
+        json!({ "agent": "boss", "to": "Human", "text": text }),
+    )
+    .await;
+    assert_eq!(sent["status"], "ok", "{sent}");
+    assert_eq!(sent["message"]["to"], "human");
+    let message_id = sent["message"]["id"].as_str().unwrap().to_owned();
+    let queue = human(&handle).await;
+    assert_eq!(queue["count"], 1, "{queue}");
+    let item = &queue["items"][0];
+    assert_eq!(item["agent"], "boss");
+    assert_eq!(item["text"], text);
+    assert_eq!(item["rule"], "to_human");
+    assert_eq!(item["trigger"], "message_to_human");
+    // Tool results shorten ids; the queue carries the full one.
+    assert!(
+        item["message"].as_str().unwrap().starts_with(&message_id),
+        "{item}"
+    );
+    let id = item["id"].as_u64().unwrap();
+
+    // `human` is not an agent: nobody calls as it, no broadcast reaches it,
+    // and talking to the lead does not answer the item.
+    let refused = call(&handle, "status", json!({ "agent": "human" })).await;
+    assert_eq!(refused["status"], "invalid", "{refused}");
+    let broadcast = call(
+        &handle,
+        "message_send",
+        json!({ "agent": "boss", "to": "*", "text": "waiting on the human" }),
+    )
+    .await;
+    assert_eq!(
+        broadcast["message"]["audience"],
+        json!(["worker"]),
+        "{broadcast}"
+    );
+    call(
+        &handle,
+        "message_send",
+        json!({ "agent": "worker", "to": "boss", "text": "ok, waiting" }),
+    )
+    .await;
+    assert_eq!(human(&handle).await["count"], 1);
+
+    let answered = done(&handle, id, json!({ "reply": "Logged in, go ahead." })).await;
+    assert_eq!(answered["status"], "ok", "{answered}");
+    assert_eq!(human(&handle).await["count"], 0);
+    let lead = call(&handle, "status", json!({ "agent": "boss" })).await;
+    let replies: Vec<&Value> = lead["inbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["from"] == "human")
+        .collect();
+    assert_eq!(replies.len(), 1, "{lead}");
+    assert_eq!(replies[0]["text"], "Logged in, go ahead.");
+    // The conversation with the human answers the message that queued it.
+    let history = call(
+        &handle,
+        "message_list",
+        json!({ "agent": "boss", "with": "human" }),
+    )
+    .await;
+    let rows = history["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{history}");
+    assert_eq!(rows[0]["from"], "human");
+    assert_eq!(rows[0]["reply_to"], message_id.as_str(), "{history}");
+    let outcome = escalations(&handle)[0].outcome.clone().unwrap();
+    assert_eq!(outcome["answered_by"], "human");
+    assert_eq!(outcome["via"], "reply");
+
+    let again = done(&handle, id, json!({})).await;
+    assert_eq!(again["status"], "not_found", "{again}");
     handle.shutdown().await.unwrap();
 }
 

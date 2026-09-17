@@ -105,26 +105,37 @@ knows it by one reserved claim:
    claim it again at once; until then the swarm has no lead.
    **Read your inbox.** The daemon routes workers' escalations (a task
    set to `blocked`, the third refusal of the same claim within 360 s) to
-   your inbox as messages from `tirith`. Escalations about credentials,
-   permissions, spending, destructive or irreversible steps, or addressed
-   to the human go to the human queue (`tirith lead human`, the
-   dashboard's "Needs you"), and you are told; so does a message to you
-   that matches one of those rules. While there is no lead, every
-   escalation goes to the human queue. Answering a worker by
-   `message_send`, the task leaving `blocked`, or the refused claim being
-   granted marks the escalation answered.
+   your inbox as messages from `tirith`, tagged "may need the human:
+   credentials" (or permissions, spending, destructive) when the text
+   matches a human rule. A tag is a hint; nothing reaches the human on its
+   own while you hold the lead. Answering a worker by `message_send`, the
+   task leaving `blocked`, or the refused claim being granted marks the
+   escalation answered.
+   **Relay to the human on purpose.** When only the human can settle
+   something (a login, a key, a spend, an irreversible step, a product
+   decision), send `message_send` to `human` with a text written for the
+   human: what is needed, why, and what happens meanwhile. It becomes an
+   item in the human queue (`tirith lead human`, the dashboard's "Needs
+   you", the macOS tray), and the human's reply comes back to you as a
+   message from `human`. Never forward done reports there. Workers never
+   message `human`; they escalate to you. While there is no lead, blocked
+   tasks and repeated refusals go to the human queue directly.
 4. **Release it last**, after the workers have finished.
 
 **Idle workers wait on the board, not on the turn.** A worker with nothing
 to do calls `task_pull` with `wait_secs` (up to 120) instead of ending its
-turn or sleeping, and calls it again while the answer is `none` and tasks
-remain open. While no free task exists, the daemon holds the call until a
-claim is released or expires, a task is created, or a task changes status,
-then pulls as usual; on timeout it returns what a plain pull would: `none`,
-or a held task with `waiting_on`, whose paths the worker then claims with
-`wait_secs`. Put this in the brief for every spawned worker, so a worker
-that finds the board momentarily empty picks up the next task the moment
-it unblocks.
+turn or sleeping, and calls it again while the answer is `none` and
+`task_list` with status `todo` still shows tasks; with no `todo` task left
+it finishes. A task whose paths overlap only another agent's in-progress
+task comes back at once, with `waiting_on`. While every `todo` task is
+under another agent's claim or waits on dependencies, the daemon holds the
+call until a claim is released or expires, or a task is created, pulled,
+or changes status, then pulls as usual; with no `todo` task at all it
+answers `none` at once. On timeout it returns what a plain pull would: `none`, or a
+claimed task with `waiting_on`. The worker claims the paths in `waiting_on`
+with `wait_secs` when it reaches them. Put this in the brief for every
+spawned worker, so a worker whose next task is blocked picks it up the
+moment it unblocks (ADR-0028, revised).
 
 The report at the end of a task names the claims held, the notices
 published, and any claim that was refused (AGENTS.md section 2).

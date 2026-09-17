@@ -2126,6 +2126,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "http-body",
  "muda",
  "objc2-app-kit",
  "objc2-foundation",
