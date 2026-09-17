@@ -63,7 +63,7 @@ To publish by hand instead: `cargo publish` from the tagged commit.
 ## Files it owns
 
 - `dist-workspace.toml`: the configuration (targets, installers, hosting,
-  publish jobs, build cache, custom runners).
+  publish jobs, custom runners).
 - `.github/workflows/publish-crates.yml`: the crates.io publish job,
   hand-written, called by `release.yml`.
 - `scripts/bump.sh`: version bump, commit, and tag.
@@ -89,22 +89,23 @@ aarch64-pc-windows-msvc   x86_64-pc-windows-msvc
 Both macOS targets build on the Apple Silicon runner (`macos-14`, set
 under `github-custom-runners`; the Apple toolchain cross-compiles the
 Intel binary), Windows on Windows runners, Linux targets on Linux runners
-with cross toolchains where needed. `aarch64-pc-windows-msvc` has no
-GitHub runner; dist builds it on `ubuntu-22.04` inside the
-`messense/cargo-xwin` container, whose rustc is pinned at the version
-the image was built with. `rust-toolchain.toml` makes rustup install
-current stable there, so the job is not bound by the image's rustc.
+with cross toolchains where needed. `aarch64-pc-windows-msvc` is set to
+`windows-2022` under `github-custom-runners` and cross-compiled there with
+MSVC and the image's LLVM. dist's default for it, `ubuntu-22.04` inside
+the `messense/cargo-xwin` container, cannot build `ring` (the `jev`
+feature's TLS crypto): ring invokes plain `clang` for Windows ARM, and
+clang rejects the `/imsvc` include flags cargo-xwin passes (v1.0.3
+failed this way). GitHub Actions runs job containers only on Linux, so a
+Windows build is always a Windows runner, never a container.
 Adding a target is one line in that file plus `dist generate` to
 refresh the workflow.
 
 ## Build cache
 
-`cache-builds = true` makes every build job restore a `Swatinem/rust-cache`
-cache keyed by target, so only the `tirith` crate and the LTO link are
-compiled on a warm release. A version bump changes the cache key, but
-rust-cache falls back to the previous entry for the same target. Cold
-builds still work; the cache is an optimisation, not a requirement.
-Reasoning: [ADR-0009](../5-decisions/0009-release-build-cache-and-runners.md).
+There is none: every release build compiles from scratch. A cache saved
+by one tag's run was never restored by the next, so it only cost upload
+time and cache quota ([ADR-0025](../5-decisions/0025-no-release-build-cache.md)).
+`ci.yml` keeps its own `Swatinem/rust-cache` on `main`, where it does hit.
 
 ## Local checks
 

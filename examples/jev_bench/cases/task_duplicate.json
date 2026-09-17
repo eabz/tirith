@@ -1,0 +1,4273 @@
+{
+  "site": "task_duplicate",
+  "cases": [
+    {
+      "id": "td-001",
+      "difficulty": "easy",
+      "why": "Same work, shared keyword argon2.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "task_create",
+        "args": {
+          "title": "argon2 verification blocks tokio workers",
+          "description": "Key auth runs argon2 verify on the async runtime; move it to a blocking thread.",
+          "paths": [
+            "src/auth/api_keys.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t02"
+      }
+    },
+    {
+      "id": "td-002",
+      "difficulty": "medium",
+      "why": "Same component and keyword as t02 (spawn_blocking) but different work.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "task_create",
+        "args": {
+          "title": "Bump argon2 params to OWASP 2026 values",
+          "description": "m=46MiB t=1; rehash on next successful login.",
+          "paths": [
+            "src/auth/password.rs",
+            "src/auth/api_keys.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-003",
+      "difficulty": "medium",
+      "why": "Same work as t10 in different words.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "task_create",
+        "args": {
+          "title": "Liveness should not depend on the database",
+          "description": "/healthz queries Postgres, so kubelet restarts pods on DB blips.",
+          "paths": [
+            "src/http/health.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t10"
+      }
+    },
+    {
+      "id": "td-004",
+      "difficulty": "hard",
+      "why": "Written as an incident symptom; the fix it asks for is exactly t10's probe split.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "task_create",
+        "args": {
+          "title": "Restart storm during Postgres failover",
+          "description": "Last failover kubelet killed every api pod at once. Fix the probes so a DB outage never restarts pods.",
+          "paths": [
+            "deploy/helm/"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t10"
+      }
+    },
+    {
+      "id": "td-005",
+      "difficulty": "hard",
+      "why": "Identical to t15 but t15 is already done (done_by set); a new task for done work is not a duplicate of an open task, and t03/t17 share the file.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "task_create",
+        "args": {
+          "title": "Retry-After header sends fractional seconds",
+          "description": "Go SDK hot-loops on Retry-After: 0.42. Round up to whole seconds.",
+          "paths": [
+            "src/middleware/rate_limit.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-006",
+      "difficulty": "medium",
+      "why": "Same component as t17 (exports group) but different work.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "task_create",
+        "args": {
+          "title": "Per-tenant rate limit overrides for enterprise plans",
+          "description": "Allow custom GCRA limits per tenant from an admin table instead of plan defaults.",
+          "paths": [
+            "src/middleware/rate_limit.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-007",
+      "difficulty": "hard",
+      "why": "New task is a subset of t07 (checkpoint + --resume); doing t07 makes it unnecessary, so duplicate. Rule: duplicate only if doing the open task makes the new one unnecessary.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "task_create",
+        "args": {
+          "title": "Add --resume to ledgerctl backfill",
+          "description": "Backfill should pick up where it crashed instead of needing --from-id.",
+          "paths": [
+            "src/cli/backfill.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t07"
+      }
+    },
+    {
+      "id": "td-008",
+      "difficulty": "hard",
+      "why": "Superset of t08 (CSV only): finishing t08 leaves Parquet undone, so not a duplicate. Rule: duplicate only if doing the open task makes the new one unnecessary.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "task_create",
+        "args": {
+          "title": "ledgerctl tenant export: CSV and Parquet output",
+          "description": "Support and data team both need file exports; add --format csv|parquet.",
+          "paths": [
+            "src/cli/export.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-009",
+      "difficulty": "easy",
+      "why": "No overlapping open work.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "task_create",
+        "args": {
+          "title": "OpenAPI spec for /v2 invoices",
+          "description": "Generate openapi.yaml with utoipa for invoice routes.",
+          "paths": [
+            "src/http/invoices.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-010",
+      "difficulty": "medium",
+      "why": "Same work as t18 described from the customer symptom; t17/t19 share rate-limit vocabulary.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "task_create",
+        "args": {
+          "title": "Upgraded customers stay throttled for minutes",
+          "description": "After an upgrade the old limits apply for ~5 min. Evict the cached plan when the Stripe subscription changes.",
+          "paths": [
+            "src/billing/plans.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t18"
+      }
+    },
+    {
+      "id": "td-011",
+      "difficulty": "medium",
+      "why": "t19 is about 429s (layer order); it leaves 5xx metered, so different work in the same component.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "task_create",
+        "args": {
+          "title": "Metering: don't bill 5xx responses",
+          "description": "Server errors currently consume plan quota. Skip metering when status >= 500.",
+          "paths": [
+            "src/billing/metering.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-012",
+      "difficulty": "medium",
+      "why": "Paraphrase of t12.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "task_create",
+        "args": {
+          "title": "Revenue report counts deleted invoices",
+          "description": "Monthly revenue in reports includes invoices with deleted_at set.",
+          "paths": [
+            "src/reports/revenue.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t12"
+      }
+    },
+    {
+      "id": "td-013",
+      "difficulty": "hard",
+      "why": "Same work as t21 but t21 is done (done_by set), so not a duplicate of an open task; t04/t18 are open tasks on the same file.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "task_create",
+        "args": {
+          "title": "Stripe webhook signature mismatch after Json extractor refactor",
+          "description": "All Stripe events fail verification; verify against raw Bytes before parsing.",
+          "paths": [
+            "src/billing/webhooks.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-014",
+      "difficulty": "easy",
+      "why": "Same file as t13 (pool_idle_timeout), different work.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "task_create",
+        "args": {
+          "title": "Outbound request duration histogram",
+          "description": "Record per-host latency histogram in the shared reqwest client.",
+          "paths": [
+            "src/http_client/mod.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-015",
+      "difficulty": "hard",
+      "why": "t09 is the annual path (monthly marked fixed); doing t09 does not address a monthly regression, so not a duplicate. Rule: duplicate only if doing the open task makes the new one unnecessary.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "task_create",
+        "args": {
+          "title": "Monthly invoice period off by one day for US tenants",
+          "description": "Monthly period start uses UTC midnight for America/* tenants.",
+          "paths": [
+            "src/billing/invoice_dates.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-016",
+      "difficulty": "medium",
+      "why": "Shares outbound-webhook component with t05/t25 and 'rate limit' with t17; different work.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "task_create",
+        "args": {
+          "title": "Per-tenant delivery rate limit for outbound webhooks",
+          "description": "Cap deliveries per tenant endpoint to 10/s to avoid hammering customers.",
+          "paths": [
+            "src/webhooks_out/"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-017",
+      "difficulty": "hard",
+      "why": "Same work as t14 with no shared title words (sanitize/problem+json vs leaking internals).",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "task_create",
+        "args": {
+          "title": "Sanitize problem+json detail on internal errors",
+          "description": "sqlx query text and constraint names show up in the detail field of 500s.",
+          "paths": [
+            "src/http/error.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t14"
+      }
+    },
+    {
+      "id": "td-018",
+      "difficulty": "medium",
+      "why": "Same layer as t16 (move CorsLayer outermost) but different change.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t08",
+            "by": "dave",
+            "title": "CSV output for ledgerctl tenant export",
+            "description": "Implement the stubbed CSV writer with the column order from BILL-71.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t15",
+            "by": "carol",
+            "title": "Retry-After as whole seconds",
+            "description": "Round Retry-After up to an integer; SDKs crash on fractions.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "task_create",
+        "args": {
+          "title": "CORS: allow credentials for dashboard origin",
+          "description": "Dashboard on app.ledger.dev needs cookies on cross-origin calls.",
+          "paths": [
+            "src/http/router.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-019",
+      "difficulty": "medium",
+      "why": "Same component as t01 (v1 cursor tie-break), different bug.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "task_create",
+        "args": {
+          "title": "Pagination: next_cursor null on last page",
+          "description": "Clients loop forever because we return a cursor for an empty page.",
+          "paths": [
+            "src/http/pagination.rs"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "td-020",
+      "difficulty": "easy",
+      "why": "Close paraphrase of t20.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t01",
+            "by": "bob",
+            "title": "Pagination: handle v1 cursors at page boundaries",
+            "description": "v1 cursors (created_at only) skip rows sharing a timestamp. Decode v1 as (created_at, id=0) so the tie-break applies.",
+            "priority": 1,
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t02",
+            "by": "alice",
+            "title": "Move argon2 verify to spawn_blocking",
+            "description": "Key middleware calls verify inline; pins tokio workers, p99 800ms at 1.5k rps.",
+            "priority": 2,
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t03",
+            "by": "bob",
+            "title": "Alert on rl_fail_open_total",
+            "description": "Counter exists, nothing pages. Add Prometheus rule: >100/min for 5m pages on-call.",
+            "priority": 1,
+            "paths": [
+              "deploy/alerts/rate_limit.yaml"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t04",
+            "by": "dave",
+            "title": "Stripe webhooks: never regress invoice status",
+            "description": "invoice.finalized arriving after invoice.paid flips status back to open. Upsert must ignore backwards transitions.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t05",
+            "by": "carol",
+            "title": "Admin UI for outbound webhook DLQ",
+            "description": "List dead-lettered deliveries per tenant, show last error, replay button.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/",
+              "src/admin/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t06",
+            "by": "dave",
+            "title": "Remove sid_v1 cookie fallback",
+            "description": "After 2026-10-01 drop legacy sid_v1 acceptance in session.rs and its tests.",
+            "priority": 0,
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t07",
+            "by": "dave",
+            "title": "ledgerctl backfill: checkpoint file and --resume",
+            "description": "Persist last processed id to .backfill-state; add --resume that reads it. Today a crash means rerunning with --from-id by hand.",
+            "priority": 1,
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t09",
+            "by": "dave",
+            "title": "Fix annual invoice period for tenants west of UTC",
+            "description": "Annual path still uses UTC midnight for period start; America/* tenants get a period one day early. Monthly already fixed in #412.",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t10",
+            "by": "alice",
+            "title": "Liveness probe must not query Postgres",
+            "description": "/healthz liveness runs SELECT 1. Split into /livez (process only) and /readyz (deps); update the helm chart probes.",
+            "priority": 2,
+            "paths": [
+              "src/http/health.rs",
+              "deploy/helm/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t11",
+            "by": "bob",
+            "title": "Raise OTLP batch queue for worker pods",
+            "description": "api pods got max_queue_size 16384; workers still on 2048 and drop spans during dunning runs.",
+            "priority": 1,
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t12",
+            "by": "dave",
+            "title": "Reports: exclude soft-deleted invoices",
+            "description": "reports/ queries ignore deleted_at, so revenue totals include deleted invoices.",
+            "priority": 1,
+            "paths": [
+              "src/reports/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t13",
+            "by": "bob",
+            "title": "Set pool_idle_timeout on the shared reqwest client",
+            "description": "AWS NAT drops idle flows at 350s; set pool_idle_timeout(90s).",
+            "priority": 1,
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t14",
+            "by": "carol",
+            "title": "Stop leaking internals in 500 responses",
+            "description": "AppError::Internal copies the anyhow chain into detail. Log it with the request id, return a generic detail.",
+            "priority": 2,
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t16",
+            "by": "alice",
+            "title": "Make CorsLayer the outermost layer",
+            "description": "Preflight OPTIONS hits AuthLayer and gets 401. Move CorsLayer outside auth in router.rs.",
+            "priority": 1,
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t17",
+            "by": "bob",
+            "title": "Separate rate limit group for /exports",
+            "description": "Exports are expensive; give them their own GCRA group, 5 req/min per tenant.",
+            "priority": 1,
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t18",
+            "by": "dave",
+            "title": "Invalidate plan cache on subscription change",
+            "description": "Plan upgrades take up to 5 min to apply. Bust the plans.rs cache entry on customer.subscription.updated.",
+            "priority": 1,
+            "paths": [
+              "src/billing/plans.rs",
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t19",
+            "by": "carol",
+            "title": "Metering: stop counting 429s toward quota",
+            "description": "Move MeteringLayer inside RateLimitLayer so throttled requests are not metered (BILL-88).",
+            "priority": 1,
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t20",
+            "by": "alice",
+            "title": "Integration tests: unique tenant per test",
+            "description": "Replace shared 'acme' fixture with TestTenant::new() in all tests/ files.",
+            "priority": 1,
+            "paths": [
+              "tests/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t21",
+            "by": "dave",
+            "title": "Verify Stripe signature on raw bytes",
+            "description": "Json extractor re-serializes the body; take Bytes and verify before parsing.",
+            "priority": 2,
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t22",
+            "by": "dave",
+            "title": "Stripe Tax for EU invoices behind tax_v2",
+            "description": "Wire tax_v2 path to Stripe Tax calculations for EU tenants once OSS registration lands.",
+            "priority": 0,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t23",
+            "by": "carol",
+            "title": "Enforce 100 MB limit on presigned uploads",
+            "description": "Add content-length-range condition to the presigned policy.",
+            "priority": 1,
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t24",
+            "by": "dave",
+            "title": "Tenant export: include usage records",
+            "description": "Support wants usage_records in the export for disputes.",
+            "priority": 1,
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t25",
+            "by": "carol",
+            "title": "Rotate outbound webhook signing secret",
+            "description": "Add rotation endpoint; sign with old and new secret for 24h.",
+            "priority": 1,
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t26",
+            "by": "bob",
+            "title": "Dunning job: heartbeat to extend lease",
+            "description": "Long dunning runs exceed the 5 min visibility timeout and get redelivered. Heartbeat every 60s.",
+            "priority": 2,
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t27",
+            "by": "alice",
+            "title": "Cache JWKS fetch failures",
+            "description": "When the IdP is down every unknown kid triggers a fetch; negative-cache failures for 30s.",
+            "priority": 1,
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "task_create",
+        "args": {
+          "title": "Stop sharing the acme tenant across integration tests",
+          "description": "Parallel tests collide on the acme fixture; give each test its own tenant.",
+          "paths": [
+            "tests/"
+          ],
+          "priority": 1
+        }
+      },
+      "expect": {
+        "duplicate_of": "t20"
+      }
+    }
+  ]
+}

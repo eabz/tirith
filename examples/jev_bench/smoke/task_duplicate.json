@@ -1,0 +1,30 @@
+{
+  "site": "task_duplicate",
+  "cases": [
+    {
+      "id": "smoke-taskdup-001",
+      "difficulty": "medium",
+      "why": "same work described differently",
+      "seed": {
+        "tasks": [
+          {"key": "t1", "by": "alice", "title": "Add idempotency keys to POST /payments", "description": "store Idempotency-Key header with response for 24h; replay on duplicate", "priority": 1, "paths": ["src/api/payments.rs"]},
+          {"key": "t2", "by": "bob", "title": "Dark mode for settings page", "description": "", "priority": 0, "paths": ["web/settings"]}
+        ]
+      },
+      "action": {"agent": "carol", "tool": "task_create", "args": {"title": "Prevent double charges when clients retry payment creation", "description": "dedupe retried create-payment requests using a client-supplied key", "paths": ["src/api/payments.rs"]}},
+      "expect": {"duplicate_of": "t1"}
+    },
+    {
+      "id": "smoke-taskdup-002",
+      "difficulty": "hard",
+      "why": "same file and words, different work",
+      "seed": {
+        "tasks": [
+          {"key": "t1", "by": "alice", "title": "Add idempotency keys to POST /payments", "description": "store Idempotency-Key header with response for 24h", "priority": 1, "paths": ["src/api/payments.rs"]}
+        ]
+      },
+      "action": {"agent": "carol", "tool": "task_create", "args": {"title": "Add pagination to GET /payments", "description": "cursor pagination on the payments list endpoint", "paths": ["src/api/payments.rs"]}},
+      "expect": {"duplicate_of": null}
+    }
+  ]
+}

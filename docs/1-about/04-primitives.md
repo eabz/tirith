@@ -352,9 +352,9 @@ remains the full view for humans.
 
 ## Experimental: Jev assist
 
-A daemon started with `tirith serve --jev` (a build with the `jev`
-feature, and `TYPESAFE_API_KEY` or `AI_GATEWAY_API_KEY` in the
-environment or `.env`) asks the Jev evaluation model a few judgement
+A daemon started with `tirith serve --jev` (with `TYPESAFE_API_KEY` or
+`AI_GATEWAY_API_KEY` in the environment or `.env`; the client is compiled
+in by default) asks the Jev evaluation model a few judgement
 calls on agents' behalf ([ADR-0024](../5-decisions/0024-jev-assist-experiment.md)).
 No tool name or input changes. Some results gain optional fields, each
 omitted when Jev is off, fails, or is unsure, in which case the result is

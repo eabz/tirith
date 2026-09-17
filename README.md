@@ -178,11 +178,13 @@ it. Design and trade-offs:
 [ADR-0024](docs/5-decisions/0024-jev-assist-experiment.md). Every field it
 adds: [04-primitives.md](docs/1-about/04-primitives.md#experimental-jev-assist).
 
-**1. Build with the `jev` feature.** Release binaries don't include it,
-because it is the only part of Tirith that leaves localhost.
+**1. Use a build that includes it.** Release binaries and `cargo install
+tirith-mcp` include the Jev client (the `jev` feature is on by default), but
+it stays off, and nothing leaves localhost, until you start a daemon with
+`--jev`. To build a binary without it:
 
 ```bash
-cargo install --path . --features jev
+cargo install tirith-mcp --no-default-features --features tray
 ```
 
 **2. Add a key** to `.env` in the repository root, or export it. Make sure
@@ -206,7 +208,8 @@ tirith serve --jev
 ```
 
 The startup output shows `jev: on (typesafe jev-latest at ...)`; a missing
-key or a build without the feature stops with an error instead. To have
+key, or a build without the `jev` feature, stops with an error before the
+daemon starts. To have
 the stdio shim start it that way, set `TIRITH_JEV=1` in the MCP server's
 environment:
 

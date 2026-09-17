@@ -1,0 +1,32 @@
+{
+  "site": "notice_fanout",
+  "cases": [
+    {
+      "id": "smoke-fanout-001",
+      "difficulty": "easy",
+      "why": "carol calls the changed function; dave works on unrelated CSS",
+      "seed": {
+        "claims": [
+          {"agent": "carol", "paths": ["src/api/handlers/session.rs"], "reason": "add session refresh endpoint calling SessionStore::get"},
+          {"agent": "dave", "paths": ["web/styles/buttons.css"], "reason": "restyle primary buttons"}
+        ]
+      },
+      "action": {"agent": "alice", "tool": "notice_publish", "args": {"kind": "signature", "summary": "SessionStore::get now takes &SessionId instead of &str and returns Option<Session>", "from": "fn get(&self, id: &str) -> Session", "to": "fn get(&self, id: &SessionId) -> Option<Session>", "affected_paths": ["src/session/store.rs", "src/api/handlers"]}},
+      "expect": {"affected": ["carol"]}
+    },
+    {
+      "id": "smoke-fanout-002",
+      "difficulty": "medium",
+      "why": "rate limiter header rename affects the http client consumer, not the CLI docs",
+      "seed": {
+        "claims": [
+          {"agent": "erin", "paths": ["src/http_client/retry.rs"], "reason": "honor Retry-After and X-RateLimit-Reset on 429"},
+          {"agent": "frank", "paths": ["docs/cli.md"], "reason": "document --verbose flag"},
+          {"agent": "gina", "paths": ["src/middleware/ratelimit.rs"], "reason": "per-tenant burst config"}
+        ]
+      },
+      "action": {"agent": "alice", "tool": "notice_publish", "args": {"kind": "rename", "summary": "ratelimit headers renamed: X-RateLimit-Reset -> RateLimit-Reset (IETF draft); X-RateLimit-Remaining -> RateLimit-Remaining", "from": "X-RateLimit-Reset", "to": "RateLimit-Reset", "affected_paths": ["src/middleware/ratelimit.rs"]}},
+      "expect": {"affected": ["erin", "gina"]}
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "site": "conflict_advice",
+  "cases": [
+    {
+      "id": "smoke-conflict-001",
+      "difficulty": "easy",
+      "why": "both need to change the same trait signature",
+      "seed": {
+        "claims": [{"agent": "carol", "paths": ["src/storage/object.rs"], "reason": "change ObjectStore::put to take a stream instead of Bytes"}]
+      },
+      "action": {"agent": "bob", "tool": "claim", "args": {"paths": ["src/storage/object.rs"], "reason": "add content-type parameter to ObjectStore::put"}},
+      "expect": {"acceptable": ["coordinate"]}
+    },
+    {
+      "id": "smoke-conflict-002",
+      "difficulty": "medium",
+      "why": "directory claim blocks a single unrelated file",
+      "seed": {
+        "claims": [{"agent": "carol", "paths": ["src/cli"], "reason": "rewrite CLI argument parsing to clap derive"}]
+      },
+      "action": {"agent": "bob", "tool": "claim", "args": {"paths": ["src/cli"], "reason": "fix typo in `--help` text of the export subcommand"}},
+      "expect": {"acceptable": ["wait", "narrow_claim", "work_elsewhere"]}
+    }
+  ]
+}

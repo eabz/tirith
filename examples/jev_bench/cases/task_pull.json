@@ -1,0 +1,1286 @@
+{
+  "site": "task_pull",
+  "cases": [
+    {
+      "id": "task_pull-001",
+      "difficulty": "easy",
+      "why": "oldest top task is also the direct follow-up of the task the agent just finished (baseline right)",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "auth mw: scope check",
+            "description": "enforce token scopes in auth layer",
+            "priority": 2,
+            "paths": [
+              "src/mw/auth.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "auth mw: 403 + WWW-Authenticate on insufficient_scope",
+            "description": "RFC 6750 error response when scope check fails",
+            "priority": 2,
+            "paths": [
+              "src/mw/auth.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "proration rounding",
+            "description": "HALF_EVEN on mid-cycle upgrade credits",
+            "priority": 2,
+            "paths": [
+              "src/billing/proration.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "cli: --json for users list",
+            "description": "machine-readable output for `ledgerd users list`",
+            "priority": 2,
+            "paths": [
+              "src/cli/users.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "bob"
+        ]
+      },
+      "action": {
+        "agent": "bob",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t2"
+        ],
+        "acceptable": [
+          "t2"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-002",
+      "difficulty": "medium",
+      "why": "affinity task is not oldest; a lower-priority task on the same file must not be picked",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "rate limit: per-route overrides",
+            "description": "config map route -> (rps, burst)",
+            "priority": 3,
+            "paths": [
+              "src/mw/rate_limit.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "cors: allow credentials for app.ledger.dev",
+            "description": "Access-Control-Allow-Credentials + explicit origin",
+            "priority": 3,
+            "paths": [
+              "src/mw/cors.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "invoice: emit invoice.voided event",
+            "description": "publish domain event on void for webhooks fan-out",
+            "priority": 3,
+            "paths": [
+              "src/billing/invoice.rs",
+              "src/billing/events.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "invoice: memo field",
+            "description": "free-text memo on invoice, max 500 chars",
+            "priority": 1,
+            "paths": [
+              "src/billing/invoice.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/billing/invoice.rs"
+            ],
+            "reason": "invoice void flow"
+          }
+        ],
+        "active_agents": [
+          "bob"
+        ]
+      },
+      "action": {
+        "agent": "bob",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t3"
+        ],
+        "acceptable": [
+          "t3"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-003",
+      "difficulty": "hard",
+      "why": "affinity without shared words: agent moved sessions into pg; the sweep of expired login tokens hits that same table",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "session store -> pg",
+            "description": "move sessions from redis to pg sessions table",
+            "priority": 2,
+            "paths": [
+              "src/auth/session.rs",
+              "src/storage/migrations/"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "http client: honor Retry-After on 429",
+            "description": "parse delta-seconds and HTTP-date",
+            "priority": 2,
+            "paths": [
+              "src/client/retry.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "nightly sweep of stale login tokens",
+            "description": "delete rows older than 30d idle from pg, batch 1k, index on last_seen_at",
+            "priority": 2,
+            "paths": [
+              "src/jobs/sweeper.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "docs: webhook signing",
+            "description": "document HMAC header and replay window",
+            "priority": 2,
+            "paths": [
+              "docs/webhooks.md"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "carol"
+        ]
+      },
+      "action": {
+        "agent": "carol",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t3"
+        ],
+        "acceptable": [
+          "t3"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-004",
+      "difficulty": "easy",
+      "why": "no context at all: nothing beats oldest, every top task is acceptable",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "cli: shell completions",
+            "description": "clap_complete for bash/zsh/fish",
+            "priority": 1,
+            "paths": [
+              "src/cli/completions.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "cache: TTL jitter",
+            "description": "+-10% jitter to avoid synchronized expiry",
+            "priority": 1,
+            "paths": [
+              "src/storage/cache.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "web: 404 page",
+            "description": "branded not-found route",
+            "priority": 1,
+            "paths": [
+              "web/src/pages/NotFound.tsx"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "bob",
+          "dave"
+        ]
+      },
+      "action": {
+        "agent": "dave",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t1"
+        ],
+        "acceptable": [
+          "t1",
+          "t2",
+          "t3"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-005",
+      "difficulty": "medium",
+      "why": "all candidates in the claimed dir; pool metrics is closest to pool tuning, others still reasonable",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "index invoices(customer_id, created_at)",
+            "description": "migration for list-by-customer query plan",
+            "priority": 2,
+            "paths": [
+              "src/storage/migrations/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "export pg pool metrics",
+            "description": "idle/in_use/wait gauges to prometheus",
+            "priority": 2,
+            "paths": [
+              "src/storage/pg.rs",
+              "src/telemetry/metrics.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "cache: TTL jitter",
+            "description": "+-10% jitter on redis TTLs",
+            "priority": 2,
+            "paths": [
+              "src/storage/cache.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "web: dark mode toggle",
+            "description": "persist theme in localStorage",
+            "priority": 2,
+            "paths": [
+              "web/src/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/storage/"
+            ],
+            "reason": "pg pool tuning: max_connections, acquire timeout"
+          }
+        ],
+        "active_agents": [
+          "bob"
+        ]
+      },
+      "action": {
+        "agent": "bob",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t2"
+        ],
+        "acceptable": [
+          "t1",
+          "t2",
+          "t3"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-006",
+      "difficulty": "hard",
+      "why": "lexical trap both ways: 'limit' tasks about plan seats/quotas are unrelated; 429 RateLimit-* headers follow the token-bucket work",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "rate limit: token bucket refill math",
+            "description": "refill per ms, fix burst overshoot",
+            "priority": 2,
+            "paths": [
+              "src/mw/rate_limit.rs"
+            ],
+            "pulled_by": "bob",
+            "done_by": "bob"
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "billing: limit seats per plan",
+            "description": "enforce plan.max_seats on member invite",
+            "priority": 2,
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "429 responses: RateLimit-Remaining / RateLimit-Reset headers",
+            "description": "expose bucket state per IETF draft on throttled and ok responses",
+            "priority": 2,
+            "paths": [
+              "src/http/errors.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "cli: `ledgerd limits show`",
+            "description": "print plan quotas per tenant",
+            "priority": 2,
+            "paths": [
+              "src/cli/limits.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "bob"
+        ]
+      },
+      "action": {
+        "agent": "bob",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t3"
+        ],
+        "acceptable": [
+          "t3"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-007",
+      "difficulty": "medium",
+      "why": "in-progress OAuth task gives affinity to the next provider; JWKS rotation is adjacent auth work",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "OAuth: Google PKCE",
+            "description": "authorization code + PKCE for Google",
+            "priority": 2,
+            "paths": [
+              "src/auth/oauth.rs"
+            ],
+            "pulled_by": "carol",
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "dunning retry schedule",
+            "description": "1/3/7 day reminders",
+            "priority": 2,
+            "paths": [
+              "src/billing/dunning.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "OAuth: GitHub provider",
+            "description": "add GitHub as second provider on the same flow",
+            "priority": 2,
+            "paths": [
+              "src/auth/oauth.rs",
+              "src/auth/providers/github.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "JWT signing key rotation via JWKS",
+            "description": "kid-based rotation, publish /.well-known/jwks.json",
+            "priority": 2,
+            "paths": [
+              "src/auth/jwt.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "carol"
+        ]
+      },
+      "action": {
+        "agent": "carol",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t3"
+        ],
+        "acceptable": [
+          "t3",
+          "t4"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-008",
+      "difficulty": "easy",
+      "why": "oldest task is on the claimed route file (baseline right)",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "invoices list: ?customer_id filter",
+            "description": "filter GET /v1/invoices by customer",
+            "priority": 2,
+            "paths": [
+              "src/http/routes/invoices.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "users: PATCH /v1/users/me email change",
+            "description": "verification mail before switch",
+            "priority": 2,
+            "paths": [
+              "src/http/routes/users.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "pg: vacuum audit_log",
+            "description": "scheduled VACUUM ANALYZE",
+            "priority": 2,
+            "paths": [
+              "src/jobs/vacuum.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [
+          {
+            "agent": "erin",
+            "paths": [
+              "src/http/routes/invoices.rs"
+            ],
+            "reason": "GET /v1/invoices filters"
+          }
+        ],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t1"
+        ],
+        "acceptable": [
+          "t1"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-009",
+      "difficulty": "hard",
+      "why": "perfect-affinity task sits one priority below; top tier has no affinity so oldest is best",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "stripe webhook: timestamp tolerance",
+            "description": "verify Stripe-Signature t= within 300s",
+            "priority": 5,
+            "paths": [
+              "src/billing/stripe_webhook.rs"
+            ],
+            "pulled_by": "frank",
+            "done_by": "frank"
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "cors: preflight max-age",
+            "description": "cache preflights 600s",
+            "priority": 5,
+            "paths": [
+              "src/mw/cors.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "http client: mTLS to ledger-core",
+            "description": "client cert from config",
+            "priority": 5,
+            "paths": [
+              "src/client/tls.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "sdk/ts: invoice endpoint types",
+            "description": "generate types from openapi",
+            "priority": 5,
+            "paths": [
+              "sdk/ts/src/types.ts"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t5",
+            "by": "lead",
+            "title": "stripe webhook: customer.subscription.deleted",
+            "description": "cancel plan on subscription deletion",
+            "priority": 4,
+            "paths": [
+              "src/billing/stripe_webhook.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t2"
+        ],
+        "acceptable": [
+          "t2",
+          "t3",
+          "t4"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-010",
+      "difficulty": "medium",
+      "why": "8 candidates, several web tasks; same page + table component beats other web pages",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "pg: partition audit_log monthly",
+            "description": "declarative partitioning",
+            "priority": 2,
+            "paths": [
+              "src/storage/migrations/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "request_id to outbound client",
+            "description": "propagate X-Request-Id",
+            "priority": 2,
+            "paths": [
+              "src/client/http_client.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "web: invoice table column sorting",
+            "description": "sortable headers, server-side sort param",
+            "priority": 2,
+            "paths": [
+              "web/src/pages/Invoices.tsx",
+              "web/src/components/Table.tsx"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "web: settings a11y labels",
+            "description": "aria-labels on form inputs",
+            "priority": 2,
+            "paths": [
+              "web/src/pages/Settings.tsx"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t5",
+            "by": "lead",
+            "title": "cli: shell completions",
+            "description": "clap_complete",
+            "priority": 2,
+            "paths": [
+              "src/cli/completions.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t6",
+            "by": "lead",
+            "title": "billing: tax rates per region",
+            "description": "tax_rates table + lookup",
+            "priority": 2,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t7",
+            "by": "lead",
+            "title": "web: skeleton loaders on invoice detail",
+            "description": "loading placeholders",
+            "priority": 2,
+            "paths": [
+              "web/src/pages/InvoiceDetail.tsx"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t8",
+            "by": "lead",
+            "title": "docs: failover runbook",
+            "description": "pg failover steps",
+            "priority": 2,
+            "paths": [
+              "docs/runbooks/failover.md"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "web/src/pages/Invoices.tsx"
+            ],
+            "reason": "infinite scroll on invoice table"
+          }
+        ],
+        "active_agents": [
+          "bob"
+        ]
+      },
+      "action": {
+        "agent": "bob",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t3"
+        ],
+        "acceptable": [
+          "t3",
+          "t4",
+          "t7"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-011",
+      "difficulty": "hard",
+      "why": "retry-policy author: idempotency keys for retried Stripe POSTs is the direct consequence; S3 part retry is adjacent; argon2 oldest is unrelated",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "client: tower::retry policy",
+            "description": "replace hand-rolled backoff; retries POST on connect errors",
+            "priority": 3,
+            "paths": [
+              "src/client/retry.rs",
+              "src/client/http_client.rs"
+            ],
+            "pulled_by": "dave",
+            "done_by": "dave"
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "auth: argon2 params",
+            "description": "m=19MiB t=2 p=1 per OWASP",
+            "priority": 3,
+            "paths": [
+              "src/auth/password.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "export: resume multipart upload on part failure",
+            "description": "re-send failed parts only",
+            "priority": 3,
+            "paths": [
+              "src/export/s3_upload.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "stripe: Idempotency-Key on outbound POSTs",
+            "description": "so a replayed request never double-charges",
+            "priority": 3,
+            "paths": [
+              "src/billing/stripe_client.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "dave"
+        ]
+      },
+      "action": {
+        "agent": "dave",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t4"
+        ],
+        "acceptable": [
+          "t3",
+          "t4"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-012",
+      "difficulty": "easy",
+      "why": "dir claim covers two billing tasks equally; oldest is one of them",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "billing: tax rounding HALF_EVEN",
+            "description": "fix cent drift on multi-line invoices",
+            "priority": 2,
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "billing: per-tenant invoice numbering",
+            "description": "gapless sequence per tenant",
+            "priority": 2,
+            "paths": [
+              "src/billing/invoice.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "mw: gzip compression",
+            "description": "tower-http CompressionLayer",
+            "priority": 2,
+            "paths": [
+              "src/mw/compression.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [
+          {
+            "agent": "erin",
+            "paths": [
+              "src/billing/"
+            ],
+            "reason": "billing module cleanup"
+          }
+        ],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t1",
+          "t2"
+        ],
+        "acceptable": [
+          "t1",
+          "t2"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-013",
+      "difficulty": "medium",
+      "why": "current claim (cache) outweighs older finished SDK task; SDK follow-up still reasonable",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "sdk/ts: retry wrapper",
+            "description": "exponential backoff for fetch",
+            "priority": 2,
+            "paths": [
+              "sdk/ts/src/retry.ts"
+            ],
+            "pulled_by": "carol",
+            "done_by": "carol"
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "sdk/ts: AbortSignal on all calls",
+            "description": "thread signal through client",
+            "priority": 2,
+            "paths": [
+              "sdk/ts/src/client.ts"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "cache: negative caching for 404 user lookups",
+            "description": "cache misses 30s",
+            "priority": 2,
+            "paths": [
+              "src/storage/cache.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "billing: streaming CSV export",
+            "description": "avoid loading all rows",
+            "priority": 2,
+            "paths": [
+              "src/export/csv.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [
+          {
+            "agent": "carol",
+            "paths": [
+              "src/storage/cache.rs"
+            ],
+            "reason": "cache stampede lock"
+          }
+        ],
+        "active_agents": [
+          "carol"
+        ]
+      },
+      "action": {
+        "agent": "carol",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t3"
+        ],
+        "acceptable": [
+          "t2",
+          "t3"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-014",
+      "difficulty": "hard",
+      "why": "oldest task has auth affinity but its file is held by another agent; the JWT task matches the agent's own claim",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "auth mw: memoize decoded JWT per request",
+            "description": "avoid double decode in extractors",
+            "priority": 2,
+            "paths": [
+              "src/mw/auth.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "jwt: EdDSA keys",
+            "description": "accept Ed25519 in JWKS",
+            "priority": 2,
+            "paths": [
+              "src/auth/jwt.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "cli: users export",
+            "description": "CSV of users per tenant",
+            "priority": 2,
+            "paths": [
+              "src/cli/users.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/auth/jwt.rs"
+            ],
+            "reason": "JWKS rotation"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/mw/auth.rs"
+            ],
+            "reason": "scope enforcement, ~1h"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol"
+        ]
+      },
+      "action": {
+        "agent": "bob",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t2"
+        ],
+        "acceptable": [
+          "t2"
+        ]
+      }
+    },
+    {
+      "id": "task_pull-015",
+      "difficulty": "medium",
+      "why": "oldest is the closest telemetry follow-up (baseline right); lower-priority telemetry task must not be picked",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [
+          {
+            "key": "t1",
+            "by": "lead",
+            "title": "telemetry: OTLP exporter",
+            "description": "traces via OTLP/gRPC",
+            "priority": 1,
+            "paths": [
+              "src/telemetry/otlp.rs"
+            ],
+            "pulled_by": "frank",
+            "done_by": "frank"
+          },
+          {
+            "key": "t2",
+            "by": "lead",
+            "title": "telemetry: trace sampling ratio config",
+            "description": "LEDGER_TRACE_SAMPLE_RATIO",
+            "priority": 1,
+            "paths": [
+              "src/telemetry/otlp.rs",
+              "src/config.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t3",
+            "by": "lead",
+            "title": "telemetry: spans around pg queries",
+            "description": "db.statement attrs",
+            "priority": 1,
+            "paths": [
+              "src/storage/pg.rs",
+              "src/telemetry/"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t4",
+            "by": "lead",
+            "title": "web: 404 page",
+            "description": "branded not-found",
+            "priority": 1,
+            "paths": [
+              "web/src/pages/NotFound.tsx"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          },
+          {
+            "key": "t5",
+            "by": "lead",
+            "title": "telemetry: OTLP log exporter",
+            "description": "logs via OTLP",
+            "priority": 0,
+            "paths": [
+              "src/telemetry/otlp.rs"
+            ],
+            "pulled_by": null,
+            "done_by": null
+          }
+        ],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "task_pull",
+        "args": {}
+      },
+      "expect": {
+        "best": [
+          "t2"
+        ],
+        "acceptable": [
+          "t2",
+          "t3"
+        ]
+      }
+    }
+  ]
+}

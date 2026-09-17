@@ -1,8 +1,8 @@
 # ADR-0024: Jev makes coordination judgement calls, behind a flag and with deterministic fallbacks
 
-**Status:** Experimental, 2026-09-16. Behind the `jev` cargo feature and
-`tirith serve --jev`; not in release binaries. Accept, revise, or drop
-after the A/B runs described below.
+**Status:** Experimental, 2026-09-16. Compiled in by default (`jev`
+cargo feature), off unless a daemon is started with `tirith serve --jev`.
+Accept, revise, or drop after the A/B runs described below.
 
 ## Context
 
@@ -33,9 +33,18 @@ source, marked as changeable in patch releases).
    the environment or a gitignored `.env` in the repository root. One
    retry on 408 and 5xx inside a 5 s budget; a 429 falls back at once,
    because retrying it doubled the time to fallback in live runs.
-2. **HTTPS only in a `jev` cargo feature** (reqwest's rustls). Default
-   builds stay localhost-only; `tirith serve --jev` in a build without the
-   feature exits with an error.
+2. **HTTPS in a default-on `jev` cargo feature, on its own stack.** The
+   client uses hyper's pooled client over rustls with the `ring` provider
+   and Mozilla's roots, not reqwest. Two builds taught this: reqwest's
+   `rustls` feature pulls aws-lc, the C library most likely to break the
+   cross-compiled release targets (Windows ARM64 in a container, musl);
+   and reqwest's `rustls-no-provider` makes every `reqwest::Client` in the
+   process panic unless a provider was installed first, which broke the
+   CLI and the stdio shim in a local run. reqwest stays TLS-free. The
+   default binary grows by about 2.3 MB (19.5 to 21.9 MB on macOS arm64).
+   Nothing leaves localhost without `--jev` or `TIRITH_JEV=1`;
+   `--no-default-features --features tray` builds a binary without the
+   client at all, and `--jev` there exits with an error.
 3. **A policy module, `src/assist.rs`,** holding every question Tirith
    asks and how an answer is applied. `server.rs` fetches candidates from
    `State`, calls one function, and applies the result. The `State` lock

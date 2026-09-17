@@ -1,0 +1,3892 @@
+{
+  "site": "note_duplicate",
+  "cases": [
+    {
+      "id": "nd-001",
+      "difficulty": "easy",
+      "why": "Paraphrase of the same gotcha.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m01",
+            "by": "alice",
+            "title": "Auth must run before rate limiting",
+            "kind": "gotcha",
+            "body": "axum applies .layer() bottom-up: the AuthLayer call must come AFTER .layer(RateLimitLayer) in router.rs so auth executes first. Wrong order: TenantId extension is missing, limiter falls back to the shared `anonymous` bucket, junk traffic empties it and every tenant sees 429s.",
+            "paths": [
+              "src/http/router.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m06",
+            "by": "alice",
+            "title": "API keys and passwords hashed with argon2id",
+            "kind": "fact",
+            "body": "Keys look like lk_<8 char prefix>_<secret>. Prefix stored plaintext for lookup, secret hashed argon2id m=19MiB t=2. Never log the full key.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m07",
+            "by": "alice",
+            "title": "Hash verification must run in spawn_blocking",
+            "kind": "gotcha",
+            "body": "argon2 verify costs ~40ms CPU. Called inline in the key middleware it pins tokio workers and tail latency on sign-in and key auth goes to seconds under load. Wrap in spawn_blocking.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m17",
+            "by": "bob",
+            "title": "Metered quota increments on 429 responses too",
+            "kind": "gotcha",
+            "body": "MeteringLayer sits outside RateLimitLayer, so throttled requests still consume the monthly allowance. Ticket BILL-88 open, product undecided.",
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m19",
+            "by": "alice",
+            "title": "sqlx prepared statements break behind pgbouncer",
+            "kind": "gotcha",
+            "body": "Error: prepared statement \"sqlx_s_1\" already exists. Set statement_cache_capacity(0) on PgConnectOptions.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m22",
+            "by": "carol",
+            "title": "Presigned URLs fail when the host clock drifts",
+            "kind": "gotcha",
+            "body": "S3 answers 403 RequestTimeTooSkewed / SignatureDoesNotMatch if the signing pod clock is >5 min off. Seen on one node where chrony was dead.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m26",
+            "by": "bob",
+            "title": "Outbound HTTP client defaults",
+            "kind": "fact",
+            "body": "http_client/mod.rs: reqwest, 10s total timeout, 3 retries with backoff on GET/PUT/DELETE only.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m27",
+            "by": "bob",
+            "title": "Pooled connections die after NAT idle timeout",
+            "kind": "gotcha",
+            "body": "AWS NAT gateway drops idle flows after 350s without RST; reqwest reuses the dead socket and the first call after a quiet period gets connection reset. pool_idle_timeout must be < 350s.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m29",
+            "by": "dave",
+            "title": "Runners set HTTPS_PROXY",
+            "kind": "gotcha",
+            "body": "CI runners export HTTPS_PROXY; reqwest honors it, so requests to wiremock on 127.0.0.1 go to the proxy and fail with 502 only in CI. Build test clients with .no_proxy().",
+            "paths": [
+              "tests/",
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m34",
+            "by": "carol",
+            "title": "Jobs are at-least-once",
+            "kind": "gotcha",
+            "body": "A job that outlives the visibility timeout is handed to another worker while the first still runs. Handlers must be idempotent.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m43",
+            "by": "carol",
+            "title": "Load test 2026-08: 1.8k rps per pod",
+            "kind": "note",
+            "body": "k6 against staging, 4 vCPU pods. CPU bound on argon2 during key auth; Postgres at 35% CPU. Next bottleneck is JSON serialization of invoice lists.",
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m56",
+            "by": "carol",
+            "title": "Quota vs rate limit",
+            "kind": "fact",
+            "body": "Quota = monthly request allowance per plan, enforced in MeteringLayer against usage counters. Rate limit = short-window GCRA in Redis. Different errors: 402 quota_exceeded vs 429.",
+            "paths": [
+              "src/billing/quota.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m58",
+            "by": "dave",
+            "title": "Tenant plan cached 5 min in-process",
+            "kind": "fact",
+            "body": "plans.rs caches the plan per tenant for 5 min. After plan upgrades the new limits and allowance apply only when the entry expires.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "memory_write",
+        "args": {
+          "title": "Run argon2 verify off the tokio workers",
+          "kind": "gotcha",
+          "body": "verify costs ~40ms CPU; inline in the auth middleware it stalls the runtime. Use spawn_blocking.",
+          "paths": [
+            "src/auth/api_keys.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m07"
+      }
+    },
+    {
+      "id": "nd-002",
+      "difficulty": "hard",
+      "why": "Same topic as m09 but contradicts it (fail closed vs open): an update, not a duplicate.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m06",
+            "by": "alice",
+            "title": "API keys and passwords hashed with argon2id",
+            "kind": "fact",
+            "body": "Keys look like lk_<8 char prefix>_<secret>. Prefix stored plaintext for lookup, secret hashed argon2id m=19MiB t=2. Never log the full key.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m08",
+            "by": "bob",
+            "title": "Rate limiter: Redis GCRA per tenant per route group",
+            "kind": "fact",
+            "body": "Keys rl:{tenant}:{group}. Groups: default, writes, exports. Limits come from the tenant plan. Implemented as a Lua script, one round trip.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m09",
+            "by": "bob",
+            "title": "Limiter fails open on Redis errors",
+            "kind": "gotcha",
+            "body": "Deliberate: if the GCRA script errors or times out (50ms) the request passes. Watch rl_fail_open_total; there is no alert yet.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m14",
+            "by": "alice",
+            "title": "Proration double-charged on retried plan change",
+            "kind": "lesson",
+            "body": "INC-230: the plan change handler used the HTTP request id as Stripe idempotency key; client retry got a new request id and Stripe created a second proration invoice. Key is now plan_change_id.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m16",
+            "by": "dave",
+            "title": "Tax calc move to Stripe Tax paused",
+            "kind": "handoff",
+            "body": "tax.rs has tax_v2 path behind flag tax_v2 (off everywhere). Blocked on EU OSS registration. Do not drop the legacy tax_rates table yet.",
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m18",
+            "by": "alice",
+            "title": "Postgres pool: 20 per pod via pgbouncer transaction mode",
+            "kind": "fact",
+            "body": "pool.rs sets max_connections=20. pgbouncer runs in transaction mode, so no session state and no server-side prepared statements.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m19",
+            "by": "alice",
+            "title": "sqlx prepared statements break behind pgbouncer",
+            "kind": "gotcha",
+            "body": "Error: prepared statement \"sqlx_s_1\" already exists. Set statement_cache_capacity(0) on PgConnectOptions.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m21",
+            "by": "carol",
+            "title": "Uploads use presigned S3 PUT, 15 min expiry",
+            "kind": "fact",
+            "body": "blobs.rs issues presigned PUT URLs; the API never proxies file bytes. Expiry 15 min.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m31",
+            "by": "dave",
+            "title": "ledgerctl backfill is not resumable",
+            "kind": "gotcha",
+            "body": "backfill prints its checkpoint to stdout only. If it dies, rerun with --from-id <last printed id>; there is no state file.",
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m37",
+            "by": "bob",
+            "title": "OTLP exporter drops spans under load",
+            "kind": "gotcha",
+            "body": "Batch queue default 2048; at ~1k rps spans are dropped silently. Raised max_queue_size to 16384 in telemetry.rs for api pods.",
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m38",
+            "by": "carol",
+            "title": "x-request-id propagation",
+            "kind": "fact",
+            "body": "request_id.rs accepts incoming x-request-id or generates a UUIDv7, sets it on the response and on outbound reqwest calls.",
+            "paths": [
+              "src/middleware/request_id.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m41",
+            "by": "alice",
+            "title": "Secrets loaded once at boot",
+            "kind": "fact",
+            "body": "config.rs reads AWS Secrets Manager at startup only. DB password rotation needs a rolling restart.",
+            "paths": [
+              "src/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m42",
+            "by": "bob",
+            "title": "Moving rate limiting to Envoy: rejected",
+            "kind": "research",
+            "body": "Envoy global rate limit service would need plan limits synced from Postgres; extra moving part. Latency cost ~2ms was fine. Kept in-process.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m43",
+            "by": "carol",
+            "title": "Load test 2026-08: 1.8k rps per pod",
+            "kind": "note",
+            "body": "k6 against staging, 4 vCPU pods. CPU bound on argon2 during key auth; Postgres at 35% CPU. Next bottleneck is JSON serialization of invoice lists.",
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m57",
+            "by": "bob",
+            "title": "Redis maxmemory-policy must be volatile-lru",
+            "kind": "gotcha",
+            "body": "With allkeys-lru Redis evicted usage:{tenant} counters (no TTL) under memory pressure and customers were under-billed. Only keys with TTL may be evicted.",
+            "paths": [
+              "src/billing/metering.rs",
+              "deploy/redis.conf"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "memory_write",
+        "args": {
+          "title": "Limiter now fails closed on Redis errors",
+          "kind": "gotcha",
+          "body": "Changed 2026-09-12 after a credential stuffing burst: GCRA script error or timeout returns 503. rl_fail_open_total renamed rl_redis_error_total.",
+          "paths": [
+            "src/middleware/rate_limit.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-003",
+      "difficulty": "medium",
+      "why": "Same knowledge as m01 with a different title; m44 is another layer-order gotcha (CORS).",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m01",
+            "by": "alice",
+            "title": "Auth must run before rate limiting",
+            "kind": "gotcha",
+            "body": "axum applies .layer() bottom-up: the AuthLayer call must come AFTER .layer(RateLimitLayer) in router.rs so auth executes first. Wrong order: TenantId extension is missing, limiter falls back to the shared `anonymous` bucket, junk traffic empties it and every tenant sees 429s.",
+            "paths": [
+              "src/http/router.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m08",
+            "by": "bob",
+            "title": "Rate limiter: Redis GCRA per tenant per route group",
+            "kind": "fact",
+            "body": "Keys rl:{tenant}:{group}. Groups: default, writes, exports. Limits come from the tenant plan. Implemented as a Lua script, one round trip.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m10",
+            "by": "carol",
+            "title": "Retry-After must be integer seconds",
+            "kind": "lesson",
+            "body": "We sent Retry-After: 0.42; the Python SDK int() parse crashed and the Go SDK treated it as 0 and hot-looped. Round up to whole seconds.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m20",
+            "by": "bob",
+            "title": "CREATE INDEX CONCURRENTLY needs a no-transaction migration",
+            "kind": "lesson",
+            "body": "sqlx migrate wraps each file in a transaction; CONCURRENTLY fails inside one. Put it alone in a file starting with `-- no-transaction`. Keep lock_timeout 5s.",
+            "paths": [
+              "migrations/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m38",
+            "by": "carol",
+            "title": "x-request-id propagation",
+            "kind": "fact",
+            "body": "request_id.rs accepts incoming x-request-id or generates a UUIDv7, sets it on the response and on outbound reqwest calls.",
+            "paths": [
+              "src/middleware/request_id.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m40",
+            "by": "dave",
+            "title": "Graceful shutdown must finish under the grace period",
+            "kind": "lesson",
+            "body": "terminationGracePeriodSeconds is 30; axum graceful shutdown timeout was 60 so SIGKILL cut in-flight Stripe event handling. Now 25s.",
+            "paths": [
+              "src/main.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m44",
+            "by": "alice",
+            "title": "CORS preflight rejected when auth runs first",
+            "kind": "gotcha",
+            "body": "OPTIONS preflight carries no Authorization header, so AuthLayer returned 401 and browsers blocked the call. CorsLayer must be the outermost layer.",
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m56",
+            "by": "carol",
+            "title": "Quota vs rate limit",
+            "kind": "fact",
+            "body": "Quota = monthly request allowance per plan, enforced in MeteringLayer against usage counters. Rate limit = short-window GCRA in Redis. Different errors: 402 quota_exceeded vs 429.",
+            "paths": [
+              "src/billing/quota.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "memory_write",
+        "args": {
+          "title": "Rate limit layer must see TenantId",
+          "kind": "gotcha",
+          "body": "In router.rs .layer(auth) has to be added after .layer(rate_limit) since axum wraps bottom-up; otherwise TenantId is absent and everyone shares the anonymous bucket.",
+          "paths": [
+            "src/http/router.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m01"
+      }
+    },
+    {
+      "id": "nd-004",
+      "difficulty": "hard",
+      "why": "Title mirrors m12 (inbound Stripe raw body) but this is the outbound subsystem and a different fact.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m05",
+            "by": "dave",
+            "title": "Session cookie SameSite migration",
+            "kind": "handoff",
+            "body": "Web now sets SameSite=Lax. Mobile webview still sends the old SameSite=None cookie `sid_v1`; session.rs accepts both. Left: drop sid_v1 fallback after 2026-10-01, update mobile release notes.",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m12",
+            "by": "dave",
+            "title": "Webhook signature check needs the raw body",
+            "kind": "gotcha",
+            "body": "Stripe-Signature is computed over the exact bytes. Using the Json extractor re-serializes and every event fails with signature mismatch. Take Bytes, verify, then serde_json::from_slice.",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m47",
+            "by": "carol",
+            "title": "Outbound webhook retries done, DLQ UI not started",
+            "kind": "handoff",
+            "body": "webhooks_out: exponential backoff up to 24h is merged. Dead-letter table exists; admin UI to list and replay deliveries not started.",
+            "paths": [
+              "src/webhooks_out/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m53",
+            "by": "carol",
+            "title": "Errors are RFC 7807 problem+json",
+            "kind": "fact",
+            "body": "http/error.rs maps AppError to type/title/status/detail. Clients key on `type` URIs, not titles.",
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "memory_write",
+        "args": {
+          "title": "Webhook signature check needs the delivery timestamp",
+          "kind": "gotcha",
+          "body": "Outbound: customer verifiers reject deliveries whose t= is older than 5 min; retries must re-sign with a fresh timestamp instead of reusing the first signature.",
+          "paths": [
+            "src/webhooks_out/signing.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-005",
+      "difficulty": "hard",
+      "why": "Symptom-first wording of the replica-lag fact in m24; no title overlap.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m03",
+            "by": "bob",
+            "title": "Token exp leeway is 60s",
+            "kind": "gotcha",
+            "body": "Staging IdP clock drifts; jwt.rs validates exp/nbf with 60s leeway. Tests that mint expired tokens must backdate by >60s.",
+            "paths": [
+              "src/auth/jwt.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m05",
+            "by": "dave",
+            "title": "Session cookie SameSite migration",
+            "kind": "handoff",
+            "body": "Web now sets SameSite=Lax. Mobile webview still sends the old SameSite=None cookie `sid_v1`; session.rs accepts both. Left: drop sid_v1 fallback after 2026-10-01, update mobile release notes.",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m09",
+            "by": "bob",
+            "title": "Limiter fails open on Redis errors",
+            "kind": "gotcha",
+            "body": "Deliberate: if the GCRA script errors or times out (50ms) the request passes. Watch rl_fail_open_total; there is no alert yet.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m13",
+            "by": "carol",
+            "title": "Usage metering flushes Redis counters every 60s",
+            "kind": "fact",
+            "body": "metering.rs INCRs usage:{tenant}:{yyyymm} in Redis and a task copies to Postgres usage_records every 60s. Up to 60s of counts lost on crash; accepted by product.",
+            "paths": [
+              "src/billing/metering.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m14",
+            "by": "alice",
+            "title": "Proration double-charged on retried plan change",
+            "kind": "lesson",
+            "body": "INC-230: the plan change handler used the HTTP request id as Stripe idempotency key; client retry got a new request id and Stripe created a second proration invoice. Key is now plan_change_id.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m18",
+            "by": "alice",
+            "title": "Postgres pool: 20 per pod via pgbouncer transaction mode",
+            "kind": "fact",
+            "body": "pool.rs sets max_connections=20. pgbouncer runs in transaction mode, so no session state and no server-side prepared statements.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m21",
+            "by": "carol",
+            "title": "Uploads use presigned S3 PUT, 15 min expiry",
+            "kind": "fact",
+            "body": "blobs.rs issues presigned PUT URLs; the API never proxies file bytes. Expiry 15 min.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m22",
+            "by": "carol",
+            "title": "Presigned URLs fail when the host clock drifts",
+            "kind": "gotcha",
+            "body": "S3 answers 403 RequestTimeTooSkewed / SignatureDoesNotMatch if the signing pod clock is >5 min off. Seen on one node where chrony was dead.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m23",
+            "by": "dave",
+            "title": "Invoice soft-delete half done",
+            "kind": "handoff",
+            "body": "Added deleted_at; queries in storage/invoices.rs filter it. reports/ module not updated yet, still counts deleted invoices. Never hard delete invoices.",
+            "paths": [
+              "src/storage/invoices.rs",
+              "src/reports/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m24",
+            "by": "bob",
+            "title": "Read replica lags up to 2s",
+            "kind": "fact",
+            "body": "pool.rs routes GET list endpoints to the replica. Anything that reads right after a write must use Db::primary().",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m28",
+            "by": "carol",
+            "title": "Never retry payment POSTs without an idempotency key",
+            "kind": "lesson",
+            "body": "A timeout on POST /v1/payment_intents does not mean it failed. Retrying without Idempotency-Key produced duplicate charges in staging.",
+            "paths": [
+              "src/http_client/mod.rs",
+              "src/billing/stripe.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m29",
+            "by": "dave",
+            "title": "Runners set HTTPS_PROXY",
+            "kind": "gotcha",
+            "body": "CI runners export HTTPS_PROXY; reqwest honors it, so requests to wiremock on 127.0.0.1 go to the proxy and fail with 502 only in CI. Build test clients with .no_proxy().",
+            "paths": [
+              "tests/",
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m38",
+            "by": "carol",
+            "title": "x-request-id propagation",
+            "kind": "fact",
+            "body": "request_id.rs accepts incoming x-request-id or generates a UUIDv7, sets it on the response and on outbound reqwest calls.",
+            "paths": [
+              "src/middleware/request_id.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m41",
+            "by": "alice",
+            "title": "Secrets loaded once at boot",
+            "kind": "fact",
+            "body": "config.rs reads AWS Secrets Manager at startup only. DB password rotation needs a rolling restart.",
+            "paths": [
+              "src/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m46",
+            "by": "bob",
+            "title": "v1 cursors can skip rows",
+            "kind": "gotcha",
+            "body": "v1 cursors encode only created_at; rows sharing a timestamp at a page boundary are skipped. v2 cursors tie-break on id. v1 still accepted.",
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "memory_write",
+        "args": {
+          "title": "Invoice list stale right after create",
+          "kind": "gotcha",
+          "body": "POST /invoices then GET /invoices misses the new row for ~2s because list routes read the replica. Read-after-write paths must use Db::primary().",
+          "paths": [
+            "src/http/invoices.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m24"
+      }
+    },
+    {
+      "id": "nd-006",
+      "difficulty": "medium",
+      "why": "Same topic as m24 but a new, contradicting fact (30s vs up to 2s).",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m01",
+            "by": "alice",
+            "title": "Auth must run before rate limiting",
+            "kind": "gotcha",
+            "body": "axum applies .layer() bottom-up: the AuthLayer call must come AFTER .layer(RateLimitLayer) in router.rs so auth executes first. Wrong order: TenantId extension is missing, limiter falls back to the shared `anonymous` bucket, junk traffic empties it and every tenant sees 429s.",
+            "paths": [
+              "src/http/router.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m07",
+            "by": "alice",
+            "title": "Hash verification must run in spawn_blocking",
+            "kind": "gotcha",
+            "body": "argon2 verify costs ~40ms CPU. Called inline in the key middleware it pins tokio workers and tail latency on sign-in and key auth goes to seconds under load. Wrap in spawn_blocking.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m18",
+            "by": "alice",
+            "title": "Postgres pool: 20 per pod via pgbouncer transaction mode",
+            "kind": "fact",
+            "body": "pool.rs sets max_connections=20. pgbouncer runs in transaction mode, so no session state and no server-side prepared statements.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m20",
+            "by": "bob",
+            "title": "CREATE INDEX CONCURRENTLY needs a no-transaction migration",
+            "kind": "lesson",
+            "body": "sqlx migrate wraps each file in a transaction; CONCURRENTLY fails inside one. Put it alone in a file starting with `-- no-transaction`. Keep lock_timeout 5s.",
+            "paths": [
+              "migrations/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m24",
+            "by": "bob",
+            "title": "Read replica lags up to 2s",
+            "kind": "fact",
+            "body": "pool.rs routes GET list endpoints to the replica. Anything that reads right after a write must use Db::primary().",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m26",
+            "by": "bob",
+            "title": "Outbound HTTP client defaults",
+            "kind": "fact",
+            "body": "http_client/mod.rs: reqwest, 10s total timeout, 3 retries with backoff on GET/PUT/DELETE only.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m27",
+            "by": "bob",
+            "title": "Pooled connections die after NAT idle timeout",
+            "kind": "gotcha",
+            "body": "AWS NAT gateway drops idle flows after 350s without RST; reqwest reuses the dead socket and the first call after a quiet period gets connection reset. pool_idle_timeout must be < 350s.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m31",
+            "by": "dave",
+            "title": "ledgerctl backfill is not resumable",
+            "kind": "gotcha",
+            "body": "backfill prints its checkpoint to stdout only. If it dies, rerun with --from-id <last printed id>; there is no state file.",
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m34",
+            "by": "carol",
+            "title": "Jobs are at-least-once",
+            "kind": "gotcha",
+            "body": "A job that outlives the visibility timeout is handed to another worker while the first still runs. Handlers must be idempotent.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m46",
+            "by": "bob",
+            "title": "v1 cursors can skip rows",
+            "kind": "gotcha",
+            "body": "v1 cursors encode only created_at; rows sharing a timestamp at a page boundary are skipped. v2 cursors tie-break on id. v1 still accepted.",
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m49",
+            "by": "dave",
+            "title": "UTC in DB, billing periods in tenant timezone",
+            "kind": "fact",
+            "body": "All timestamps stored UTC. Period boundaries computed in the tenant tz from tenants.timezone; DST handled by chrono-tz.",
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m56",
+            "by": "carol",
+            "title": "Quota vs rate limit",
+            "kind": "fact",
+            "body": "Quota = monthly request allowance per plan, enforced in MeteringLayer against usage counters. Rate limit = short-window GCRA in Redis. Different errors: 402 quota_exceeded vs 429.",
+            "paths": [
+              "src/billing/quota.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "memory_write",
+        "args": {
+          "title": "Replica lag reached 30s during autovacuum",
+          "kind": "fact",
+          "body": "2026-09-14: autovacuum on usage_records pushed replica lag to 30s; list endpoints showed stale totals. The 2s assumption in pool.rs does not hold.",
+          "paths": [
+            "src/storage/pool.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-007",
+      "difficulty": "medium",
+      "why": "Updates handoff m32 (CSV pending -> done); new state, not a duplicate.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m31",
+            "by": "dave",
+            "title": "ledgerctl backfill is not resumable",
+            "kind": "gotcha",
+            "body": "backfill prints its checkpoint to stdout only. If it dies, rerun with --from-id <last printed id>; there is no state file.",
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m32",
+            "by": "dave",
+            "title": "Tenant export: JSON done, CSV pending",
+            "kind": "handoff",
+            "body": "export.rs streams JSON lines. CSV writer stubbed, column order agreed with support (see BILL-71).",
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m35",
+            "by": "bob",
+            "title": "Dunning reminders went out twice",
+            "kind": "lesson",
+            "body": "INC-241: dunning job rendered and mailed 3k reminders, took >5 min, got redelivered, mailed again. Added heartbeat extending the lease and a sent_at guard per invoice.",
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m49",
+            "by": "dave",
+            "title": "UTC in DB, billing periods in tenant timezone",
+            "kind": "fact",
+            "body": "All timestamps stored UTC. Period boundaries computed in the tenant tz from tenants.timezone; DST handled by chrono-tz.",
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m54",
+            "by": "bob",
+            "title": "500 bodies leaked SQL text",
+            "kind": "gotcha",
+            "body": "AppError::Internal put the anyhow chain in `detail`, including sqlx query text and constraint names. Internal details must go to logs only.",
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "memory_write",
+        "args": {
+          "title": "Tenant export CSV writer merged",
+          "kind": "handoff",
+          "body": "CSV done in #455, column order per BILL-71. Parquet not planned.",
+          "paths": [
+            "src/cli/export.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-008",
+      "difficulty": "easy",
+      "why": "Same gotcha, near-identical terms.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m01",
+            "by": "alice",
+            "title": "Auth must run before rate limiting",
+            "kind": "gotcha",
+            "body": "axum applies .layer() bottom-up: the AuthLayer call must come AFTER .layer(RateLimitLayer) in router.rs so auth executes first. Wrong order: TenantId extension is missing, limiter falls back to the shared `anonymous` bucket, junk traffic empties it and every tenant sees 429s.",
+            "paths": [
+              "src/http/router.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m18",
+            "by": "alice",
+            "title": "Postgres pool: 20 per pod via pgbouncer transaction mode",
+            "kind": "fact",
+            "body": "pool.rs sets max_connections=20. pgbouncer runs in transaction mode, so no session state and no server-side prepared statements.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m19",
+            "by": "alice",
+            "title": "sqlx prepared statements break behind pgbouncer",
+            "kind": "gotcha",
+            "body": "Error: prepared statement \"sqlx_s_1\" already exists. Set statement_cache_capacity(0) on PgConnectOptions.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m23",
+            "by": "dave",
+            "title": "Invoice soft-delete half done",
+            "kind": "handoff",
+            "body": "Added deleted_at; queries in storage/invoices.rs filter it. reports/ module not updated yet, still counts deleted invoices. Never hard delete invoices.",
+            "paths": [
+              "src/storage/invoices.rs",
+              "src/reports/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m27",
+            "by": "bob",
+            "title": "Pooled connections die after NAT idle timeout",
+            "kind": "gotcha",
+            "body": "AWS NAT gateway drops idle flows after 350s without RST; reqwest reuses the dead socket and the first call after a quiet period gets connection reset. pool_idle_timeout must be < 350s.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m51",
+            "by": "alice",
+            "title": "Integration tests share one database",
+            "kind": "gotcha",
+            "body": "tests/ uses one Postgres; tests run in parallel. Reusing tenant 'acme' across tests causes random failures. Create a unique tenant per test via TestTenant::new().",
+            "paths": [
+              "tests/"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "memory_write",
+        "args": {
+          "title": "Disable sqlx statement cache with pgbouncer",
+          "kind": "gotcha",
+          "body": "\"prepared statement sqlx_s_1 already exists\" means set statement_cache_capacity(0).",
+          "paths": [
+            "src/storage/pool.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m19"
+      }
+    },
+    {
+      "id": "nd-009",
+      "difficulty": "medium",
+      "why": "Paraphrase of m11; m12 is a different gotcha on the same file.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m09",
+            "by": "bob",
+            "title": "Limiter fails open on Redis errors",
+            "kind": "gotcha",
+            "body": "Deliberate: if the GCRA script errors or times out (50ms) the request passes. Watch rl_fail_open_total; there is no alert yet.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m11",
+            "by": "dave",
+            "title": "Stripe webhooks arrive out of order",
+            "kind": "gotcha",
+            "body": "invoice.paid can land before invoice.finalized. webhooks.rs upserts by stripe_invoice_id and must never move status backwards (paid -> open).",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m12",
+            "by": "dave",
+            "title": "Webhook signature check needs the raw body",
+            "kind": "gotcha",
+            "body": "Stripe-Signature is computed over the exact bytes. Using the Json extractor re-serializes and every event fails with signature mismatch. Take Bytes, verify, then serde_json::from_slice.",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m35",
+            "by": "bob",
+            "title": "Dunning reminders went out twice",
+            "kind": "lesson",
+            "body": "INC-241: dunning job rendered and mailed 3k reminders, took >5 min, got redelivered, mailed again. Added heartbeat extending the lease and a sent_at guard per invoice.",
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m40",
+            "by": "dave",
+            "title": "Graceful shutdown must finish under the grace period",
+            "kind": "lesson",
+            "body": "terminationGracePeriodSeconds is 30; axum graceful shutdown timeout was 60 so SIGKILL cut in-flight Stripe event handling. Now 25s.",
+            "paths": [
+              "src/main.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m53",
+            "by": "carol",
+            "title": "Errors are RFC 7807 problem+json",
+            "kind": "fact",
+            "body": "http/error.rs maps AppError to type/title/status/detail. Clients key on `type` URIs, not titles.",
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "memory_write",
+        "args": {
+          "title": "Stripe event ordering is not guaranteed",
+          "kind": "gotcha",
+          "body": "invoice.paid may come before invoice.finalized; upsert by stripe_invoice_id and never move status backwards.",
+          "paths": [
+            "src/billing/webhooks.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m11"
+      }
+    },
+    {
+      "id": "nd-010",
+      "difficulty": "medium",
+      "why": "Contradicts m58 (5 min): an update, not a duplicate.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m03",
+            "by": "bob",
+            "title": "Token exp leeway is 60s",
+            "kind": "gotcha",
+            "body": "Staging IdP clock drifts; jwt.rs validates exp/nbf with 60s leeway. Tests that mint expired tokens must backdate by >60s.",
+            "paths": [
+              "src/auth/jwt.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m04",
+            "by": "carol",
+            "title": "Service tokens bypass tenant scoping",
+            "kind": "lesson",
+            "body": "aud=internal tokens carry no tenant claim, so TenantId is never set. Handlers reachable by internal callers must call require_tenant() explicitly. INC-212: /invoices returned rows from every tenant to the reporting service.",
+            "paths": [
+              "src/auth/claims.rs",
+              "src/http/invoices.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m12",
+            "by": "dave",
+            "title": "Webhook signature check needs the raw body",
+            "kind": "gotcha",
+            "body": "Stripe-Signature is computed over the exact bytes. Using the Json extractor re-serializes and every event fails with signature mismatch. Take Bytes, verify, then serde_json::from_slice.",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m14",
+            "by": "alice",
+            "title": "Proration double-charged on retried plan change",
+            "kind": "lesson",
+            "body": "INC-230: the plan change handler used the HTTP request id as Stripe idempotency key; client retry got a new request id and Stripe created a second proration invoice. Key is now plan_change_id.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m20",
+            "by": "bob",
+            "title": "CREATE INDEX CONCURRENTLY needs a no-transaction migration",
+            "kind": "lesson",
+            "body": "sqlx migrate wraps each file in a transaction; CONCURRENTLY fails inside one. Put it alone in a file starting with `-- no-transaction`. Keep lock_timeout 5s.",
+            "paths": [
+              "migrations/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m21",
+            "by": "carol",
+            "title": "Uploads use presigned S3 PUT, 15 min expiry",
+            "kind": "fact",
+            "body": "blobs.rs issues presigned PUT URLs; the API never proxies file bytes. Expiry 15 min.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m26",
+            "by": "bob",
+            "title": "Outbound HTTP client defaults",
+            "kind": "fact",
+            "body": "http_client/mod.rs: reqwest, 10s total timeout, 3 retries with backoff on GET/PUT/DELETE only.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m27",
+            "by": "bob",
+            "title": "Pooled connections die after NAT idle timeout",
+            "kind": "gotcha",
+            "body": "AWS NAT gateway drops idle flows after 350s without RST; reqwest reuses the dead socket and the first call after a quiet period gets connection reset. pool_idle_timeout must be < 350s.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m33",
+            "by": "carol",
+            "title": "Jobs run on apalis with Redis storage",
+            "kind": "fact",
+            "body": "src/jobs/: apalis workers, Redis backend, max 3 attempts, visibility timeout 5 min.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m34",
+            "by": "carol",
+            "title": "Jobs are at-least-once",
+            "kind": "gotcha",
+            "body": "A job that outlives the visibility timeout is handed to another worker while the first still runs. Handlers must be idempotent.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m38",
+            "by": "carol",
+            "title": "x-request-id propagation",
+            "kind": "fact",
+            "body": "request_id.rs accepts incoming x-request-id or generates a UUIDv7, sets it on the response and on outbound reqwest calls.",
+            "paths": [
+              "src/middleware/request_id.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m40",
+            "by": "dave",
+            "title": "Graceful shutdown must finish under the grace period",
+            "kind": "lesson",
+            "body": "terminationGracePeriodSeconds is 30; axum graceful shutdown timeout was 60 so SIGKILL cut in-flight Stripe event handling. Now 25s.",
+            "paths": [
+              "src/main.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m42",
+            "by": "bob",
+            "title": "Moving rate limiting to Envoy: rejected",
+            "kind": "research",
+            "body": "Envoy global rate limit service would need plan limits synced from Postgres; extra moving part. Latency cost ~2ms was fine. Kept in-process.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m44",
+            "by": "alice",
+            "title": "CORS preflight rejected when auth runs first",
+            "kind": "gotcha",
+            "body": "OPTIONS preflight carries no Authorization header, so AuthLayer returned 401 and browsers blocked the call. CorsLayer must be the outermost layer.",
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m53",
+            "by": "carol",
+            "title": "Errors are RFC 7807 problem+json",
+            "kind": "fact",
+            "body": "http/error.rs maps AppError to type/title/status/detail. Clients key on `type` URIs, not titles.",
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m54",
+            "by": "bob",
+            "title": "500 bodies leaked SQL text",
+            "kind": "gotcha",
+            "body": "AppError::Internal put the anyhow chain in `detail`, including sqlx query text and constraint names. Internal details must go to logs only.",
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m55",
+            "by": "alice",
+            "title": "Public endpoints use a separate anonymous router",
+            "kind": "fact",
+            "body": "Status page and pricing JSON are served by public_router() with no auth; rate limited by client IP, not by tenant. Never mount tenant routes there.",
+            "paths": [
+              "src/http/public.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m57",
+            "by": "bob",
+            "title": "Redis maxmemory-policy must be volatile-lru",
+            "kind": "gotcha",
+            "body": "With allkeys-lru Redis evicted usage:{tenant} counters (no TTL) under memory pressure and customers were under-billed. Only keys with TTL may be evicted.",
+            "paths": [
+              "src/billing/metering.rs",
+              "deploy/redis.conf"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m58",
+            "by": "dave",
+            "title": "Tenant plan cached 5 min in-process",
+            "kind": "fact",
+            "body": "plans.rs caches the plan per tenant for 5 min. After plan upgrades the new limits and allowance apply only when the entry expires.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m59",
+            "by": "alice",
+            "title": "Do not hold a DashMap ref across .await",
+            "kind": "lesson",
+            "body": "plans.rs held a DashMap entry guard while awaiting the DB refresh; a second task on the same shard deadlocked the worker.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "memory_write",
+        "args": {
+          "title": "Plan cache TTL lowered to 30s",
+          "kind": "fact",
+          "body": "plans.rs now caches tenant plans for 30s so upgrades apply almost immediately.",
+          "paths": [
+            "src/billing/plans.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-011",
+      "difficulty": "easy",
+      "why": "Same subsystem as m33, unrelated new fact.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m04",
+            "by": "carol",
+            "title": "Service tokens bypass tenant scoping",
+            "kind": "lesson",
+            "body": "aud=internal tokens carry no tenant claim, so TenantId is never set. Handlers reachable by internal callers must call require_tenant() explicitly. INC-212: /invoices returned rows from every tenant to the reporting service.",
+            "paths": [
+              "src/auth/claims.rs",
+              "src/http/invoices.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m10",
+            "by": "carol",
+            "title": "Retry-After must be integer seconds",
+            "kind": "lesson",
+            "body": "We sent Retry-After: 0.42; the Python SDK int() parse crashed and the Go SDK treated it as 0 and hot-looped. Round up to whole seconds.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m27",
+            "by": "bob",
+            "title": "Pooled connections die after NAT idle timeout",
+            "kind": "gotcha",
+            "body": "AWS NAT gateway drops idle flows after 350s without RST; reqwest reuses the dead socket and the first call after a quiet period gets connection reset. pool_idle_timeout must be < 350s.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m30",
+            "by": "alice",
+            "title": "ledgerctl config lookup order",
+            "kind": "fact",
+            "body": "LEDGER_CONFIG env, then ./ledger.toml, then ~/.config/ledger/ledger.toml. Flags override file values.",
+            "paths": [
+              "src/cli/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m33",
+            "by": "carol",
+            "title": "Jobs run on apalis with Redis storage",
+            "kind": "fact",
+            "body": "src/jobs/: apalis workers, Redis backend, max 3 attempts, visibility timeout 5 min.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m34",
+            "by": "carol",
+            "title": "Jobs are at-least-once",
+            "kind": "gotcha",
+            "body": "A job that outlives the visibility timeout is handed to another worker while the first still runs. Handlers must be idempotent.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "memory_write",
+        "args": {
+          "title": "Grafana panel for job queue depth",
+          "kind": "fact",
+          "body": "Dashboard jobs/queue-depth reads apalis Redis list lengths; alert at 10k.",
+          "paths": [
+            "src/jobs/"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-012",
+      "difficulty": "hard",
+      "why": "Same topic and file as m15 (minor units, exponent table) but a new fact.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m03",
+            "by": "bob",
+            "title": "Token exp leeway is 60s",
+            "kind": "gotcha",
+            "body": "Staging IdP clock drifts; jwt.rs validates exp/nbf with 60s leeway. Tests that mint expired tokens must backdate by >60s.",
+            "paths": [
+              "src/auth/jwt.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m09",
+            "by": "bob",
+            "title": "Limiter fails open on Redis errors",
+            "kind": "gotcha",
+            "body": "Deliberate: if the GCRA script errors or times out (50ms) the request passes. Watch rl_fail_open_total; there is no alert yet.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m11",
+            "by": "dave",
+            "title": "Stripe webhooks arrive out of order",
+            "kind": "gotcha",
+            "body": "invoice.paid can land before invoice.finalized. webhooks.rs upserts by stripe_invoice_id and must never move status backwards (paid -> open).",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m16",
+            "by": "dave",
+            "title": "Tax calc move to Stripe Tax paused",
+            "kind": "handoff",
+            "body": "tax.rs has tax_v2 path behind flag tax_v2 (off everywhere). Blocked on EU OSS registration. Do not drop the legacy tax_rates table yet.",
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m32",
+            "by": "dave",
+            "title": "Tenant export: JSON done, CSV pending",
+            "kind": "handoff",
+            "body": "export.rs streams JSON lines. CSV writer stubbed, column order agreed with support (see BILL-71).",
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m47",
+            "by": "carol",
+            "title": "Outbound webhook retries done, DLQ UI not started",
+            "kind": "handoff",
+            "body": "webhooks_out: exponential backoff up to 24h is merged. Dead-letter table exists; admin UI to list and replay deliveries not started.",
+            "paths": [
+              "src/webhooks_out/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m49",
+            "by": "dave",
+            "title": "UTC in DB, billing periods in tenant timezone",
+            "kind": "fact",
+            "body": "All timestamps stored UTC. Period boundaries computed in the tenant tz from tenants.timezone; DST handled by chrono-tz.",
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m53",
+            "by": "carol",
+            "title": "Errors are RFC 7807 problem+json",
+            "kind": "fact",
+            "body": "http/error.rs maps AppError to type/title/status/detail. Clients key on `type` URIs, not titles.",
+            "paths": [
+              "src/http/error.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m59",
+            "by": "alice",
+            "title": "Do not hold a DashMap ref across .await",
+            "kind": "lesson",
+            "body": "plans.rs held a DashMap entry guard while awaiting the DB refresh; a second task on the same shard deadlocked the worker.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "memory_write",
+        "args": {
+          "title": "HUF amounts: Stripe payout exponent differs from ISO",
+          "kind": "gotcha",
+          "body": "ISO gives HUF exponent 2 but Stripe payouts treat HUF as zero-decimal; money.rs follows ISO, so payout amounts are 100x off.",
+          "paths": [
+            "src/billing/money.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-013",
+      "difficulty": "hard",
+      "why": "Same failure pattern as m39 but a different subsystem (job workers, Redis) that m39 does not cover.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m04",
+            "by": "carol",
+            "title": "Service tokens bypass tenant scoping",
+            "kind": "lesson",
+            "body": "aud=internal tokens carry no tenant claim, so TenantId is never set. Handlers reachable by internal callers must call require_tenant() explicitly. INC-212: /invoices returned rows from every tenant to the reporting service.",
+            "paths": [
+              "src/auth/claims.rs",
+              "src/http/invoices.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m07",
+            "by": "alice",
+            "title": "Hash verification must run in spawn_blocking",
+            "kind": "gotcha",
+            "body": "argon2 verify costs ~40ms CPU. Called inline in the key middleware it pins tokio workers and tail latency on sign-in and key auth goes to seconds under load. Wrap in spawn_blocking.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m14",
+            "by": "alice",
+            "title": "Proration double-charged on retried plan change",
+            "kind": "lesson",
+            "body": "INC-230: the plan change handler used the HTTP request id as Stripe idempotency key; client retry got a new request id and Stripe created a second proration invoice. Key is now plan_change_id.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m28",
+            "by": "carol",
+            "title": "Never retry payment POSTs without an idempotency key",
+            "kind": "lesson",
+            "body": "A timeout on POST /v1/payment_intents does not mean it failed. Retrying without Idempotency-Key produced duplicate charges in staging.",
+            "paths": [
+              "src/http_client/mod.rs",
+              "src/billing/stripe.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m33",
+            "by": "carol",
+            "title": "Jobs run on apalis with Redis storage",
+            "kind": "fact",
+            "body": "src/jobs/: apalis workers, Redis backend, max 3 attempts, visibility timeout 5 min.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m39",
+            "by": "alice",
+            "title": "/healthz checked the DB and caused restart storms",
+            "kind": "gotcha",
+            "body": "Liveness hit Postgres; during PG failover every pod failed liveness and kubelet restarted all of them at once. Liveness must be process-only; readiness may check deps.",
+            "paths": [
+              "src/http/health.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m58",
+            "by": "dave",
+            "title": "Tenant plan cached 5 min in-process",
+            "kind": "fact",
+            "body": "plans.rs caches the plan per tenant for 5 min. After plan upgrades the new limits and allowance apply only when the entry expires.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m59",
+            "by": "alice",
+            "title": "Do not hold a DashMap ref across .await",
+            "kind": "lesson",
+            "body": "plans.rs held a DashMap entry guard while awaiting the DB refresh; a second task on the same shard deadlocked the worker.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "memory_write",
+        "args": {
+          "title": "Worker health check hits Redis and restarts all workers",
+          "kind": "gotcha",
+          "body": "Job worker liveness pings Redis; during the Redis failover every worker was restarted at once. Make worker liveness process-only.",
+          "paths": [
+            "src/jobs/health.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-014",
+      "difficulty": "medium",
+      "why": "Paraphrase of m27.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m12",
+            "by": "dave",
+            "title": "Webhook signature check needs the raw body",
+            "kind": "gotcha",
+            "body": "Stripe-Signature is computed over the exact bytes. Using the Json extractor re-serializes and every event fails with signature mismatch. Take Bytes, verify, then serde_json::from_slice.",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m17",
+            "by": "bob",
+            "title": "Metered quota increments on 429 responses too",
+            "kind": "gotcha",
+            "body": "MeteringLayer sits outside RateLimitLayer, so throttled requests still consume the monthly allowance. Ticket BILL-88 open, product undecided.",
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m22",
+            "by": "carol",
+            "title": "Presigned URLs fail when the host clock drifts",
+            "kind": "gotcha",
+            "body": "S3 answers 403 RequestTimeTooSkewed / SignatureDoesNotMatch if the signing pod clock is >5 min off. Seen on one node where chrony was dead.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m24",
+            "by": "bob",
+            "title": "Read replica lags up to 2s",
+            "kind": "fact",
+            "body": "pool.rs routes GET list endpoints to the replica. Anything that reads right after a write must use Db::primary().",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m26",
+            "by": "bob",
+            "title": "Outbound HTTP client defaults",
+            "kind": "fact",
+            "body": "http_client/mod.rs: reqwest, 10s total timeout, 3 retries with backoff on GET/PUT/DELETE only.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m27",
+            "by": "bob",
+            "title": "Pooled connections die after NAT idle timeout",
+            "kind": "gotcha",
+            "body": "AWS NAT gateway drops idle flows after 350s without RST; reqwest reuses the dead socket and the first call after a quiet period gets connection reset. pool_idle_timeout must be < 350s.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m29",
+            "by": "dave",
+            "title": "Runners set HTTPS_PROXY",
+            "kind": "gotcha",
+            "body": "CI runners export HTTPS_PROXY; reqwest honors it, so requests to wiremock on 127.0.0.1 go to the proxy and fail with 502 only in CI. Build test clients with .no_proxy().",
+            "paths": [
+              "tests/",
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m30",
+            "by": "alice",
+            "title": "ledgerctl config lookup order",
+            "kind": "fact",
+            "body": "LEDGER_CONFIG env, then ./ledger.toml, then ~/.config/ledger/ledger.toml. Flags override file values.",
+            "paths": [
+              "src/cli/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m32",
+            "by": "dave",
+            "title": "Tenant export: JSON done, CSV pending",
+            "kind": "handoff",
+            "body": "export.rs streams JSON lines. CSV writer stubbed, column order agreed with support (see BILL-71).",
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m33",
+            "by": "carol",
+            "title": "Jobs run on apalis with Redis storage",
+            "kind": "fact",
+            "body": "src/jobs/: apalis workers, Redis backend, max 3 attempts, visibility timeout 5 min.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m34",
+            "by": "carol",
+            "title": "Jobs are at-least-once",
+            "kind": "gotcha",
+            "body": "A job that outlives the visibility timeout is handed to another worker while the first still runs. Handlers must be idempotent.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m39",
+            "by": "alice",
+            "title": "/healthz checked the DB and caused restart storms",
+            "kind": "gotcha",
+            "body": "Liveness hit Postgres; during PG failover every pod failed liveness and kubelet restarted all of them at once. Liveness must be process-only; readiness may check deps.",
+            "paths": [
+              "src/http/health.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m40",
+            "by": "dave",
+            "title": "Graceful shutdown must finish under the grace period",
+            "kind": "lesson",
+            "body": "terminationGracePeriodSeconds is 30; axum graceful shutdown timeout was 60 so SIGKILL cut in-flight Stripe event handling. Now 25s.",
+            "paths": [
+              "src/main.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m51",
+            "by": "alice",
+            "title": "Integration tests share one database",
+            "kind": "gotcha",
+            "body": "tests/ uses one Postgres; tests run in parallel. Reusing tenant 'acme' across tests causes random failures. Create a unique tenant per test via TestTenant::new().",
+            "paths": [
+              "tests/"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "memory_write",
+        "args": {
+          "title": "reqwest reuses sockets killed by NAT",
+          "kind": "gotcha",
+          "body": "NAT gateway silently drops idle flows at 350s; first request after a quiet period gets connection reset. Keep pool_idle_timeout below that.",
+          "paths": [
+            "src/http_client/mod.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m27"
+      }
+    },
+    {
+      "id": "nd-015",
+      "difficulty": "medium",
+      "why": "Same area as m51 (shared test DB) but a different fact.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m01",
+            "by": "alice",
+            "title": "Auth must run before rate limiting",
+            "kind": "gotcha",
+            "body": "axum applies .layer() bottom-up: the AuthLayer call must come AFTER .layer(RateLimitLayer) in router.rs so auth executes first. Wrong order: TenantId extension is missing, limiter falls back to the shared `anonymous` bucket, junk traffic empties it and every tenant sees 429s.",
+            "paths": [
+              "src/http/router.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m03",
+            "by": "bob",
+            "title": "Token exp leeway is 60s",
+            "kind": "gotcha",
+            "body": "Staging IdP clock drifts; jwt.rs validates exp/nbf with 60s leeway. Tests that mint expired tokens must backdate by >60s.",
+            "paths": [
+              "src/auth/jwt.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m04",
+            "by": "carol",
+            "title": "Service tokens bypass tenant scoping",
+            "kind": "lesson",
+            "body": "aud=internal tokens carry no tenant claim, so TenantId is never set. Handlers reachable by internal callers must call require_tenant() explicitly. INC-212: /invoices returned rows from every tenant to the reporting service.",
+            "paths": [
+              "src/auth/claims.rs",
+              "src/http/invoices.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m05",
+            "by": "dave",
+            "title": "Session cookie SameSite migration",
+            "kind": "handoff",
+            "body": "Web now sets SameSite=Lax. Mobile webview still sends the old SameSite=None cookie `sid_v1`; session.rs accepts both. Left: drop sid_v1 fallback after 2026-10-01, update mobile release notes.",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m09",
+            "by": "bob",
+            "title": "Limiter fails open on Redis errors",
+            "kind": "gotcha",
+            "body": "Deliberate: if the GCRA script errors or times out (50ms) the request passes. Watch rl_fail_open_total; there is no alert yet.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m11",
+            "by": "dave",
+            "title": "Stripe webhooks arrive out of order",
+            "kind": "gotcha",
+            "body": "invoice.paid can land before invoice.finalized. webhooks.rs upserts by stripe_invoice_id and must never move status backwards (paid -> open).",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m12",
+            "by": "dave",
+            "title": "Webhook signature check needs the raw body",
+            "kind": "gotcha",
+            "body": "Stripe-Signature is computed over the exact bytes. Using the Json extractor re-serializes and every event fails with signature mismatch. Take Bytes, verify, then serde_json::from_slice.",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m13",
+            "by": "carol",
+            "title": "Usage metering flushes Redis counters every 60s",
+            "kind": "fact",
+            "body": "metering.rs INCRs usage:{tenant}:{yyyymm} in Redis and a task copies to Postgres usage_records every 60s. Up to 60s of counts lost on crash; accepted by product.",
+            "paths": [
+              "src/billing/metering.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m17",
+            "by": "bob",
+            "title": "Metered quota increments on 429 responses too",
+            "kind": "gotcha",
+            "body": "MeteringLayer sits outside RateLimitLayer, so throttled requests still consume the monthly allowance. Ticket BILL-88 open, product undecided.",
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m20",
+            "by": "bob",
+            "title": "CREATE INDEX CONCURRENTLY needs a no-transaction migration",
+            "kind": "lesson",
+            "body": "sqlx migrate wraps each file in a transaction; CONCURRENTLY fails inside one. Put it alone in a file starting with `-- no-transaction`. Keep lock_timeout 5s.",
+            "paths": [
+              "migrations/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m21",
+            "by": "carol",
+            "title": "Uploads use presigned S3 PUT, 15 min expiry",
+            "kind": "fact",
+            "body": "blobs.rs issues presigned PUT URLs; the API never proxies file bytes. Expiry 15 min.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m24",
+            "by": "bob",
+            "title": "Read replica lags up to 2s",
+            "kind": "fact",
+            "body": "pool.rs routes GET list endpoints to the replica. Anything that reads right after a write must use Db::primary().",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m29",
+            "by": "dave",
+            "title": "Runners set HTTPS_PROXY",
+            "kind": "gotcha",
+            "body": "CI runners export HTTPS_PROXY; reqwest honors it, so requests to wiremock on 127.0.0.1 go to the proxy and fail with 502 only in CI. Build test clients with .no_proxy().",
+            "paths": [
+              "tests/",
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m34",
+            "by": "carol",
+            "title": "Jobs are at-least-once",
+            "kind": "gotcha",
+            "body": "A job that outlives the visibility timeout is handed to another worker while the first still runs. Handlers must be idempotent.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m39",
+            "by": "alice",
+            "title": "/healthz checked the DB and caused restart storms",
+            "kind": "gotcha",
+            "body": "Liveness hit Postgres; during PG failover every pod failed liveness and kubelet restarted all of them at once. Liveness must be process-only; readiness may check deps.",
+            "paths": [
+              "src/http/health.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m41",
+            "by": "alice",
+            "title": "Secrets loaded once at boot",
+            "kind": "fact",
+            "body": "config.rs reads AWS Secrets Manager at startup only. DB password rotation needs a rolling restart.",
+            "paths": [
+              "src/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m43",
+            "by": "carol",
+            "title": "Load test 2026-08: 1.8k rps per pod",
+            "kind": "note",
+            "body": "k6 against staging, 4 vCPU pods. CPU bound on argon2 during key auth; Postgres at 35% CPU. Next bottleneck is JSON serialization of invoice lists.",
+            "paths": [
+              "src/auth/api_keys.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m47",
+            "by": "carol",
+            "title": "Outbound webhook retries done, DLQ UI not started",
+            "kind": "handoff",
+            "body": "webhooks_out: exponential backoff up to 24h is merged. Dead-letter table exists; admin UI to list and replay deliveries not started.",
+            "paths": [
+              "src/webhooks_out/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m49",
+            "by": "dave",
+            "title": "UTC in DB, billing periods in tenant timezone",
+            "kind": "fact",
+            "body": "All timestamps stored UTC. Period boundaries computed in the tenant tz from tenants.timezone; DST handled by chrono-tz.",
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m51",
+            "by": "alice",
+            "title": "Integration tests share one database",
+            "kind": "gotcha",
+            "body": "tests/ uses one Postgres; tests run in parallel. Reusing tenant 'acme' across tests causes random failures. Create a unique tenant per test via TestTenant::new().",
+            "paths": [
+              "tests/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m52",
+            "by": "dave",
+            "title": "wiremock Stripe mocks must match Idempotency-Key",
+            "kind": "lesson",
+            "body": "Without matching the Idempotency-Key header, a retried request hits the mock for a different test step and assertions fail intermittently.",
+            "paths": [
+              "tests/billing/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m56",
+            "by": "carol",
+            "title": "Quota vs rate limit",
+            "kind": "fact",
+            "body": "Quota = monthly request allowance per plan, enforced in MeteringLayer against usage counters. Rate limit = short-window GCRA in Redis. Different errors: 402 quota_exceeded vs 429.",
+            "paths": [
+              "src/billing/quota.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m59",
+            "by": "alice",
+            "title": "Do not hold a DashMap ref across .await",
+            "kind": "lesson",
+            "body": "plans.rs held a DashMap entry guard while awaiting the DB refresh; a second task on the same shard deadlocked the worker.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "memory_write",
+        "args": {
+          "title": "testcontainers Postgres startup is 12s",
+          "kind": "fact",
+          "body": "tests/ start one container per test binary; share it through a OnceCell to save ~40s locally.",
+          "paths": [
+            "tests/"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-016",
+      "difficulty": "medium",
+      "why": "Shares 'proration' with m14 (idempotency key) and rounding with m15; different knowledge.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m04",
+            "by": "carol",
+            "title": "Service tokens bypass tenant scoping",
+            "kind": "lesson",
+            "body": "aud=internal tokens carry no tenant claim, so TenantId is never set. Handlers reachable by internal callers must call require_tenant() explicitly. INC-212: /invoices returned rows from every tenant to the reporting service.",
+            "paths": [
+              "src/auth/claims.rs",
+              "src/http/invoices.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m05",
+            "by": "dave",
+            "title": "Session cookie SameSite migration",
+            "kind": "handoff",
+            "body": "Web now sets SameSite=Lax. Mobile webview still sends the old SameSite=None cookie `sid_v1`; session.rs accepts both. Left: drop sid_v1 fallback after 2026-10-01, update mobile release notes.",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m06",
+            "by": "alice",
+            "title": "API keys and passwords hashed with argon2id",
+            "kind": "fact",
+            "body": "Keys look like lk_<8 char prefix>_<secret>. Prefix stored plaintext for lookup, secret hashed argon2id m=19MiB t=2. Never log the full key.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m07",
+            "by": "alice",
+            "title": "Hash verification must run in spawn_blocking",
+            "kind": "gotcha",
+            "body": "argon2 verify costs ~40ms CPU. Called inline in the key middleware it pins tokio workers and tail latency on sign-in and key auth goes to seconds under load. Wrap in spawn_blocking.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m13",
+            "by": "carol",
+            "title": "Usage metering flushes Redis counters every 60s",
+            "kind": "fact",
+            "body": "metering.rs INCRs usage:{tenant}:{yyyymm} in Redis and a task copies to Postgres usage_records every 60s. Up to 60s of counts lost on crash; accepted by product.",
+            "paths": [
+              "src/billing/metering.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m14",
+            "by": "alice",
+            "title": "Proration double-charged on retried plan change",
+            "kind": "lesson",
+            "body": "INC-230: the plan change handler used the HTTP request id as Stripe idempotency key; client retry got a new request id and Stripe created a second proration invoice. Key is now plan_change_id.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m17",
+            "by": "bob",
+            "title": "Metered quota increments on 429 responses too",
+            "kind": "gotcha",
+            "body": "MeteringLayer sits outside RateLimitLayer, so throttled requests still consume the monthly allowance. Ticket BILL-88 open, product undecided.",
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m18",
+            "by": "alice",
+            "title": "Postgres pool: 20 per pod via pgbouncer transaction mode",
+            "kind": "fact",
+            "body": "pool.rs sets max_connections=20. pgbouncer runs in transaction mode, so no session state and no server-side prepared statements.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m19",
+            "by": "alice",
+            "title": "sqlx prepared statements break behind pgbouncer",
+            "kind": "gotcha",
+            "body": "Error: prepared statement \"sqlx_s_1\" already exists. Set statement_cache_capacity(0) on PgConnectOptions.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m22",
+            "by": "carol",
+            "title": "Presigned URLs fail when the host clock drifts",
+            "kind": "gotcha",
+            "body": "S3 answers 403 RequestTimeTooSkewed / SignatureDoesNotMatch if the signing pod clock is >5 min off. Seen on one node where chrony was dead.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m23",
+            "by": "dave",
+            "title": "Invoice soft-delete half done",
+            "kind": "handoff",
+            "body": "Added deleted_at; queries in storage/invoices.rs filter it. reports/ module not updated yet, still counts deleted invoices. Never hard delete invoices.",
+            "paths": [
+              "src/storage/invoices.rs",
+              "src/reports/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m27",
+            "by": "bob",
+            "title": "Pooled connections die after NAT idle timeout",
+            "kind": "gotcha",
+            "body": "AWS NAT gateway drops idle flows after 350s without RST; reqwest reuses the dead socket and the first call after a quiet period gets connection reset. pool_idle_timeout must be < 350s.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m28",
+            "by": "carol",
+            "title": "Never retry payment POSTs without an idempotency key",
+            "kind": "lesson",
+            "body": "A timeout on POST /v1/payment_intents does not mean it failed. Retrying without Idempotency-Key produced duplicate charges in staging.",
+            "paths": [
+              "src/http_client/mod.rs",
+              "src/billing/stripe.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m30",
+            "by": "alice",
+            "title": "ledgerctl config lookup order",
+            "kind": "fact",
+            "body": "LEDGER_CONFIG env, then ./ledger.toml, then ~/.config/ledger/ledger.toml. Flags override file values.",
+            "paths": [
+              "src/cli/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m33",
+            "by": "carol",
+            "title": "Jobs run on apalis with Redis storage",
+            "kind": "fact",
+            "body": "src/jobs/: apalis workers, Redis backend, max 3 attempts, visibility timeout 5 min.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m37",
+            "by": "bob",
+            "title": "OTLP exporter drops spans under load",
+            "kind": "gotcha",
+            "body": "Batch queue default 2048; at ~1k rps spans are dropped silently. Raised max_queue_size to 16384 in telemetry.rs for api pods.",
+            "paths": [
+              "src/telemetry.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m38",
+            "by": "carol",
+            "title": "x-request-id propagation",
+            "kind": "fact",
+            "body": "request_id.rs accepts incoming x-request-id or generates a UUIDv7, sets it on the response and on outbound reqwest calls.",
+            "paths": [
+              "src/middleware/request_id.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m45",
+            "by": "bob",
+            "title": "Cursor pagination everywhere",
+            "kind": "fact",
+            "body": "List endpoints take ?cursor=; cursor is base64(created_at,id). Offset/limit params were removed in v2.",
+            "paths": [
+              "src/http/pagination.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m58",
+            "by": "dave",
+            "title": "Tenant plan cached 5 min in-process",
+            "kind": "fact",
+            "body": "plans.rs caches the plan per tenant for 5 min. After plan upgrades the new limits and allowance apply only when the entry expires.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m59",
+            "by": "alice",
+            "title": "Do not hold a DashMap ref across .await",
+            "kind": "lesson",
+            "body": "plans.rs held a DashMap entry guard while awaiting the DB refresh; a second task on the same shard deadlocked the worker.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "memory_write",
+        "args": {
+          "title": "Proration previews differ from Stripe by one cent",
+          "kind": "gotcha",
+          "body": "Our preview rounds per line, Stripe rounds the total; show Stripe's upcoming invoice instead of computing locally.",
+          "paths": [
+            "src/billing/plans.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-017",
+      "difficulty": "medium",
+      "why": "Same incident lesson as m35; m34 (generic at-least-once) is the near miss, less specific.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m04",
+            "by": "carol",
+            "title": "Service tokens bypass tenant scoping",
+            "kind": "lesson",
+            "body": "aud=internal tokens carry no tenant claim, so TenantId is never set. Handlers reachable by internal callers must call require_tenant() explicitly. INC-212: /invoices returned rows from every tenant to the reporting service.",
+            "paths": [
+              "src/auth/claims.rs",
+              "src/http/invoices.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m13",
+            "by": "carol",
+            "title": "Usage metering flushes Redis counters every 60s",
+            "kind": "fact",
+            "body": "metering.rs INCRs usage:{tenant}:{yyyymm} in Redis and a task copies to Postgres usage_records every 60s. Up to 60s of counts lost on crash; accepted by product.",
+            "paths": [
+              "src/billing/metering.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m28",
+            "by": "carol",
+            "title": "Never retry payment POSTs without an idempotency key",
+            "kind": "lesson",
+            "body": "A timeout on POST /v1/payment_intents does not mean it failed. Retrying without Idempotency-Key produced duplicate charges in staging.",
+            "paths": [
+              "src/http_client/mod.rs",
+              "src/billing/stripe.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m33",
+            "by": "carol",
+            "title": "Jobs run on apalis with Redis storage",
+            "kind": "fact",
+            "body": "src/jobs/: apalis workers, Redis backend, max 3 attempts, visibility timeout 5 min.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m34",
+            "by": "carol",
+            "title": "Jobs are at-least-once",
+            "kind": "gotcha",
+            "body": "A job that outlives the visibility timeout is handed to another worker while the first still runs. Handlers must be idempotent.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m35",
+            "by": "bob",
+            "title": "Dunning reminders went out twice",
+            "kind": "lesson",
+            "body": "INC-241: dunning job rendered and mailed 3k reminders, took >5 min, got redelivered, mailed again. Added heartbeat extending the lease and a sent_at guard per invoice.",
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m39",
+            "by": "alice",
+            "title": "/healthz checked the DB and caused restart storms",
+            "kind": "gotcha",
+            "body": "Liveness hit Postgres; during PG failover every pod failed liveness and kubelet restarted all of them at once. Liveness must be process-only; readiness may check deps.",
+            "paths": [
+              "src/http/health.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m42",
+            "by": "bob",
+            "title": "Moving rate limiting to Envoy: rejected",
+            "kind": "research",
+            "body": "Envoy global rate limit service would need plan limits synced from Postgres; extra moving part. Latency cost ~2ms was fine. Kept in-process.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m44",
+            "by": "alice",
+            "title": "CORS preflight rejected when auth runs first",
+            "kind": "gotcha",
+            "body": "OPTIONS preflight carries no Authorization header, so AuthLayer returned 401 and browsers blocked the call. CorsLayer must be the outermost layer.",
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m47",
+            "by": "carol",
+            "title": "Outbound webhook retries done, DLQ UI not started",
+            "kind": "handoff",
+            "body": "webhooks_out: exponential backoff up to 24h is merged. Dead-letter table exists; admin UI to list and replay deliveries not started.",
+            "paths": [
+              "src/webhooks_out/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m49",
+            "by": "dave",
+            "title": "UTC in DB, billing periods in tenant timezone",
+            "kind": "fact",
+            "body": "All timestamps stored UTC. Period boundaries computed in the tenant tz from tenants.timezone; DST handled by chrono-tz.",
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "erin"
+        ]
+      },
+      "action": {
+        "agent": "erin",
+        "tool": "memory_write",
+        "args": {
+          "title": "Dunning job redelivered mid-run",
+          "kind": "lesson",
+          "body": "Runs longer than the 5 min visibility timeout are picked up again and reminders get mailed twice; a heartbeat extends the lease and sent_at guards each invoice.",
+          "paths": [
+            "src/jobs/dunning.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m35"
+      }
+    },
+    {
+      "id": "nd-018",
+      "difficulty": "medium",
+      "why": "Contradicts m21 (15 min expiry): an update.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m05",
+            "by": "dave",
+            "title": "Session cookie SameSite migration",
+            "kind": "handoff",
+            "body": "Web now sets SameSite=Lax. Mobile webview still sends the old SameSite=None cookie `sid_v1`; session.rs accepts both. Left: drop sid_v1 fallback after 2026-10-01, update mobile release notes.",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m06",
+            "by": "alice",
+            "title": "API keys and passwords hashed with argon2id",
+            "kind": "fact",
+            "body": "Keys look like lk_<8 char prefix>_<secret>. Prefix stored plaintext for lookup, secret hashed argon2id m=19MiB t=2. Never log the full key.",
+            "paths": [
+              "src/auth/api_keys.rs",
+              "src/auth/password.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m13",
+            "by": "carol",
+            "title": "Usage metering flushes Redis counters every 60s",
+            "kind": "fact",
+            "body": "metering.rs INCRs usage:{tenant}:{yyyymm} in Redis and a task copies to Postgres usage_records every 60s. Up to 60s of counts lost on crash; accepted by product.",
+            "paths": [
+              "src/billing/metering.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m16",
+            "by": "dave",
+            "title": "Tax calc move to Stripe Tax paused",
+            "kind": "handoff",
+            "body": "tax.rs has tax_v2 path behind flag tax_v2 (off everywhere). Blocked on EU OSS registration. Do not drop the legacy tax_rates table yet.",
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m21",
+            "by": "carol",
+            "title": "Uploads use presigned S3 PUT, 15 min expiry",
+            "kind": "fact",
+            "body": "blobs.rs issues presigned PUT URLs; the API never proxies file bytes. Expiry 15 min.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m22",
+            "by": "carol",
+            "title": "Presigned URLs fail when the host clock drifts",
+            "kind": "gotcha",
+            "body": "S3 answers 403 RequestTimeTooSkewed / SignatureDoesNotMatch if the signing pod clock is >5 min off. Seen on one node where chrony was dead.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m24",
+            "by": "bob",
+            "title": "Read replica lags up to 2s",
+            "kind": "fact",
+            "body": "pool.rs routes GET list endpoints to the replica. Anything that reads right after a write must use Db::primary().",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m30",
+            "by": "alice",
+            "title": "ledgerctl config lookup order",
+            "kind": "fact",
+            "body": "LEDGER_CONFIG env, then ./ledger.toml, then ~/.config/ledger/ledger.toml. Flags override file values.",
+            "paths": [
+              "src/cli/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m32",
+            "by": "dave",
+            "title": "Tenant export: JSON done, CSV pending",
+            "kind": "handoff",
+            "body": "export.rs streams JSON lines. CSV writer stubbed, column order agreed with support (see BILL-71).",
+            "paths": [
+              "src/cli/export.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m35",
+            "by": "bob",
+            "title": "Dunning reminders went out twice",
+            "kind": "lesson",
+            "body": "INC-241: dunning job rendered and mailed 3k reminders, took >5 min, got redelivered, mailed again. Added heartbeat extending the lease and a sent_at guard per invoice.",
+            "paths": [
+              "src/jobs/dunning.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m44",
+            "by": "alice",
+            "title": "CORS preflight rejected when auth runs first",
+            "kind": "gotcha",
+            "body": "OPTIONS preflight carries no Authorization header, so AuthLayer returned 401 and browsers blocked the call. CorsLayer must be the outermost layer.",
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m50",
+            "by": "dave",
+            "title": "Annual invoice period off by one day west of UTC",
+            "kind": "gotcha",
+            "body": "Period start used UTC midnight. Monthly path fixed in #412; annual path still wrong for America/* tenants.",
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m51",
+            "by": "alice",
+            "title": "Integration tests share one database",
+            "kind": "gotcha",
+            "body": "tests/ uses one Postgres; tests run in parallel. Reusing tenant 'acme' across tests causes random failures. Create a unique tenant per test via TestTenant::new().",
+            "paths": [
+              "tests/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m59",
+            "by": "alice",
+            "title": "Do not hold a DashMap ref across .await",
+            "kind": "lesson",
+            "body": "plans.rs held a DashMap entry guard while awaiting the DB refresh; a second task on the same shard deadlocked the worker.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "frank"
+        ]
+      },
+      "action": {
+        "agent": "frank",
+        "tool": "memory_write",
+        "args": {
+          "title": "Presigned PUT expiry raised to 60 min",
+          "kind": "fact",
+          "body": "Large uploads on slow links exceeded 15 min; blobs.rs now signs for 60 min.",
+          "paths": [
+            "src/storage/blobs.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-019",
+      "difficulty": "hard",
+      "why": "Title words match m44 (preflight vs auth order) and m38 (x-request-id) but the cause is new.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m08",
+            "by": "bob",
+            "title": "Rate limiter: Redis GCRA per tenant per route group",
+            "kind": "fact",
+            "body": "Keys rl:{tenant}:{group}. Groups: default, writes, exports. Limits come from the tenant plan. Implemented as a Lua script, one round trip.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m09",
+            "by": "bob",
+            "title": "Limiter fails open on Redis errors",
+            "kind": "gotcha",
+            "body": "Deliberate: if the GCRA script errors or times out (50ms) the request passes. Watch rl_fail_open_total; there is no alert yet.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m12",
+            "by": "dave",
+            "title": "Webhook signature check needs the raw body",
+            "kind": "gotcha",
+            "body": "Stripe-Signature is computed over the exact bytes. Using the Json extractor re-serializes and every event fails with signature mismatch. Take Bytes, verify, then serde_json::from_slice.",
+            "paths": [
+              "src/billing/webhooks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m16",
+            "by": "dave",
+            "title": "Tax calc move to Stripe Tax paused",
+            "kind": "handoff",
+            "body": "tax.rs has tax_v2 path behind flag tax_v2 (off everywhere). Blocked on EU OSS registration. Do not drop the legacy tax_rates table yet.",
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m18",
+            "by": "alice",
+            "title": "Postgres pool: 20 per pod via pgbouncer transaction mode",
+            "kind": "fact",
+            "body": "pool.rs sets max_connections=20. pgbouncer runs in transaction mode, so no session state and no server-side prepared statements.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m19",
+            "by": "alice",
+            "title": "sqlx prepared statements break behind pgbouncer",
+            "kind": "gotcha",
+            "body": "Error: prepared statement \"sqlx_s_1\" already exists. Set statement_cache_capacity(0) on PgConnectOptions.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m20",
+            "by": "bob",
+            "title": "CREATE INDEX CONCURRENTLY needs a no-transaction migration",
+            "kind": "lesson",
+            "body": "sqlx migrate wraps each file in a transaction; CONCURRENTLY fails inside one. Put it alone in a file starting with `-- no-transaction`. Keep lock_timeout 5s.",
+            "paths": [
+              "migrations/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m23",
+            "by": "dave",
+            "title": "Invoice soft-delete half done",
+            "kind": "handoff",
+            "body": "Added deleted_at; queries in storage/invoices.rs filter it. reports/ module not updated yet, still counts deleted invoices. Never hard delete invoices.",
+            "paths": [
+              "src/storage/invoices.rs",
+              "src/reports/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m24",
+            "by": "bob",
+            "title": "Read replica lags up to 2s",
+            "kind": "fact",
+            "body": "pool.rs routes GET list endpoints to the replica. Anything that reads right after a write must use Db::primary().",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m26",
+            "by": "bob",
+            "title": "Outbound HTTP client defaults",
+            "kind": "fact",
+            "body": "http_client/mod.rs: reqwest, 10s total timeout, 3 retries with backoff on GET/PUT/DELETE only.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m31",
+            "by": "dave",
+            "title": "ledgerctl backfill is not resumable",
+            "kind": "gotcha",
+            "body": "backfill prints its checkpoint to stdout only. If it dies, rerun with --from-id <last printed id>; there is no state file.",
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m33",
+            "by": "carol",
+            "title": "Jobs run on apalis with Redis storage",
+            "kind": "fact",
+            "body": "src/jobs/: apalis workers, Redis backend, max 3 attempts, visibility timeout 5 min.",
+            "paths": [
+              "src/jobs/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m38",
+            "by": "carol",
+            "title": "x-request-id propagation",
+            "kind": "fact",
+            "body": "request_id.rs accepts incoming x-request-id or generates a UUIDv7, sets it on the response and on outbound reqwest calls.",
+            "paths": [
+              "src/middleware/request_id.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m40",
+            "by": "dave",
+            "title": "Graceful shutdown must finish under the grace period",
+            "kind": "lesson",
+            "body": "terminationGracePeriodSeconds is 30; axum graceful shutdown timeout was 60 so SIGKILL cut in-flight Stripe event handling. Now 25s.",
+            "paths": [
+              "src/main.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m44",
+            "by": "alice",
+            "title": "CORS preflight rejected when auth runs first",
+            "kind": "gotcha",
+            "body": "OPTIONS preflight carries no Authorization header, so AuthLayer returned 401 and browsers blocked the call. CorsLayer must be the outermost layer.",
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m48",
+            "by": "carol",
+            "title": "Rotating the outbound signing secret needs a dual-sign window",
+            "kind": "lesson",
+            "body": "Customers verify our deliveries with the old secret for a while. Sign with both secrets (two v1= entries) for 24h after rotation.",
+            "paths": [
+              "src/webhooks_out/signing.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m50",
+            "by": "dave",
+            "title": "Annual invoice period off by one day west of UTC",
+            "kind": "gotcha",
+            "body": "Period start used UTC midnight. Monthly path fixed in #412; annual path still wrong for America/* tenants.",
+            "paths": [
+              "src/billing/invoice_dates.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m51",
+            "by": "alice",
+            "title": "Integration tests share one database",
+            "kind": "gotcha",
+            "body": "tests/ uses one Postgres; tests run in parallel. Reusing tenant 'acme' across tests causes random failures. Create a unique tenant per test via TestTenant::new().",
+            "paths": [
+              "tests/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m52",
+            "by": "dave",
+            "title": "wiremock Stripe mocks must match Idempotency-Key",
+            "kind": "lesson",
+            "body": "Without matching the Idempotency-Key header, a retried request hits the mock for a different test step and assertions fail intermittently.",
+            "paths": [
+              "tests/billing/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m57",
+            "by": "bob",
+            "title": "Redis maxmemory-policy must be volatile-lru",
+            "kind": "gotcha",
+            "body": "With allkeys-lru Redis evicted usage:{tenant} counters (no TTL) under memory pressure and customers were under-billed. Only keys with TTL may be evicted.",
+            "paths": [
+              "src/billing/metering.rs",
+              "deploy/redis.conf"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m58",
+            "by": "dave",
+            "title": "Tenant plan cached 5 min in-process",
+            "kind": "fact",
+            "body": "plans.rs caches the plan per tenant for 5 min. After plan upgrades the new limits and allowance apply only when the entry expires.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "gina"
+        ]
+      },
+      "action": {
+        "agent": "gina",
+        "tool": "memory_write",
+        "args": {
+          "title": "CORS preflight fails for x-request-id header",
+          "kind": "gotcha",
+          "body": "Browsers sending x-request-id get preflight rejected: header missing from CorsLayer allow_headers.",
+          "paths": [
+            "src/http/router.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": null
+      }
+    },
+    {
+      "id": "nd-020",
+      "difficulty": "hard",
+      "why": "Same gotcha as m25 in different words; m04 is another cross-tenant incident.",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [
+          {
+            "key": "m01",
+            "by": "alice",
+            "title": "Auth must run before rate limiting",
+            "kind": "gotcha",
+            "body": "axum applies .layer() bottom-up: the AuthLayer call must come AFTER .layer(RateLimitLayer) in router.rs so auth executes first. Wrong order: TenantId extension is missing, limiter falls back to the shared `anonymous` bucket, junk traffic empties it and every tenant sees 429s.",
+            "paths": [
+              "src/http/router.rs",
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m02",
+            "by": "bob",
+            "title": "JWKS cached, refreshed every 10 min",
+            "kind": "fact",
+            "body": "src/auth/jwks.rs keeps the IdP key set in memory. Unknown kid forces a refetch, at most once per 30s; requests wait on that fetch (~300ms from eu-west).",
+            "paths": [
+              "src/auth/jwks.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m04",
+            "by": "carol",
+            "title": "Service tokens bypass tenant scoping",
+            "kind": "lesson",
+            "body": "aud=internal tokens carry no tenant claim, so TenantId is never set. Handlers reachable by internal callers must call require_tenant() explicitly. INC-212: /invoices returned rows from every tenant to the reporting service.",
+            "paths": [
+              "src/auth/claims.rs",
+              "src/http/invoices.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m08",
+            "by": "bob",
+            "title": "Rate limiter: Redis GCRA per tenant per route group",
+            "kind": "fact",
+            "body": "Keys rl:{tenant}:{group}. Groups: default, writes, exports. Limits come from the tenant plan. Implemented as a Lua script, one round trip.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m10",
+            "by": "carol",
+            "title": "Retry-After must be integer seconds",
+            "kind": "lesson",
+            "body": "We sent Retry-After: 0.42; the Python SDK int() parse crashed and the Go SDK treated it as 0 and hot-looped. Round up to whole seconds.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m13",
+            "by": "carol",
+            "title": "Usage metering flushes Redis counters every 60s",
+            "kind": "fact",
+            "body": "metering.rs INCRs usage:{tenant}:{yyyymm} in Redis and a task copies to Postgres usage_records every 60s. Up to 60s of counts lost on crash; accepted by product.",
+            "paths": [
+              "src/billing/metering.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m14",
+            "by": "alice",
+            "title": "Proration double-charged on retried plan change",
+            "kind": "lesson",
+            "body": "INC-230: the plan change handler used the HTTP request id as Stripe idempotency key; client retry got a new request id and Stripe created a second proration invoice. Key is now plan_change_id.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m15",
+            "by": "carol",
+            "title": "Money is i64 minor units",
+            "kind": "fact",
+            "body": "All amounts are i64 minor units plus ISO currency. Exponent table in money.rs (JPY 0, KWD 3). Converting through f64 caused 1-cent reconciliation drift.",
+            "paths": [
+              "src/billing/money.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m16",
+            "by": "dave",
+            "title": "Tax calc move to Stripe Tax paused",
+            "kind": "handoff",
+            "body": "tax.rs has tax_v2 path behind flag tax_v2 (off everywhere). Blocked on EU OSS registration. Do not drop the legacy tax_rates table yet.",
+            "paths": [
+              "src/billing/tax.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m17",
+            "by": "bob",
+            "title": "Metered quota increments on 429 responses too",
+            "kind": "gotcha",
+            "body": "MeteringLayer sits outside RateLimitLayer, so throttled requests still consume the monthly allowance. Ticket BILL-88 open, product undecided.",
+            "paths": [
+              "src/billing/metering.rs",
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m18",
+            "by": "alice",
+            "title": "Postgres pool: 20 per pod via pgbouncer transaction mode",
+            "kind": "fact",
+            "body": "pool.rs sets max_connections=20. pgbouncer runs in transaction mode, so no session state and no server-side prepared statements.",
+            "paths": [
+              "src/storage/pool.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m22",
+            "by": "carol",
+            "title": "Presigned URLs fail when the host clock drifts",
+            "kind": "gotcha",
+            "body": "S3 answers 403 RequestTimeTooSkewed / SignatureDoesNotMatch if the signing pod clock is >5 min off. Seen on one node where chrony was dead.",
+            "paths": [
+              "src/storage/blobs.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m23",
+            "by": "dave",
+            "title": "Invoice soft-delete half done",
+            "kind": "handoff",
+            "body": "Added deleted_at; queries in storage/invoices.rs filter it. reports/ module not updated yet, still counts deleted invoices. Never hard delete invoices.",
+            "paths": [
+              "src/storage/invoices.rs",
+              "src/reports/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m25",
+            "by": "alice",
+            "title": "RLS tenant GUC must be SET LOCAL",
+            "kind": "gotcha",
+            "body": "Row-level security reads app.tenant_id. With pgbouncer transaction pooling a plain SET sticks to the server connection and the next client transaction runs as the previous tenant. Always SET LOCAL inside the tx.",
+            "paths": [
+              "src/storage/tenant_tx.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m26",
+            "by": "bob",
+            "title": "Outbound HTTP client defaults",
+            "kind": "fact",
+            "body": "http_client/mod.rs: reqwest, 10s total timeout, 3 retries with backoff on GET/PUT/DELETE only.",
+            "paths": [
+              "src/http_client/mod.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m36",
+            "by": "alice",
+            "title": "Feature flags evaluated once per request",
+            "kind": "fact",
+            "body": "flags.rs loads the tenant flag set once and stores it in request extensions; flips apply to new requests only.",
+            "paths": [
+              "src/flags.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m39",
+            "by": "alice",
+            "title": "/healthz checked the DB and caused restart storms",
+            "kind": "gotcha",
+            "body": "Liveness hit Postgres; during PG failover every pod failed liveness and kubelet restarted all of them at once. Liveness must be process-only; readiness may check deps.",
+            "paths": [
+              "src/http/health.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m40",
+            "by": "dave",
+            "title": "Graceful shutdown must finish under the grace period",
+            "kind": "lesson",
+            "body": "terminationGracePeriodSeconds is 30; axum graceful shutdown timeout was 60 so SIGKILL cut in-flight Stripe event handling. Now 25s.",
+            "paths": [
+              "src/main.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m41",
+            "by": "alice",
+            "title": "Secrets loaded once at boot",
+            "kind": "fact",
+            "body": "config.rs reads AWS Secrets Manager at startup only. DB password rotation needs a rolling restart.",
+            "paths": [
+              "src/config.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m42",
+            "by": "bob",
+            "title": "Moving rate limiting to Envoy: rejected",
+            "kind": "research",
+            "body": "Envoy global rate limit service would need plan limits synced from Postgres; extra moving part. Latency cost ~2ms was fine. Kept in-process.",
+            "paths": [
+              "src/middleware/rate_limit.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m44",
+            "by": "alice",
+            "title": "CORS preflight rejected when auth runs first",
+            "kind": "gotcha",
+            "body": "OPTIONS preflight carries no Authorization header, so AuthLayer returned 401 and browsers blocked the call. CorsLayer must be the outermost layer.",
+            "paths": [
+              "src/http/router.rs"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m47",
+            "by": "carol",
+            "title": "Outbound webhook retries done, DLQ UI not started",
+            "kind": "handoff",
+            "body": "webhooks_out: exponential backoff up to 24h is merged. Dead-letter table exists; admin UI to list and replay deliveries not started.",
+            "paths": [
+              "src/webhooks_out/"
+            ],
+            "tags": []
+          },
+          {
+            "key": "m58",
+            "by": "dave",
+            "title": "Tenant plan cached 5 min in-process",
+            "kind": "fact",
+            "body": "plans.rs caches the plan per tenant for 5 min. After plan upgrades the new limits and allowance apply only when the entry expires.",
+            "paths": [
+              "src/billing/plans.rs"
+            ],
+            "tags": []
+          }
+        ],
+        "tasks": [],
+        "claims": [],
+        "active_agents": [
+          "hugo"
+        ]
+      },
+      "action": {
+        "agent": "hugo",
+        "tool": "memory_write",
+        "args": {
+          "title": "Plain SET app.tenant_id leaks across pooled connections",
+          "kind": "gotcha",
+          "body": "In pgbouncer transaction mode the server connection moves to another client; a session SET makes the next transaction run as the previous tenant under RLS. Use SET LOCAL.",
+          "paths": [
+            "src/storage/tenant_tx.rs"
+          ]
+        }
+      },
+      "expect": {
+        "duplicate_of": "m25"
+      }
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# tb <tool> '<json>'   -- the only coordination command benchmark workers use.
+#
+# Env: TB_RUN=<run_dir> (from setup.sh), TB_AGENT=<worker name>.
+# Calls the run's Tirith daemon as TB_AGENT (an `agent` field in the JSON
+# is overridden), prints the response as one line of JSON, and appends
+#   {ts, agent, tool, ms, request_bytes, response_bytes, status}
+# to $TB_RUN/coord.jsonl, and the full request/response to
+# $TB_RUN/coord_full.jsonl for scoring. Exit status is the CLI's (non-zero
+# on conflict, not_found, invalid, or a transport error).
+set -uo pipefail
+
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+  echo "usage: TB_RUN=<run_dir> TB_AGENT=<name> tb <tool> '<json object>'" >&2
+  exit 2
+fi
+: "${TB_RUN:?set TB_RUN to the run directory}"
+: "${TB_AGENT:?set TB_AGENT to your agent name}"
+TOOL=$1
+RAW=${2:-'{}'}
+URL=$(cat "$TB_RUN/url")
+BIN=$(cat "$TB_RUN/tirith_bin")
+now() { perl -MTime::HiRes=time -e 'printf "%.6f", time'; }
+# Append stdin to a file under an exclusive lock: responses exceed PIPE_BUF,
+# and concurrent workers would otherwise interleave lines.
+append() { perl -MFcntl=:flock -e 'open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; local $/; my $d = <STDIN>; print $f $d; close $f' "$1"; }
+
+if ! ARGS=$(printf '%s' "$RAW" | jq -ce --arg a "$TB_AGENT" 'if type == "object" then . + {agent: $a} else error("not an object") end' 2>/dev/null); then
+  OUT='{"status":"invalid","message":"tb: the second argument must be a JSON object"}'
+  RC=2 T0=$(now) T1=$T0 ARGS=$RAW
+else
+  T0=$(now)
+  RESPONSE=$("$BIN" --url "$URL" --json -a "$TB_AGENT" call "$TOOL" "$ARGS" 2>&1)
+  RC=$?
+  T1=$(now)
+  if ! OUT=$(printf '%s' "$RESPONSE" | jq -c . 2>/dev/null) || [ -z "$OUT" ]; then
+    OUT=$(jq -nc --arg m "$RESPONSE" '{status:"error", message:$m}')
+  fi
+fi
+
+STATUS=$(printf '%s' "$OUT" | jq -r '.status // "error"' 2>/dev/null || echo error)
+MS=$(perl -e "printf '%.1f', ($T1 - $T0) * 1000")
+REQ_BYTES=$(printf '%s' "$ARGS" | wc -c | tr -d ' ')
+RESP_BYTES=$(printf '%s' "$OUT" | wc -c | tr -d ' ')
+TS=$(perl -MPOSIX=strftime -MTime::HiRes=time -e '$t=time; printf "%s.%03dZ", strftime("%Y-%m-%dT%H:%M:%S", gmtime($t)), ($t-int($t))*1000')
+
+jq -nc --arg ts "$TS" --arg agent "$TB_AGENT" --arg tool "$TOOL" --argjson ms "$MS" \
+  --argjson rq "$REQ_BYTES" --argjson rs "$RESP_BYTES" --arg status "$STATUS" \
+  '{ts:$ts, agent:$agent, tool:$tool, ms:$ms, request_bytes:$rq, response_bytes:$rs, status:$status}' \
+  | append "$TB_RUN/coord.jsonl"
+jq -nc --arg ts "$TS" --arg agent "$TB_AGENT" --arg tool "$TOOL" --arg req "$ARGS" --arg resp "$OUT" \
+  '{ts:$ts, agent:$agent, tool:$tool, request:($req | fromjson? // $req), response:($resp | fromjson? // $resp)}' \
+  | append "$TB_RUN/coord_full.jsonl"
+
+printf '%s\n' "$OUT"
+exit "$RC"

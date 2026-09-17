@@ -1,0 +1,31 @@
+{
+  "site": "decision_search",
+  "cases": [
+    {
+      "id": "smoke-decision-001",
+      "difficulty": "hard",
+      "why": "query uses different words than the decision",
+      "seed": {
+        "decisions": [
+          {"key": "d1", "by": "alice", "title": "Money as integer minor units", "decision": "store amounts as i64 cents with an ISO 4217 currency code", "rationale": "floating point drift in totals", "affects_paths": ["src/billing"]},
+          {"key": "d2", "by": "bob", "title": "Use RFC 3339 timestamps in APIs", "decision": "all API timestamps are RFC 3339 UTC strings", "rationale": "client parsing", "affects_paths": ["src/api"]}
+        ]
+      },
+      "action": {"agent": "carol", "tool": "decision_list", "args": {"query": "how should prices be represented, float or decimal"}},
+      "expect": {"relevant": ["d1"]}
+    },
+    {
+      "id": "smoke-decision-002",
+      "difficulty": "easy",
+      "why": "substring match works",
+      "seed": {
+        "decisions": [
+          {"key": "d1", "by": "alice", "title": "Retry idempotent requests only", "decision": "the http client retries GET/PUT/DELETE, never POST without an idempotency key", "rationale": "double charges", "affects_paths": ["src/http_client"]},
+          {"key": "d2", "by": "bob", "title": "CLI output is JSON with --json", "decision": "human output by default, JSON behind --json", "rationale": "scripting", "affects_paths": ["src/cli"]}
+        ]
+      },
+      "action": {"agent": "carol", "tool": "decision_list", "args": {"query": "retry"}},
+      "expect": {"relevant": ["d1"]}
+    }
+  ]
+}

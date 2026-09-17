@@ -1,0 +1,33 @@
+{
+  "site": "task_pull",
+  "cases": [
+    {
+      "id": "smoke-pull-001",
+      "difficulty": "easy",
+      "why": "agent holds billing files; oldest task is frontend",
+      "seed": {
+        "tasks": [
+          {"key": "t1", "by": "alice", "title": "Tooltip on navbar avatar", "description": "", "priority": 1, "paths": ["web/components/Navbar.tsx"]},
+          {"key": "t2", "by": "alice", "title": "Proration for mid-cycle plan upgrades", "description": "credit unused days on upgrade", "priority": 1, "paths": ["src/billing/proration.rs"]},
+          {"key": "t3", "by": "alice", "title": "Fix typo in README", "description": "", "priority": 1, "paths": ["README.md"]}
+        ],
+        "claims": [{"agent": "bob", "paths": ["src/billing"], "reason": "billing refactor: plan changes"}]
+      },
+      "action": {"agent": "bob", "tool": "task_pull", "args": {}},
+      "expect": {"best": ["t2"], "acceptable": ["t2"]}
+    },
+    {
+      "id": "smoke-pull-002",
+      "difficulty": "medium",
+      "why": "no context: oldest is fine",
+      "seed": {
+        "tasks": [
+          {"key": "t1", "by": "alice", "title": "Add request id middleware", "description": "", "priority": 2, "paths": ["src/middleware"]},
+          {"key": "t2", "by": "alice", "title": "Bump serde", "description": "", "priority": 2, "paths": ["Cargo.toml"]}
+        ]
+      },
+      "action": {"agent": "bob", "tool": "task_pull", "args": {}},
+      "expect": {"best": ["t1"], "acceptable": ["t1", "t2"]}
+    }
+  ]
+}

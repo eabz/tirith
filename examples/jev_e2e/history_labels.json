@@ -1,0 +1,55 @@
+{
+  "about": "Relevance of each seeded history item to each task in tasks.json. For analysis only; never shown to workers. Labels were written by the kit author (bench-e2e) before any Jev output was seen.",
+  "grades": {
+    "relevant": "a worker doing this task well needs it (it changes what correct code or ordering looks like, or prevents a known trap)",
+    "partial": "useful background for the task, not needed to pass acceptance",
+    "misleading": "stale; following it would work against the task",
+    "general": "applies to every task, not tied to one"
+  },
+  "items": {
+    "n03": {"relevant": ["request-id", "access-log", "correlation-id"], "partial": ["cors", "rate-limit", "auth"], "why": "registration order decides whether short-circuited responses are tagged/logged"},
+    "n07": {"relevant": ["gzip"], "why": "set_body keeps Content-Length right after compression"},
+    "n11": {"relevant": ["cors", "gzip"], "why": "Vary must be appended with add_vary, acceptance checks existing tokens survive"},
+    "n19": {"partial": ["access-log", "rate-limit"], "why": "clock injection"},
+    "n20": {"partial": ["rate-limit"], "why": "what client_ip means"},
+    "n24": {"relevant": ["auth"], "why": "bearer only, do not bring back cookie auth"},
+    "n28": {"partial": ["auth"], "why": "ordering relative to trailing slash"},
+    "n33": {"relevant": ["ctx-interface", "rate-limit", "cors", "gzip"], "why": "announces the coming hook signature; tasks writing middlewares concurrently must adapt"},
+    "n37": {"relevant": ["request-id", "correlation-id", "access-log"], "why": "413 short-circuits; tagging/logging must be outside it"},
+    "c1v2-notice": {"partial": ["ctx-interface", "request-id", "access-log", "correlation-id"], "why": "automatic contract notice; clarifies outermost-first order"},
+
+    "d02": {"relevant": ["rate-limit", "access-log"], "why": "clock from Config.clock"},
+    "d05": {"relevant": ["request-id", "correlation-id"], "why": "exact id format and validation rule"},
+    "d07": {"misleading": ["rate-limit"], "why": "2025 decision to rate limit in nginx; nginx is gone (n13)"},
+    "d09": {"relevant": ["auth"], "why": "exact challenge format and constant-time compare"},
+    "d11": {"partial": ["rate-limit", "cors", "request-id", "auth", "access-log", "gzip", "correlation-id"], "why": "config flag convention"},
+    "d12": {"relevant": ["ctx-interface"], "why": "the design of the breaking change"},
+    "d15": {"partial": ["access-log"], "why": "message is the JSON object"},
+    "d01": {"general": true, "why": "stdlib only"},
+
+    "m02": {"general": true, "why": "python 3.9, no pip"},
+    "m05": {"relevant": ["cors", "gzip"], "why": "Vary clobbering incident"},
+    "m07": {"partial": ["rate-limit"], "why": "float config field from env"},
+    "m08": {"relevant": ["request-id", "access-log", "correlation-id"], "why": "short-circuits skip inner middlewares"},
+    "m11": {"relevant": ["ctx-interface"], "why": "the migration plan and its one trap (test Recorder)"},
+    "m14": {"relevant": ["gzip"], "why": "204/304, existing Content-Encoding, Content-Length"},
+    "m17": {"relevant": ["cors", "auth"], "why": "preflight carries no credentials; CORS before auth"},
+    "m21": {"partial": ["access-log"], "why": "logger propagation and JSON message"},
+    "m23": {"partial": ["rate-limit"], "why": "client_ip is the LB in prod"},
+    "m24": {"partial": ["cors", "auth"], "why": "Tuple/Dict typing for new config fields on 3.9"},
+    "m25": {"relevant": ["rate-limit"], "why": "token bucket, whole-second Retry-After, injected clock"},
+    "m28": {"relevant": ["auth"], "why": "compare_digest with bytes"},
+
+    "c1": {"relevant": ["ctx-interface"], "partial": ["rate-limit", "cors", "gzip", "request-id", "auth", "access-log"], "why": "the interface being changed"},
+    "c2": {"relevant": ["access-log"], "why": "the exact log line shape"}
+  },
+  "noise": ["n01", "n02", "n04", "n05", "n06", "n08", "n09", "n10", "n12", "n13", "n14", "n15", "n16", "n17", "n18", "n21", "n22", "n23", "n25", "n26", "n27", "n29", "n30", "n31", "n32", "n34", "n35", "n36", "n38", "n39", "n40",
+            "d03", "d04", "d06", "d08", "d10", "d13", "d14",
+            "m01", "m03", "m04", "m06", "m09", "m10", "m12", "m13", "m15", "m16", "m18", "m19", "m20", "m22", "m26", "m27", "m29", "m30"],
+  "counts": {
+    "notices": {"seeded": 40, "automatic": 1, "relevant": 6, "partial_only": 4, "noise": 31},
+    "decisions": {"seeded": 15, "relevant": 4, "partial_only": 2, "misleading": 1, "general": 1, "noise": 7},
+    "memory": {"seeded": 30, "relevant": 7, "partial_only": 5, "general": 1, "noise": 17},
+    "contracts": {"seeded": 2, "republished": 1, "relevant": 2}
+  }
+}

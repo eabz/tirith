@@ -1,0 +1,1239 @@
+{
+  "site": "notice_fanout",
+  "cases": [
+    {
+      "id": "notice_fanout-001",
+      "difficulty": "easy",
+      "why": "notice lists the caller files directly; two holders sit on them, one is unrelated",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/billing/invoice.rs"
+            ],
+            "reason": "persist invoice line items; batch insert via storage::pg::Pool::get"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "reason": "move session store from redis to pg, uses Pool::get per request"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/mw/cors.rs"
+            ],
+            "reason": "tighten CORS allowlist, drop wildcard for *.ledger.dev"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "signature",
+          "summary": "Pool::get now takes a checkout timeout and returns Result<Conn, PoolError>; callers must handle PoolError::Timeout",
+          "from": "storage::pg::Pool::get(&self) -> Conn",
+          "to": "storage::pg::Pool::get(&self, timeout: Duration) -> Result<Conn, PoolError>",
+          "affected_paths": [
+            "src/storage/pg.rs",
+            "src/billing/invoice.rs",
+            "src/auth/session.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "carol"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-002",
+      "difficulty": "easy",
+      "why": "straight rename; only the middleware holder calls verify_token",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/mw/auth.rs"
+            ],
+            "reason": "add scope check right after verify_token in auth layer"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/billing/proration.rs"
+            ],
+            "reason": "fix proration rounding for mid-cycle upgrades"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "docs/api.md"
+            ],
+            "reason": "document cursor pagination params"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "rename",
+          "summary": "jwt::verify_token renamed to decode_and_verify, same signature",
+          "from": "auth::jwt::verify_token",
+          "to": "auth::jwt::decode_and_verify",
+          "affected_paths": [
+            "src/auth/jwt.rs",
+            "src/mw/auth.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-003",
+      "difficulty": "hard",
+      "why": "trap both ways: two holders overlap src/storage/ but do unrelated work; the affected holder is in billing with no path overlap",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/storage/migrations/"
+            ],
+            "reason": "add 0042_invoice_currency migration + backfill default USD"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/billing/invoice.rs"
+            ],
+            "reason": "on invoice void, bust cached renders with cache.invalidate_prefix(\"inv:{id}:\")"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/storage/pg.rs"
+            ],
+            "reason": "bump sqlx 0.7 -> 0.8, fix query_as! macro breakage"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "removed",
+          "summary": "Cache::invalidate_prefix removed (SCAN over redis was O(keyspace)); use tag-based Cache::invalidate_tag",
+          "from": "storage::cache::Cache::invalidate_prefix",
+          "to": "storage::cache::Cache::invalidate_tag",
+          "affected_paths": [
+            "src/storage/"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "carol"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-004",
+      "difficulty": "hard",
+      "why": "additive behavior change reads as FYI, but a response-header snapshot test will break; the middleware-dir holder is unaffected",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/mw/"
+            ],
+            "reason": "reorder layer stack: rate limit before auth so unauthenticated floods are cheap"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/telemetry/tracing.rs"
+            ],
+            "reason": "record request_id from request extensions as span field"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "tests/http/headers_test.rs"
+            ],
+            "reason": "insta snapshots of full response headers for /v1/invoices and /v1/users"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "behavior",
+          "summary": "request_id layer now also sets X-Request-Id on responses (was request-only); extension key unchanged",
+          "from": null,
+          "to": null,
+          "affected_paths": [
+            "src/mw/request_id.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "dave"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-005",
+      "difficulty": "medium",
+      "why": "log-level tweak is pure FYI; telemetry holder mentions logs but nothing they build depends on the level",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/mw/cors.rs"
+            ],
+            "reason": "cache CORS preflight with Access-Control-Max-Age"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/telemetry/"
+            ],
+            "reason": "ship logs via OTLP, drop stdout JSON layer"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/billing/stripe_webhook.rs"
+            ],
+            "reason": "verify Stripe-Signature with 300s timestamp tolerance"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "behavior",
+          "summary": "rate limiter reject path logs at debug instead of info (noise); no metric or API change",
+          "from": null,
+          "to": null,
+          "affected_paths": [
+            "src/mw/rate_limit.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": []
+      }
+    },
+    {
+      "id": "notice_fanout-006",
+      "difficulty": "medium",
+      "why": "all holders affected: the tests holder is outside affected_paths but still calls Config::load",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/cli/migrate.rs"
+            ],
+            "reason": "add --dry-run to `ledgerd migrate`; reads db url via Config::load()"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/main.rs"
+            ],
+            "reason": "graceful shutdown on SIGTERM, drain http server before pool close"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "tests/config_test.rs"
+            ],
+            "reason": "cover LEDGER_* env override precedence in Config::load"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "signature",
+          "summary": "Config::load takes &Env and returns Result; no more implicit std::env reads or panics on missing vars",
+          "from": "config::Config::load() -> Config",
+          "to": "config::Config::load(env: &Env) -> Result<Config, ConfigError>",
+          "affected_paths": [
+            "src/config.rs",
+            "src/main.rs",
+            "src/cli/"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "carol",
+          "dave"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-007",
+      "difficulty": "hard",
+      "why": "module move: importer outside src/client is affected, same-dir TLS work is not, pg retry loop is a lexical trap",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/client/http_client.rs"
+            ],
+            "reason": "add jittered backoff using retry::Backoff for 5xx"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/billing/stripe_client.rs"
+            ],
+            "reason": "wrap outbound Stripe calls in client::retry::with_backoff"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/client/tls.rs"
+            ],
+            "reason": "load custom CA bundle from config for internal endpoints"
+          },
+          {
+            "agent": "erin",
+            "paths": [
+              "src/storage/pg.rs"
+            ],
+            "reason": "retry pg connect on boot with exponential backoff (own loop around sqlx connect)"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "erin",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "moved",
+          "summary": "client::retry moved under client::policy; old path not re-exported",
+          "from": "src/client/retry.rs",
+          "to": "src/client/policy/retry.rs",
+          "affected_paths": [
+            "src/client/retry.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "carol"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-008",
+      "difficulty": "easy",
+      "why": "endpoint removal hits the SDK holder who is wrapping exactly that route",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "sdk/ts/src/invoices.ts"
+            ],
+            "reason": "add getInvoicePdf() wrapping GET /v1/invoices/{id}/pdf"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/http/routes/users.rs"
+            ],
+            "reason": "PATCH /v1/users/me email change w/ verification"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/auth/oauth.rs"
+            ],
+            "reason": "Google OAuth PKCE flow"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "removed",
+          "summary": "GET /v1/invoices/{id}/pdf removed; use GET /v1/invoices/{id}/render?format=pdf",
+          "from": "GET /v1/invoices/{id}/pdf",
+          "to": "GET /v1/invoices/{id}/render?format=pdf",
+          "affected_paths": [
+            "src/http/routes/invoices.rs",
+            "sdk/ts/src/invoices.ts"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-009",
+      "difficulty": "hard",
+      "why": "semantic behavior change: same-dir display work unaffected, refunds already validate > 0, only proration builds negative amounts",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/billing/proration.rs"
+            ],
+            "reason": "downgrade credit = Money::from_minor(new - old) when delta < 0"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/billing/invoice_pdf.rs"
+            ],
+            "reason": "render currency symbol per locale on invoice PDF"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/http/routes/refunds.rs"
+            ],
+            "reason": "POST /v1/refunds: amount_minor validated > 0, build Money::from_minor"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "behavior",
+          "summary": "Money::from_minor now returns Err on negative amounts; credits must go through Money::credit",
+          "from": null,
+          "to": null,
+          "affected_paths": [
+            "src/billing/money.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-010",
+      "difficulty": "medium",
+      "why": "crate-wide type rename: holders using UserId are affected regardless of dir; seed of plan catalog and terraform are not",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "reason": "put UserId + tenant into session cookie claims"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/billing/invoice.rs"
+            ],
+            "reason": "invoice.owner: UserId -> support org billing owners"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/cli/seed.rs"
+            ],
+            "reason": "seed local plan catalog fixtures (plans, prices, tax rates)"
+          },
+          {
+            "agent": "erin",
+            "paths": [
+              "infra/terraform/rds.tf"
+            ],
+            "reason": "bump RDS instance class db.t4g.medium -> large"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "erin",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "rename",
+          "summary": "UserId renamed AccountId (same Uuid newtype), no alias kept",
+          "from": "domain::ids::UserId",
+          "to": "domain::ids::AccountId",
+          "affected_paths": [
+            "src/domain/ids.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "carol"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-011",
+      "difficulty": "hard",
+      "why": "zero affected despite heavy lexical overlap: mw dir holder does CORS, docs mention rate limits, login lockout is its own counter",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/mw/"
+            ],
+            "reason": "fix missing Vary: Origin on CORS preflight in cors.rs"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "docs/rate-limits.md"
+            ],
+            "reason": "document per-plan request quotas and 429 semantics"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/http/routes/login.rs"
+            ],
+            "reason": "throttle failed logins with redis lockout counter (not the Limiter)"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "signature",
+          "summary": "Limiter::check takes a typed RateKey instead of &str; only caller is the rate_limit layer itself",
+          "from": "mw::rate_limit::Limiter::check(&self, key: &str)",
+          "to": "mw::rate_limit::Limiter::check(&self, key: &RateKey)",
+          "affected_paths": [
+            "src/mw/rate_limit.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": []
+      }
+    },
+    {
+      "id": "notice_fanout-012",
+      "difficulty": "medium",
+      "why": "wire-format field rename affects client consumers in TS; server route using the shared helper is unaffected",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "sdk/ts/src/paginate.ts"
+            ],
+            "reason": "async iterator over list endpoints following next_page"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/http/routes/invoices.rs"
+            ],
+            "reason": "add ?status= filter to GET /v1/invoices"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "web/src/pages/Invoices.tsx"
+            ],
+            "reason": "infinite scroll on invoice table using next_page from list response"
+          },
+          {
+            "agent": "erin",
+            "paths": [
+              "src/storage/migrations/"
+            ],
+            "reason": "index invoices(created_at) for list perf"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "erin",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "rename",
+          "summary": "list responses: next_page renamed next_cursor (opaque string); pagination helper updated for all routes",
+          "from": "next_page",
+          "to": "next_cursor",
+          "affected_paths": [
+            "src/http/pagination.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "dave"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-013",
+      "difficulty": "easy",
+      "why": "macro signature change; every holder is adding a counter",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/billing/stripe_webhook.rs"
+            ],
+            "reason": "add webhook_received_total counter per event type"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/mw/rate_limit.rs"
+            ],
+            "reason": "emit rate_limited_total counter on reject"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/client/http_client.rs"
+            ],
+            "reason": "upstream latency histogram + upstream_errors_total counter"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "signature",
+          "summary": "metrics::counter! requires a labels slice; bare counter!(name) no longer compiles",
+          "from": "counter!(name)",
+          "to": "counter!(name, &[(k, v)])",
+          "affected_paths": [
+            "src/telemetry/metrics.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "carol",
+          "dave"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-014",
+      "difficulty": "hard",
+      "why": "HS256 removal: CLI minting with an HMAC secret is affected with no 'jwt' in its path; OIDC via JWKS and the auth audit log (same dir) are not",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "tests/fixtures/tokens.rs"
+            ],
+            "reason": "mint HS256 test tokens with shared secret for expired-token cases"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/auth/oauth.rs"
+            ],
+            "reason": "verify Google OIDC id_token against JWKS"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/cli/token.rs"
+            ],
+            "reason": "`ledgerd token mint` for svc-to-svc calls, HMAC secret from LEDGER_JWT_SECRET"
+          },
+          {
+            "agent": "erin",
+            "paths": [
+              "src/auth/audit.rs"
+            ],
+            "reason": "audit log row on login failure (new file)"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "erin",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "behavior",
+          "summary": "JWT verify drops HS256; only RS256/EdDSA accepted, keys from JWKS",
+          "from": null,
+          "to": null,
+          "affected_paths": [
+            "src/auth/jwt.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "dave"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-015",
+      "difficulty": "medium",
+      "why": "directory move: holder inside moved dir and the CLI hardcoding the migrate! path are affected; CI cache work is not",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/storage/migrations/0042_invoice_currency.sql"
+            ],
+            "reason": "add currency column to invoices"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              ".github/workflows/ci.yml"
+            ],
+            "reason": "cache cargo registry, split clippy and test jobs"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/cli/migrate.rs"
+            ],
+            "reason": "--dry-run for migrate; uses sqlx::migrate!(\"src/storage/migrations\")"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "moved",
+          "summary": "migrations dir moved to repo root for sqlx-cli defaults",
+          "from": "src/storage/migrations/",
+          "to": "migrations/",
+          "affected_paths": [
+            "src/storage/migrations/"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "dave"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-016",
+      "difficulty": "hard",
+      "why": "default timeout cut looks like FYI but breaks the long multipart uploader using defaults; inbound webhook work is lexically near but unaffected",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/billing/stripe_webhook.rs"
+            ],
+            "reason": "webhook signature verify with timestamp tolerance"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/export/s3_upload.rs"
+            ],
+            "reason": "multipart upload of monthly CSV exports, parts take ~20s, uses HttpClient defaults"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/client/dns.rs"
+            ],
+            "reason": "hickory resolver with positive-TTL cache"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "behavior",
+          "summary": "HttpClient default request timeout 30s -> 10s; override with ClientBuilder::timeout",
+          "from": null,
+          "to": null,
+          "affected_paths": [
+            "src/client/http_client.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "carol"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-017",
+      "difficulty": "medium",
+      "why": "private helper rename has no external callers; frontend cents formatting is a lexical trap",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/auth/session.rs"
+            ],
+            "reason": "sliding session expiry"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/mw/cors.rs"
+            ],
+            "reason": "CORS allowlist from config"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "web/src/components/Price.tsx"
+            ],
+            "reason": "format price in cents client-side with Intl.NumberFormat"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "rename",
+          "summary": "private fn fmt_cents renamed format_minor inside money.rs (not pub)",
+          "from": "billing::money::fmt_cents",
+          "to": "billing::money::format_minor",
+          "affected_paths": [
+            "src/billing/money.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": []
+      }
+    },
+    {
+      "id": "notice_fanout-018",
+      "difficulty": "medium",
+      "why": "three put_object callers in different dirs are affected; same-dir pg work is not",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/export/s3_upload.rs"
+            ],
+            "reason": "stream CSV export to blob via Storage::put_object"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/http/routes/avatars.rs"
+            ],
+            "reason": "POST /v1/users/me/avatar, save image via put_object"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/storage/pg.rs"
+            ],
+            "reason": "export pool gauges (idle, in_use)"
+          },
+          {
+            "agent": "erin",
+            "paths": [
+              "src/billing/invoice_pdf.rs"
+            ],
+            "reason": "persist rendered invoice PDFs to blob store"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "erin",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "signature",
+          "summary": "Storage::put_object requires ContentType (S3 was defaulting to binary/octet-stream)",
+          "from": "Storage::put_object(key, bytes)",
+          "to": "Storage::put_object(key, bytes, content_type: ContentType)",
+          "affected_paths": [
+            "src/storage/blob.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "carol",
+          "erin"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-019",
+      "difficulty": "hard",
+      "why": "all affected with zero path overlap: every holder issues repo queries that now need TenantScope",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "src/billing/dunning.rs"
+            ],
+            "reason": "nightly dunning job: select overdue invoices, send reminders"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "src/http/routes/admin.rs"
+            ],
+            "reason": "admin cross-tenant user search"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/cli/backfill.rs"
+            ],
+            "reason": "backfill invoices.currency for existing rows"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "behavior",
+          "summary": "tenant isolation: Repo methods require Repo::scoped(tenant); unscoped methods deleted, cross-tenant needs Repo::superuser()",
+          "from": null,
+          "to": null,
+          "affected_paths": [
+            "src/storage/repo.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob",
+          "carol",
+          "dave"
+        ]
+      }
+    },
+    {
+      "id": "notice_fanout-020",
+      "difficulty": "medium",
+      "why": "flag rename affects the helm args rework; other CLI subcommand and compose work are not",
+      "seed": {
+        "notices": [],
+        "contracts": [],
+        "decisions": [],
+        "memory": [],
+        "tasks": [],
+        "claims": [
+          {
+            "agent": "bob",
+            "paths": [
+              "deploy/helm/templates/deployment.yaml"
+            ],
+            "reason": "rework serve container args: --db-url from secret, --port 8080"
+          },
+          {
+            "agent": "carol",
+            "paths": [
+              "docker-compose.yml"
+            ],
+            "reason": "add redis service for local dev"
+          },
+          {
+            "agent": "dave",
+            "paths": [
+              "src/cli/migrate.rs"
+            ],
+            "reason": "migrate --dry-run (own --db-url flag stays)"
+          }
+        ],
+        "active_agents": [
+          "bob",
+          "carol",
+          "dave",
+          "alice"
+        ]
+      },
+      "action": {
+        "agent": "alice",
+        "tool": "notice_publish",
+        "args": {
+          "kind": "rename",
+          "summary": "`ledgerd serve --db-url` renamed --database-url (env LEDGER_DATABASE_URL); old flag removed",
+          "from": "--db-url",
+          "to": "--database-url",
+          "affected_paths": [
+            "src/cli/serve.rs"
+          ]
+        }
+      },
+      "expect": {
+        "affected": [
+          "bob"
+        ]
+      }
+    }
+  ]
+}

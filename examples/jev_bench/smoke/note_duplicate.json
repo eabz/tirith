@@ -1,0 +1,30 @@
+{
+  "site": "note_duplicate",
+  "cases": [
+    {
+      "id": "smoke-notedup-001",
+      "difficulty": "medium",
+      "why": "same gotcha, different words",
+      "seed": {
+        "memory": [
+          {"key": "m1", "by": "alice", "title": "JWT clock skew", "kind": "gotcha", "body": "Tokens minted by the IdP were rejected as not-yet-valid; allow 60s leeway on nbf/iat.", "paths": ["src/auth/jwt.rs"], "tags": ["auth"]},
+          {"key": "m2", "by": "bob", "title": "Argon2 params", "kind": "fact", "body": "m=19MiB t=2 p=1 per OWASP.", "paths": ["src/auth/password.rs"], "tags": ["auth"]}
+        ]
+      },
+      "action": {"agent": "carol", "tool": "memory_write", "args": {"title": "Fresh tokens rejected right after login", "kind": "gotcha", "body": "Login then immediate API call failed with 'token not active'; the IdP clock runs a few seconds ahead. Added leeway to the validator.", "paths": ["src/auth/jwt.rs"]}},
+      "expect": {"duplicate_of": "m1"}
+    },
+    {
+      "id": "smoke-notedup-002",
+      "difficulty": "hard",
+      "why": "same path and topic words, different fact",
+      "seed": {
+        "memory": [
+          {"key": "m1", "by": "alice", "title": "JWT clock skew", "kind": "gotcha", "body": "allow 60s leeway on nbf/iat.", "paths": ["src/auth/jwt.rs"], "tags": ["auth"]}
+        ]
+      },
+      "action": {"agent": "carol", "tool": "memory_write", "args": {"title": "JWT signing key rotation", "kind": "fact", "body": "JWKS keys rotate weekly; the validator caches JWKS for 1h and refetches on unknown kid.", "paths": ["src/auth/jwt.rs"]}},
+      "expect": {"duplicate_of": null}
+    }
+  ]
+}

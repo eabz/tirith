@@ -18,7 +18,7 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0006](0006-stdio-shim-starts-daemon.md) | The stdio shim starts the daemon on demand | Accepted; superseded in part by 0016 |
 | [0007](0007-github-pages-landing-page.md) | A static landing page in `docs/`, served by GitHub Pages | Accepted; amended (page moved to the repo root) |
 | [0008](0008-embedded-dashboard-assets.md) | Dashboard assets are embedded in the binary from `src/` | Accepted |
-| [0009](0009-release-build-cache-and-runners.md) | Release builds cache dependencies and cross-compile Intel macOS on Apple Silicon | Accepted |
+| [0009](0009-release-build-cache-and-runners.md) | Release builds cache dependencies and cross-compile Intel macOS on Apple Silicon | Accepted; cache superseded by 0025 |
 | [0010](0010-incremental-persistence.md) | Incremental persistence with a coalescing background writer | Accepted |
 | [0011](0011-memory-primitive.md) | Memory notes are Markdown files scoped to repository paths | Accepted; refined by 0012, 0013 |
 | [0012](0012-retire-basic-memory.md) | Basic Memory is retired; Tirith memory notes are the only long-form memory | Accepted |
@@ -34,6 +34,7 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0022](0022-decisions-as-markdown.md) | Decisions are one Markdown file each, in the memory-note format | Accepted |
 | [0023](0023-stable-toolchain-for-release-containers.md) | A `rust-toolchain.toml` pins the stable channel so release containers meet `rust-version` | Accepted |
 | [0024](0024-jev-assist-experiment.md) | Jev makes coordination judgement calls, behind a flag and with deterministic fallbacks | Experimental |
+| [0025](0025-no-release-build-cache.md) | Release builds drop the dependency cache | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

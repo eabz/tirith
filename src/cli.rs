@@ -94,7 +94,7 @@ enum Command {
         /// Experimental: let the Jev evaluation model make coordination
         /// judgement calls (ADR-0024). Needs `TYPESAFE_API_KEY` (preferred)
         /// or `AI_GATEWAY_API_KEY` in the environment or in the repository's
-        /// .env, and the `jev` feature.
+        /// .env. Off by default; nothing leaves localhost without it.
         #[arg(long, env = "TIRITH_JEV", value_parser = clap::builder::BoolishValueParser::new())]
         jev: bool,
     },

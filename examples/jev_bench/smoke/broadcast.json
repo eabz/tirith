@@ -1,0 +1,33 @@
+{
+  "site": "broadcast",
+  "cases": [
+    {
+      "id": "smoke-broadcast-001",
+      "difficulty": "easy",
+      "why": "migration lock only matters to agents touching the database layer",
+      "seed": {
+        "claims": [
+          {"agent": "bob", "paths": ["src/db/migrations"], "reason": "add invoices.currency column"},
+          {"agent": "carol", "paths": ["web/components/Navbar.tsx"], "reason": "mobile navbar"}
+        ],
+        "active_agents": ["dave"]
+      },
+      "action": {"agent": "alice", "tool": "message_send", "args": {"to": "*", "text": "Heads up: running sqlx migrate on the shared dev DB for 10 min, don't add or run migrations until I say done", "paths": ["src/db/migrations"]}},
+      "expect": {"needs": ["bob"]}
+    },
+    {
+      "id": "smoke-broadcast-002",
+      "difficulty": "medium",
+      "why": "main is broken for everyone who builds",
+      "seed": {
+        "claims": [
+          {"agent": "bob", "paths": ["src/billing"], "reason": "proration fix"},
+          {"agent": "carol", "paths": ["src/auth"], "reason": "mfa backup codes"}
+        ],
+        "active_agents": ["dave"]
+      },
+      "action": {"agent": "alice", "tool": "message_send", "args": {"to": "*", "text": "main doesn't compile after the tokio 1.53 bump (JoinSet API); rebase onto fix/joinset before running cargo test"}},
+      "expect": {"needs": ["bob", "carol", "dave"]}
+    }
+  ]
+}

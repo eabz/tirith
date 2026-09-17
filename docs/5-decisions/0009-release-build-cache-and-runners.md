@@ -1,6 +1,8 @@
 # ADR-0009: Release builds cache dependencies and cross-compile Intel macOS on Apple Silicon
 
-**Status:** Accepted, 2026-09-16
+**Status:** Accepted, 2026-09-16. The build cache half is superseded by
+[ADR-0025](0025-no-release-build-cache.md); the Apple Silicon runner for
+the Intel macOS binary stands.
 
 ## Context
 
