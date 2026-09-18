@@ -1129,7 +1129,8 @@ impl TirithServer {
     /// Claim files or directories before editing them.
     #[tool(
         name = "claim",
-        description = "Claim paths (a directory covers its contents) before editing, atomically; ok briefs notices, contracts, decisions, memory. ttl_secs 600, max 3600. wait_secs max 120: waits out conflicts."
+        description = "Claim paths (a directory covers its contents) before editing, atomically; ok briefs notices, contracts, decisions, memory. ttl_secs 600, max 3600. wait_secs max 120: waits out conflicts. Use before editing; your own paths renew. Not for reading: claims_list. conflict lists overlaps, claims nothing.",
+        annotations(destructive_hint = false)
     )]
     async fn claim(
         &self,
@@ -1197,7 +1198,8 @@ impl TirithServer {
     /// Release claims when done.
     #[tool(
         name = "release",
-        description = "Release paths, or everything you hold when paths is omitted."
+        description = "Release paths, or everything you hold when paths is omitted. Use when done editing; to extend time use renew. not_found for a path you do not hold; nothing is released.",
+        annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn release(
         &self,
@@ -1213,7 +1215,11 @@ impl TirithServer {
     }
 
     /// Renew every lease you hold.
-    #[tool(name = "renew", description = "Extend every lease you hold.")]
+    #[tool(
+        name = "renew",
+        description = "Extend every lease you hold by its original TTL. Use only during long silent work: any other call also renews. Not for new paths: claim. Returns count and latest expires_at.",
+        annotations(destructive_hint = false, idempotent_hint = true)
+    )]
     async fn renew(
         &self,
         Parameters(input): Parameters<AgentInput>,
@@ -1232,7 +1238,8 @@ impl TirithServer {
     /// List live claims.
     #[tool(
         name = "claims_list",
-        description = "Your live claims plus any overlapping path; all=true for every claim. Newest first, paged."
+        description = "Your live claims plus any overlapping path; all=true for every claim. Newest first, paged. Use to check a conflict before claim; the whole board only with all=true. Takes no lease.",
+        annotations(read_only_hint = true)
     )]
     async fn claims_list(
         &self,
@@ -1258,7 +1265,8 @@ impl TirithServer {
     /// Create a task.
     #[tool(
         name = "task_create",
-        description = "Add a todo task; depends_on ids must be done before it can be pulled; higher priority pulls first."
+        description = "Add a todo task; depends_on ids must be done before it can be pulled; higher priority pulls first.",
+        annotations(destructive_hint = false)
     )]
     async fn task_create(
         &self,
@@ -1289,7 +1297,8 @@ impl TirithServer {
     /// Pull the next unblocked task.
     #[tool(
         name = "task_pull",
-        description = "Take the highest-priority unblocked todo task as in_progress. wait_secs max 120: waits out claims and dependencies."
+        description = "Take the highest-priority unblocked todo task as in_progress. wait_secs max 120: waits out claims and dependencies. Use to get work; to inspect use task_list. none when nothing is unblocked; a held task returns waiting_on.",
+        annotations(destructive_hint = false)
     )]
     async fn task_pull(
         &self,
@@ -1338,7 +1347,8 @@ impl TirithServer {
     /// Update a task's status.
     #[tool(
         name = "task_update",
-        description = "Set status (todo|in_progress|blocked|done) with an optional note; another agent's in_progress task is a conflict unless force."
+        description = "Set status (todo|in_progress|blocked|done) with an optional note; another agent's in_progress task is a conflict unless force. Use to hand back, block or finish a task; to take one use task_pull. force is recorded in the notes.",
+        annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn task_update(
         &self,
@@ -1363,7 +1373,8 @@ impl TirithServer {
     /// List tasks.
     #[tool(
         name = "task_list",
-        description = "List tasks by status and owner, most recently updated first, paged."
+        description = "List tasks by status and owner, most recently updated first, paged.",
+        annotations(read_only_hint = true)
     )]
     async fn task_list(
         &self,
@@ -1389,7 +1400,8 @@ impl TirithServer {
     /// Publish an interface contract.
     #[tool(
         name = "contract_publish",
-        description = "Publish an interface shape (kind: http|function|type|event|cli|other). Republish: new version, consumers kept unless given, conflict on stale expected_version."
+        description = "Publish an interface shape (kind: http|function|type|event|cli|other). Republish: new version, consumers kept unless given, conflict on stale expected_version.",
+        annotations(destructive_hint = false)
     )]
     async fn contract_publish(
         &self,
@@ -1423,7 +1435,8 @@ impl TirithServer {
     /// Fetch a contract.
     #[tool(
         name = "contract_get",
-        description = "Fetch a contract by name or id, with its versions."
+        description = "Fetch a contract by name or id, with its versions. Use for one full body with history; to browse use contract_list. A unique id prefix works; an ambiguous one is invalid.",
+        annotations(read_only_hint = true)
     )]
     async fn contract_get(
         &self,
@@ -1442,7 +1455,8 @@ impl TirithServer {
     /// List contracts.
     #[tool(
         name = "contract_list",
-        description = "List contracts by consumer path or kind, newest first, paged."
+        description = "List contracts by consumer path or kind, newest first, paged. Use to see what your paths consume; a claim's brief lists them too. Bodies via contract_get.",
+        annotations(read_only_hint = true)
     )]
     async fn contract_list(
         &self,
@@ -1474,7 +1488,8 @@ impl TirithServer {
     /// Publish a change notice.
     #[tool(
         name = "notice_publish",
-        description = "Announce a change (kind: rename|signature|removed|moved|behavior) and the affected_paths that must react."
+        description = "Announce a change (kind: rename|signature|removed|moved|behavior) to the affected_paths. Use for renames and signature changes others use; interface shapes: contract_publish, which notifies itself. Holders of the paths get it in their inbox.",
+        annotations(destructive_hint = false)
     )]
     async fn notice_publish(
         &self,
@@ -1509,7 +1524,8 @@ impl TirithServer {
     /// List change notices.
     #[tool(
         name = "notice_list",
-        description = "List change notices by path, since (RFC 3339), or unread only, newest first, paged. Unread without a path covers the paths you hold unless all=true."
+        description = "List change notices by path, since (RFC 3339), or unread only, newest first, paged. Unread without a path covers the paths you hold unless all=true.",
+        annotations(read_only_hint = true)
     )]
     async fn notice_list(
         &self,
@@ -1553,7 +1569,8 @@ impl TirithServer {
     /// Record a decision.
     #[tool(
         name = "decision_record",
-        description = "Record a settled choice with its rationale, alternatives, and the paths it affects."
+        description = "Record a settled choice with its rationale, alternatives, and the paths it affects. Use once a choice is final so it is not made twice; to coordinate use message_send. Returns its file's permalink.",
+        annotations(destructive_hint = false)
     )]
     async fn decision_record(
         &self,
@@ -1576,7 +1593,8 @@ impl TirithServer {
     /// List decisions.
     #[tool(
         name = "decision_list",
-        description = "List decisions by path or text query, newest first, paged."
+        description = "List decisions by path or text query, newest first, paged. Use before decision_record to avoid deciding twice; a claim's brief carries its paths' decisions.",
+        annotations(read_only_hint = true)
     )]
     async fn decision_list(
         &self,
@@ -1605,7 +1623,8 @@ impl TirithServer {
     /// Server status.
     #[tool(
         name = "status",
-        description = "Counts, persistence and load problems; verbose=true adds who holds what."
+        description = "Counts, persistence and load problems; verbose=true adds who holds what. Use for a health check; publishes nothing and takes no lease. For your own claims use claims_list.",
+        annotations(read_only_hint = true)
     )]
     async fn status(
         &self,
@@ -1661,7 +1680,8 @@ impl TirithServer {
     /// Write a memory note.
     #[tool(
         name = "memory_write",
-        description = "Write a durable note (kind: fact|lesson|gotcha|handoff|research|note); an existing title updates it."
+        description = "Write a note (kind: fact|lesson|gotcha|handoff|research|note); a known title updates it. Use for lessons and handoffs on paths; the next claim there gets it. if_updated_at refuses a changed note.",
+        annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn memory_write(
         &self,
@@ -1692,7 +1712,8 @@ impl TirithServer {
     /// Read one memory note.
     #[tool(
         name = "memory_read",
-        description = "Read a note by permalink, id, or title; depth (0 to 3) adds related notes."
+        description = "Read a note by permalink, id, or title; depth (0 to 3) adds related notes. Only this call returns a body; use after memory_search finds the note. related are digests, at most 20.",
+        annotations(read_only_hint = true)
     )]
     async fn memory_read(
         &self,
@@ -1722,7 +1743,8 @@ impl TirithServer {
     /// Search memory notes.
     #[tool(
         name = "memory_search",
-        description = "Search notes, best first; no query lists the newest. limit: default 10, max 50."
+        description = "Search notes, best first; no query lists the newest. limit: default 10, max 50. Use to find a note or for recent activity; rows are 160-char digests, never bodies: memory_read for one.",
+        annotations(read_only_hint = true)
     )]
     async fn memory_search(
         &self,
@@ -1770,7 +1792,8 @@ impl TirithServer {
     /// Delete a memory note.
     #[tool(
         name = "memory_delete",
-        description = "Delete a memory note by permalink, id, or exact title. Its file is removed."
+        description = "Delete a note by permalink, id, or exact title; its file is removed for good. Use to retract a secret or a wrong fact; to edit use memory_write. not_found if absent.",
+        annotations(destructive_hint = true, idempotent_hint = true)
     )]
     async fn memory_delete(
         &self,
@@ -1792,7 +1815,8 @@ impl TirithServer {
     /// Send a message to another agent.
     #[tool(
         name = "message_send",
-        description = "Message an agent (to: name, * for all active, human for the human queue); delivered on their next call. text: max 1000 chars."
+        description = "Message an agent (to: name, * for all active, human for the human queue); delivered on their next call. text: max 1000 chars.",
+        annotations(destructive_hint = false)
     )]
     async fn message_send(
         &self,
@@ -1817,7 +1841,8 @@ impl TirithServer {
     /// List your messages.
     #[tool(
         name = "message_list",
-        description = "List your messages, newest first; filter by with, since, unread."
+        description = "List your messages, newest first; filter by with, since, unread. Use to page history; new messages arrive as inbox on any call, so do not poll. with: human is the human queue.",
+        annotations(read_only_hint = true)
     )]
     async fn message_list(
         &self,

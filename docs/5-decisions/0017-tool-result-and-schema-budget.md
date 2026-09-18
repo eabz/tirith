@@ -5,7 +5,10 @@
 (`tests/budgets.rs`; `tools/list` under 7,800 characters for 22 tools
 after [ADR-0020](0020-agent-messages.md) added two tools and
 [ADR-0021](0021-notice-acks-log.md) removed one). The 6,144 bound below
-is the value at the time.
+is the value at the time. Superseded in part by
+[ADR-0033](0033-tool-annotations-and-usage-clauses.md): every tool now
+carries MCP annotations and a usage clause, and the budget is 10,500;
+the per-parameter rule stands.
 
 ## Context
 

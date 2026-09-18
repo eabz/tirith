@@ -52,6 +52,20 @@ attached when nothing is waiting.
 that matches exactly one item; an ambiguous prefix is `invalid`, an
 unknown one `not_found`.
 
+**Every tool carries MCP annotations, and its description says when to
+use it** ([ADR-0033](../5-decisions/0033-tool-annotations-and-usage-clauses.md)).
+`tools/list` marks the list, get, search, read and status tools
+`readOnlyHint: true`; every additive tool `destructiveHint: false`;
+`renew`, `release`, `task_update`, `memory_write` and `memory_delete`
+`idempotentHint: true`; and `memory_delete`, which removes a file,
+`destructiveHint: true`. Hints equal to the protocol default are not
+sent. A client that honors the hints can skip confirmation on read-only
+calls. Each description ends with when to call the tool, when not and
+which sibling to call instead; those clauses summarize this file and
+never add behavior. Parameters carry no description on the wire
+([ADR-0017](../5-decisions/0017-tool-result-and-schema-budget.md));
+this file and the input structs are where they are documented.
+
 ## Claims
 
 Leases on files or directories. Overlap is refused.

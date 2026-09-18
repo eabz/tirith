@@ -2,8 +2,8 @@
 //! against a daemon seeded like a busy repository: hundreds of claims,
 //! notices and decisions, dozens of contracts and memory notes. Every
 //! agent pays these bytes on every call, so a budget that silently grows
-//! is a regression. The bounds here may be lowered, never raised for
-//! prose; a new parameter or tool that needs room says so in the ADR.
+//! is a regression. The bounds here may be lowered, never raised without
+//! an ADR that names what the raise pays for (ADR-0017, ADR-0033).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -32,9 +32,13 @@ use tirith::server::{ServeOptions, ServerHandle, start};
 ///   input on `memory_write`.
 /// - 7,168 to 7,800 for `message_send` and `message_list` (ADR-0020),
 ///   about 640 chars of schema between them.
-const TOOLS_LIST_MAX: usize = 7_800;
+/// - 7,800 to 10,500 for MCP tool annotations on all 22 tools and a usage
+///   clause on the 17 tools whose guidance was only implied (ADR-0033):
+///   about 950 chars of structured hints and 1,800 of prose. The per-tool
+///   bound rises from 500 to 650 for the same reason.
+const TOOLS_LIST_MAX: usize = 10_500;
 /// Any single tool in `tools/list`.
-const TOOL_MAX: usize = 500;
+const TOOL_MAX: usize = 650;
 /// The text content block of any result.
 const TEXT_MAX: usize = 200;
 /// Rows a list tool returns without a `limit`.
@@ -193,7 +197,7 @@ fn assert_compact(row: &Value, context: &str) {
 }
 
 #[tokio::test]
-async fn tools_list_stays_under_7800_chars_and_no_tool_over_500() {
+async fn tools_list_stays_under_10500_chars_and_no_tool_over_650() {
     let daemon = Daemon::empty().await;
     let tools = daemon.client.list_all_tools().await.unwrap();
     let total = serde_json::to_string(&tools).unwrap().len();
