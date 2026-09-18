@@ -29,10 +29,10 @@ It also remembers. Agents leave notes scoped to repository paths, so what
 one agent learned about a file reaches the next agent that claims it.
 Tirith stores no conversation history and no embeddings.
 
-> **Status: v1.1.0.** Every primitive, the CLI, persistence, and the
-> dashboard are built and tested. v1 shipped against the definition in
-> [ADR-0013](docs/5-decisions/0013-v1-definition.md); tool schemas now
-> follow semantic versioning.
+> **Status: v1 shipped.** Every primitive, the CLI, persistence, and the
+> dashboard are built and tested, against the definition in
+> [ADR-0013](docs/5-decisions/0013-v1-definition.md); tool schemas follow
+> semantic versioning.
 
 ## Install
 
