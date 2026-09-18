@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.eabz/tirith",
+  "title": "Tirith",
+  "description": "Coordination server for parallel coding agents: claims, contracts, notices, and memory notes.",
+  "version": "1.1.0",
+  "websiteUrl": "https://eabz.github.io/tirith/",
+  "repository": {
+    "url": "https://github.com/eabz/tirith",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "registryBaseUrl": "https://crates.io",
+      "identifier": "tirith-mcp",
+      "version": "1.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "valueHint": "command",
+          "value": "stdio"
+        }
+      ]
+    }
+  ]
+}

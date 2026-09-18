@@ -59,6 +59,9 @@ latest release. Prebuilt binaries for macOS, Linux, and Windows on x86_64
 and ARM64 are on the [releases page](https://github.com/eabz/tirith/releases);
 every option is in [docs/1-about/05-installation.md](docs/1-about/05-installation.md).
 
+Listed in the [MCP Registry](https://registry.modelcontextprotocol.io/):
+`mcp-name: io.github.eabz/tirith`.
+
 ## Quick start
 
 Register `tirith stdio` with your client, the same way as any other stdio

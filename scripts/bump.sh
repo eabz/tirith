@@ -60,11 +60,19 @@ fi
 # every macOS and Linux box; BSD and GNU sed disagree on this kind of edit.
 perl -pi -e 'if (!$done && s/^version = "[^"]+"/version = "'"$next"'"/) { $done = 1 }' Cargo.toml
 grep -q "^version = \"$next\"" Cargo.toml || { echo "failed to update Cargo.toml" >&2; exit 1; }
+
+# The MCP Registry entry carries the crate version twice: once for the server
+# and once for the cargo package. Both must match what is on crates.io.
+if [ -f server.json ]; then
+  perl -pi -e 's/"version": "[^"]+"/"version": "'"$next"'"/g' server.json
+  [ "$(grep -c "\"version\": \"$next\"" server.json)" -eq 2 ] || { echo "failed to update server.json" >&2; exit 1; }
+fi
 cargo update --workspace --quiet          # refresh the crate's own entry in Cargo.lock
 cargo check --quiet                       # fail fast if the manifest is broken
 
 if [ "$commit" -eq 1 ]; then
   git add Cargo.toml Cargo.lock
+  [ -f server.json ] && git add server.json
   git commit -q -m "chore(release): $tag" || { echo "commit failed; is the version already $next?" >&2; exit 1; }
   git tag -a "$tag" -m "tirith $next"
   echo "committed and tagged $tag"
