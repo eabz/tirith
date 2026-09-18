@@ -1,0 +1,11 @@
+# Build output and local state never belong in the build context.
+target/
+.tirith/
+.git/
+.github/
+docs/
+tests/
+examples/
+scripts/
+*.md
+!README.md
