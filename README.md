@@ -97,10 +97,12 @@ convention it has to follow.
 | **Memory notes** | `memory_write`, `memory_read`, `memory_search`, `memory_delete` | Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and delivered to whoever claims the paths a note is about. |
 | **Messages** | `message_send`, `message_list` | Short notes between agents, delivered on the recipient's next call, so any MCP client can take part. Runtime only. |
 | **Status** | `status` | Counts, persistence and load problems; `verbose` adds who holds what. |
+| **Guide** | `guide` | What Tirith is for, the working loop, and which tool a situation calls for; `topic` narrows it to one primitive. |
 
-Twenty-two tools. Every result is JSON with a `status` field, lists are
-paged, and any result may carry `lost` (a lease that ended) or `inbox`
-(messages waiting). The full reference, the single source of truth for
+Twenty-three tools, each with a description of every parameter, MCP
+annotations, and an output schema. Every result is JSON with a `status`
+field, lists are paged, and any result may carry `lost` (a lease that
+ended) or `inbox` (messages waiting). The full reference, the single source of truth for
 tool schemas, is [docs/1-about/04-primitives.md](docs/1-about/04-primitives.md).
 
 ## Example
@@ -144,6 +146,7 @@ tirith serve                               # run the repo's daemon by hand
 tirith stdio                               # per-session shim clients spawn; starts the daemon if needed
 tirith update                              # replace the binary with the latest release
 tirith status                              # counts, and who holds what
+tirith guide [topic]                       # what Tirith is for, and which tool fits
 tirith claim | release | renew | claims
 tirith task     create | pull | update | list
 tirith contract publish | get | list

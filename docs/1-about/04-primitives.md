@@ -5,7 +5,7 @@ schemas are written down. Tool names and input fields here are the
 contract; a change to them must update this file, the examples, and
 `README.md` in the same commit.
 
-The daemon exposes 22 tools. Every tool takes an `agent` string
+The daemon exposes 23 tools. Every tool takes an `agent` string
 identifying the caller and returns JSON with a `status` field (see
 [02-architecture.md](02-architecture.md#tool-response-shape)). Timestamps
 are RFC 3339 in UTC. Schemas may still change before 1.0.
@@ -52,19 +52,25 @@ attached when nothing is waiting.
 that matches exactly one item; an ambiguous prefix is `invalid`, an
 unknown one `not_found`.
 
-**Every tool carries MCP annotations, and its description says when to
-use it** ([ADR-0033](../5-decisions/0033-tool-annotations-and-usage-clauses.md)).
-`tools/list` marks the list, get, search, read and status tools
-`readOnlyHint: true`; every additive tool `destructiveHint: false`;
-`renew`, `release`, `task_update`, `memory_write` and `memory_delete`
-`idempotentHint: true`; and `memory_delete`, which removes a file,
-`destructiveHint: true`. Hints equal to the protocol default are not
-sent. A client that honors the hints can skip confirmation on read-only
-calls. Each description ends with when to call the tool, when not and
-which sibling to call instead; those clauses summarize this file and
-never add behavior. Parameters carry no description on the wire
-([ADR-0017](../5-decisions/0017-tool-result-and-schema-budget.md));
-this file and the input structs are where they are documented.
+**Tool definitions are complete on the wire**
+([ADR-0033](../5-decisions/0033-tool-annotations-and-usage-clauses.md),
+[ADR-0034](../5-decisions/0034-complete-tool-definitions-and-guide.md)).
+`tools/list` sends, for every tool: a description that says what it does,
+what it changes, when to call it, when not and which sibling to call
+instead, and what comes back; a description on every parameter, with an
+`enum` on the closed ones (task status, contract, notice and memory kinds,
+guide topics); MCP annotations; and an output schema that describes every
+top-level field of the result. The annotations mark the get, search, read,
+status and guide tools and the list tools `readOnlyHint: true`, except
+`notice_list`, which with `unread` marks what it lists as seen; every
+additive tool `destructiveHint: false`; `renew`, `release`, `task_update`,
+`memory_write` and `memory_delete` `idempotentHint: true`; and
+`memory_delete`, which removes a file, `destructiveHint: true`. Hints equal
+to the protocol default are not sent. Output schemas document and never
+constrain: only `status` is required, extra fields such as `lost` and
+`inbox` are allowed, and a field is typed only when its JSON type is
+certain (`tests/budgets.rs` checks real results against them). All of it
+summarizes this file and never adds behavior.
 
 ## Claims
 
@@ -478,6 +484,27 @@ With `verbose: true` it also returns `agents` (at most 50 rows; then
 lease `expires_at`, and `tasks_in_progress`, plus `lead_expires_at` when
 there is a lead. The dashboard's `/api/state` remains the full view for
 humans; it shows the lead and its lease in the header (`server.lead`).
+
+## Guide
+
+`guide` explains Tirith to an agent in one call: what it is for, the
+working loop from `claim` to `release`, the rules every reply follows, and
+which tool a situation calls for
+([ADR-0034](../5-decisions/0034-complete-tool-definitions-and-guide.md)). It is
+static text served by the daemon, so it matches the tool surface of the
+version that answers; a test fails when a tool is missing from it.
+
+| Field | Type | Notes |
+|---|---|---|
+| `agent` | string, optional | With it, `lost` and `inbox` ride on the reply as on any call |
+| `topic` | string, optional | `overview` (default), `claims`, `tasks`, `contracts`, `notices`, `decisions`, `memory`, `messages`, `lead`, `server` |
+
+The overview returns `purpose`, `loop` (the ordered steps), `rules`,
+`tools` (topic to tool names) and `topics`. A topic returns `summary`,
+`tools` (each with `tool` and `when`) and `rules`. An unknown topic is
+`invalid` and names the valid ones. The overview stays under 3 KB
+(`tests/budgets.rs`). The server's `instructions` text is the short form
+and points here. CLI: `tirith guide [TOPIC]`.
 
 ## The lead decision log
 

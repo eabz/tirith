@@ -38,6 +38,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::contracts::{Contract, ContractError, ContractKind, NewContract};
 use crate::dashboard::{self, DashboardContext};
 use crate::decisions::{Decision, DecisionError, NewDecision};
+use crate::guide;
 use crate::hangup;
 use crate::lead::LeadPolicy;
 use crate::memory::{
@@ -46,6 +47,7 @@ use crate::memory::{
 };
 use crate::messages::{HUMAN, MessageError, MessageFilter, NewMessage, is_human};
 use crate::notices::{NewNotice, Notice, NoticeError, NoticeFilter, NoticeKind};
+use crate::output_schemas;
 use crate::registry::{DaemonEntry, REREGISTER_EVERY, Registration};
 use crate::state::{Brief, State};
 use crate::store::{DaemonInfo, JsonStore, Persister, StoreError};
@@ -72,7 +74,7 @@ the ok reply carries a brief of the unread notices, contracts, decisions and mem
 paths, so read it first. `conflict` means do not edit those paths. `contract_publish` before \
 implementing an interface another agent consumes; `notice_publish` for renames or signature changes \
 that affect other files; `release` when done. Any call renews your leases; a `lost` field means a \
-lease ended and you must claim again.";
+lease ended and you must claim again. Call `guide` for the whole protocol.";
 
 // ---------------------------------------------------------------------------
 // Tool inputs. Doc comments become schema descriptions.
@@ -152,7 +154,7 @@ pub struct TaskCreateInput {
     pub agent: String,
     /// Short imperative title.
     pub title: String,
-    /// Longer description.
+    /// What needs doing, for whoever pulls the task.
     #[serde(default)]
     pub description: Option<String>,
     /// Higher pulls first. Default 0.
@@ -171,9 +173,10 @@ pub struct TaskCreateInput {
 pub struct TaskUpdateInput {
     /// Your stable agent name.
     pub agent: String,
-    /// The task id.
+    /// The task's id, or a unique prefix of it.
     pub task_id: String,
     /// One of `todo`, `in_progress`, `blocked`, `done`.
+    #[schemars(extend("enum" = ["todo", "in_progress", "blocked", "done"]))]
     pub status: String,
     /// A note to append. For `blocked`, this is the reason.
     #[serde(default)]
@@ -190,6 +193,7 @@ pub struct TaskListInput {
     pub agent: String,
     /// Only tasks with this status.
     #[serde(default)]
+    #[schemars(extend("enum" = ["todo", "in_progress", "blocked", "done"]))]
     pub status: Option<String>,
     /// Only tasks owned by this agent.
     #[serde(default)]
@@ -211,13 +215,14 @@ pub struct ContractPublishInput {
     /// Unique contract name, for example `POST /api/sessions` or `State::claim`.
     pub name: String,
     /// One of `http`, `function`, `type`, `event`, `cli`, `other`.
+    #[schemars(extend("enum" = ["http", "function", "type", "event", "cli", "other"]))]
     pub kind: String,
     /// The interface shape as JSON: signatures, request and response types, errors.
     pub shape: Value,
     /// Paths expected to depend on this contract.
     #[serde(default)]
     pub consumers: Option<Vec<String>>,
-    /// Free-text notes.
+    /// Free-text notes stored with this version.
     #[serde(default)]
     pub notes: Option<String>,
     /// Refuse unless the contract is at this version now (0 = absent).
@@ -230,7 +235,7 @@ pub struct ContractPublishInput {
 pub struct ContractGetInput {
     /// Your stable agent name.
     pub agent: String,
-    /// Contract name or id.
+    /// The contract's name, its id, or a unique prefix of the id.
     pub name: String,
 }
 
@@ -244,6 +249,7 @@ pub struct ContractListInput {
     pub path: Option<String>,
     /// Only contracts of this kind.
     #[serde(default)]
+    #[schemars(extend("enum" = ["http", "function", "type", "event", "cli", "other"]))]
     pub kind: Option<String>,
     /// Rows to return (default 20, max 200), most recently published first.
     #[serde(default)]
@@ -260,6 +266,7 @@ pub struct NoticePublishInput {
     /// Your stable agent name.
     pub agent: String,
     /// One of `rename`, `signature`, `removed`, `moved`, `behavior`.
+    #[schemars(extend("enum" = ["rename", "signature", "removed", "moved", "behavior"]))]
     pub kind: String,
     /// One-line summary, for example `renamed session_id to token`.
     pub summary: String,
@@ -308,14 +315,14 @@ pub struct NoticeListInput {
 pub struct DecisionRecordInput {
     /// Your stable agent name.
     pub agent: String,
-    /// Short title.
+    /// Short title, the line shown in briefs.
     pub title: String,
-    /// What was decided.
+    /// What was decided, stated so it can be followed.
     pub decision: String,
-    /// Why.
+    /// Why it was decided.
     #[serde(default)]
     pub rationale: Option<String>,
-    /// What else was considered.
+    /// The alternatives that were considered and rejected.
     #[serde(default)]
     pub alternatives: Option<Vec<String>>,
     /// Paths the decision constrains.
@@ -359,11 +366,12 @@ pub struct StatusInput {
 pub struct MessageSendInput {
     /// Your stable agent name.
     pub agent: String,
-    /// The recipient's agent name, or `*` for everyone active in the last hour.
+    /// The recipient's agent name, `*` for every agent active in the last
+    /// hour, or `human` for the human queue.
     pub to: String,
     /// The message, at most 1000 characters.
     pub text: String,
-    /// The message this answers.
+    /// Id, or a unique prefix, of the message this one answers.
     #[serde(default)]
     pub reply_to: Option<String>,
     /// Paths the message is about.
@@ -388,7 +396,8 @@ pub struct MessageListInput {
     /// Rows to return; default 20, max 200.
     #[serde(default)]
     pub limit: Option<usize>,
-    /// Only rows older than this cursor.
+    /// Only messages older than this cursor: an RFC 3339 timestamp or a
+    /// previous response's `next_before`.
     #[serde(default)]
     pub before: Option<String>,
 }
@@ -402,13 +411,15 @@ pub struct MemoryWriteInput {
     pub title: String,
     /// The note itself, as Markdown.
     pub body: String,
-    /// One of `fact`, `lesson`, `gotcha`, `handoff`, `research`, `note`.
+    /// One of `fact`, `lesson`, `gotcha`, `handoff`, `research`, `decision`,
+    /// `note` (the default).
     #[serde(default)]
+    #[schemars(extend("enum" = ["fact", "lesson", "gotcha", "handoff", "research", "decision", "note"]))]
     pub kind: Option<String>,
     /// Repo-relative paths this note is about.
     #[serde(default)]
     pub paths: Option<Vec<String>>,
-    /// Tags for filtering.
+    /// Tags for filtering; lowercased, and a leading `#` is dropped.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     /// Overwrite this note instead of matching on the title.
@@ -453,6 +464,7 @@ pub struct MemorySearchInput {
     pub path: Option<String>,
     /// Only notes of this kind.
     #[serde(default)]
+    #[schemars(extend("enum" = ["fact", "lesson", "gotcha", "handoff", "research", "decision", "note"]))]
     pub kind: Option<String>,
     /// Only notes carrying this tag.
     #[serde(default)]
@@ -463,6 +475,19 @@ pub struct MemorySearchInput {
     /// How many to return. Default 10, max 50.
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+/// Input for `guide`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct GuideInput {
+    /// Your stable agent name, optional here. With it, waiting messages and
+    /// lost leases ride on the reply as on any other call.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// One primitive to explain instead of the overview.
+    #[serde(default)]
+    #[schemars(extend("enum" = ["overview", "claims", "tasks", "contracts", "notices", "decisions", "memory", "messages", "lead", "server"]))]
+    pub topic: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -809,11 +834,11 @@ fn join_paths(paths: &[Value], renewed: usize) -> String {
 /// Strips what schemars emits that an MCP client does not need: the
 /// `$schema` URL, `default: null`, integer `format` and `minimum`, the
 /// `["T", "null"]` unions on optional fields (absence from `required`
-/// already says optional), and per-parameter descriptions. Parameter
-/// names are self-describing; the semantics that are not obvious live in
-/// the tool's one-sentence description and in `docs/1-about/04-primitives.md`.
-/// Every agent downloads every schema once per session, so this is a
-/// per-session token cost, pinned by a test in `tests/http_roundtrip.rs`.
+/// already says optional). Parameter descriptions stay: ADR-0034 sends
+/// them so a caller can fill in a call without a second source, which
+/// supersedes the rule of ADR-0017 that dropped them. Every agent
+/// downloads every schema once per session, so what is left is a
+/// per-session token cost, pinned by a test in `tests/budgets.rs`.
 fn slim_schema(schema: &mut Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
@@ -836,9 +861,6 @@ fn slim_schema(schema: &mut Value) {
     }
     if let Some(Value::Object(props)) = obj.get_mut("properties") {
         for prop in props.values_mut() {
-            if let Some(field) = prop.as_object_mut() {
-                field.remove("description");
-            }
             slim_schema(prop);
         }
     }
@@ -1129,7 +1151,7 @@ impl TirithServer {
     /// Claim files or directories before editing them.
     #[tool(
         name = "claim",
-        description = "Claim paths (a directory covers its contents) before editing, atomically; ok briefs notices, contracts, decisions, memory. ttl_secs 600, max 3600. wait_secs max 120: waits out conflicts. Use before editing; your own paths renew. Not for reading: claims_list. conflict lists overlaps, claims nothing.",
+        description = "Lease repo paths to yourself before editing them, atomically: every path becomes yours or none does. A directory covers its contents, and re-claiming a path you hold renews it. ok carries a brief of the unread notices, contracts, decisions and memory notes for those paths, and marks the notices shown as seen: read it before editing. conflict lists each overlapping lease; do not edit, or pass wait_secs so the daemon waits for the paths instead of you retrying. To see who holds a path without taking it use claims_list; to extend leases use renew.",
         annotations(destructive_hint = false)
     )]
     async fn claim(
@@ -1198,7 +1220,7 @@ impl TirithServer {
     /// Release claims when done.
     #[tool(
         name = "release",
-        description = "Release paths, or everything you hold when paths is omitted. Use when done editing; to extend time use renew. not_found for a path you do not hold; nothing is released.",
+        description = "Give up leases so other agents can claim the paths; omit paths to release everything you hold. Use when you finish editing, not to extend time (renew) or to inspect (claims_list). Paths are matched exactly: releasing a file does not release a file#Symbol anchor inside it. not_found if you do not hold a named path, and then nothing is released.",
         annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn release(
@@ -1217,7 +1239,7 @@ impl TirithServer {
     /// Renew every lease you hold.
     #[tool(
         name = "renew",
-        description = "Extend every lease you hold by its original TTL. Use only during long silent work: any other call also renews. Not for new paths: claim. Returns count and latest expires_at.",
+        description = "Extend every lease you hold by its original TTL and restart the four-TTL age limit that ends a lease however active you are. Needed only during long work with no other call, because any tool call already renews; to take new paths use claim. Returns how many leases were renewed and the latest expiry; not_found when you hold none.",
         annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn renew(
@@ -1238,7 +1260,7 @@ impl TirithServer {
     /// List live claims.
     #[tool(
         name = "claims_list",
-        description = "Your live claims plus any overlapping path; all=true for every claim. Newest first, paged. Use to check a conflict before claim; the whole board only with all=true. Takes no lease.",
+        description = "List live leases: by default yours plus any lease overlapping path, which is what a conflict check needs; all=true lists the whole board. Use before claim to see who holds a path and until when; for counts and daemon health use status. Expired leases are never listed. Newest first, 20 rows per page; pass next_before as before for older rows.",
         annotations(read_only_hint = true)
     )]
     async fn claims_list(
@@ -1265,7 +1287,7 @@ impl TirithServer {
     /// Create a task.
     #[tool(
         name = "task_create",
-        description = "Add a todo task; depends_on ids must be done before it can be pulled; higher priority pulls first.",
+        description = "Add a todo task to the shared board for any agent to pull. depends_on holds it back until those tasks are done, higher priority is pulled first, and paths lets task_pull keep agents off each other's files. Use to queue work, not to start it: task_pull assigns work and task_update changes a task. Returns the task with its id.",
         annotations(destructive_hint = false)
     )]
     async fn task_create(
@@ -1297,7 +1319,7 @@ impl TirithServer {
     /// Pull the next unblocked task.
     #[tool(
         name = "task_pull",
-        description = "Take the highest-priority unblocked todo task as in_progress. wait_secs max 120: waits out claims and dependencies. Use to get work; to inspect use task_list. none when nothing is unblocked; a held task returns waiting_on.",
+        description = "Take the next task: the highest-priority todo whose dependencies are done becomes in_progress and yours, preferring tasks whose paths nobody else holds. Use to get work; to look without taking use task_list, and to change a named task use task_update. none means nothing is unblocked; a task that comes with waiting_on overlaps paths others hold, so coordinate before editing them. wait_secs waits server-side for work instead of you polling.",
         annotations(destructive_hint = false)
     )]
     async fn task_pull(
@@ -1347,7 +1369,7 @@ impl TirithServer {
     /// Update a task's status.
     #[tool(
         name = "task_update",
-        description = "Set status (todo|in_progress|blocked|done) with an optional note; another agent's in_progress task is a conflict unless force. Use to hand back, block or finish a task; to take one use task_pull. force is recorded in the notes.",
+        description = "Change one task's status: done to finish it, todo to hand it back, blocked to park it with note as the reason, in_progress to take it by id. Changing a task another agent has in_progress is a conflict naming the owner, unless force, which is recorded in the task's notes. To get the next task without naming one use task_pull. Returns the task in full.",
         annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn task_update(
@@ -1373,7 +1395,7 @@ impl TirithServer {
     /// List tasks.
     #[tool(
         name = "task_list",
-        description = "List tasks by status and owner, most recently updated first, paged.",
+        description = "List tasks on the board, filtered by status or owner, most recently updated first. Use to inspect the board without taking anything; to take work use task_pull. Rows are compact, 20 rows per page; pass next_before as before for older rows.",
         annotations(read_only_hint = true)
     )]
     async fn task_list(
@@ -1400,7 +1422,7 @@ impl TirithServer {
     /// Publish an interface contract.
     #[tool(
         name = "contract_publish",
-        description = "Publish an interface shape (kind: http|function|type|event|cli|other). Republish: new version, consumers kept unless given, conflict on stale expected_version.",
+        description = "Publish the shape of an interface (an endpoint, function, type, event or CLI) before either side implements it, with the paths that will consume it. Publishing an existing name creates a new version and sends its consumers a change notice by itself, so do not also call notice_publish. Omitting consumers on a republish keeps the list, and expected_version refuses the write with conflict if another agent published first. To read contracts use contract_get or contract_list.",
         annotations(destructive_hint = false)
     )]
     async fn contract_publish(
@@ -1435,7 +1457,7 @@ impl TirithServer {
     /// Fetch a contract.
     #[tool(
         name = "contract_get",
-        description = "Fetch a contract by name or id, with its versions. Use for one full body with history; to browse use contract_list. A unique id prefix works; an ambiguous one is invalid.",
+        description = "Fetch one contract in full by name, id or unique id prefix: its current shape and every earlier version. Use when a brief or contract_list names a contract you consume; to find contracts by path or kind use contract_list. not_found if there is none, and an ambiguous prefix is invalid.",
         annotations(read_only_hint = true)
     )]
     async fn contract_get(
@@ -1455,7 +1477,7 @@ impl TirithServer {
     /// List contracts.
     #[tool(
         name = "contract_list",
-        description = "List contracts by consumer path or kind, newest first, paged. Use to see what your paths consume; a claim's brief lists them too. Bodies via contract_get.",
+        description = "List contracts, filtered by a consumer path or by kind, most recently published first. Use to find what a path depends on when you are not claiming it, since a claim's brief already lists them; shapes come from contract_get. Rows are compact, 20 rows per page; pass next_before as before for older rows.",
         annotations(read_only_hint = true)
     )]
     async fn contract_list(
@@ -1488,7 +1510,7 @@ impl TirithServer {
     /// Publish a change notice.
     #[tool(
         name = "notice_publish",
-        description = "Announce a change (kind: rename|signature|removed|moved|behavior) to the affected_paths. Use for renames and signature changes others use; interface shapes: contract_publish, which notifies itself. Holders of the paths get it in their inbox.",
+        description = "Announce a change other files must react to: a rename, signature change, removal, move or behavior change, with from, to and the affected_paths. Use after changing something used outside the paths you claimed; not for interface shapes, which contract_publish versions and announces itself. Every other agent holding an affected path gets it in its inbox at once, and the rest see it in the brief of their next claim there.",
         annotations(destructive_hint = false)
     )]
     async fn notice_publish(
@@ -1524,8 +1546,8 @@ impl TirithServer {
     /// List change notices.
     #[tool(
         name = "notice_list",
-        description = "List change notices by path, since (RFC 3339), or unread only, newest first, paged. Unread without a path covers the paths you hold unless all=true.",
-        annotations(read_only_hint = true)
+        description = "List change notices for a path, since a time, or only those you have not been shown (unread=true), newest first. unread without path is scoped to the paths you hold, and all=true looks beyond them. Listing unread notices marks them seen by you, durably, so they do not come back. A claim's brief already delivers the unread notices for the paths it claims; use this for other paths or older pages. 20 rows per page; pass next_before as before for older rows.",
+        annotations(destructive_hint = false)
     )]
     async fn notice_list(
         &self,
@@ -1569,7 +1591,7 @@ impl TirithServer {
     /// Record a decision.
     #[tool(
         name = "decision_record",
-        description = "Record a settled choice with its rationale, alternatives, and the paths it affects. Use once a choice is final so it is not made twice; to coordinate use message_send. Returns its file's permalink.",
+        description = "Record a settled project choice with its rationale, the alternatives considered and the paths it constrains, so no agent decides it again. It is written as one committed Markdown file under .tirith/decisions/ and appears in the brief of later claims on those paths. Use only once the choice is final; for discussion use message_send, and for lessons about code use memory_write. Returns the decision with its permalink.",
         annotations(destructive_hint = false)
     )]
     async fn decision_record(
@@ -1593,7 +1615,7 @@ impl TirithServer {
     /// List decisions.
     #[tool(
         name = "decision_list",
-        description = "List decisions by path or text query, newest first, paged. Use before decision_record to avoid deciding twice; a claim's brief carries its paths' decisions.",
+        description = "List recorded decisions, filtered by an affected path or a case-insensitive text query over title, decision and rationale, newest first. Use before decision_record so nothing is decided twice; a claim's brief already carries the decisions for the paths it claims. 20 rows per page; pass next_before as before for older rows.",
         annotations(read_only_hint = true)
     )]
     async fn decision_list(
@@ -1623,7 +1645,7 @@ impl TirithServer {
     /// Server status.
     #[tool(
         name = "status",
-        description = "Counts, persistence and load problems; verbose=true adds who holds what. Use for a health check; publishes nothing and takes no lease. For your own claims use claims_list.",
+        description = "Report the daemon's health: counts of claims, tasks, contracts, notices, decisions and notes, the swarm lead, the last persistence failure and the files skipped at load. verbose=true adds up to 50 active agents with what they hold. Use for a health check or to find the lead; it publishes nothing and takes no lease. For your own leases use claims_list, and for how to work with Tirith use guide.",
         annotations(read_only_hint = true)
     )]
     async fn status(
@@ -1680,7 +1702,7 @@ impl TirithServer {
     /// Write a memory note.
     #[tool(
         name = "memory_write",
-        description = "Write a note (kind: fact|lesson|gotcha|handoff|research|note); a known title updates it. Use for lessons and handoffs on paths; the next claim there gets it. if_updated_at refuses a changed note.",
+        description = "Save a durable note about repository paths (a lesson, trap, handoff or research) as committed Markdown; the next agent that claims those paths gets its excerpt in the brief. A title that already exists updates that note in place, and permalink targets one explicitly. Pass the updated_at you read as if_updated_at so a concurrent edit returns conflict instead of being overwritten. Not for settled choices (decision_record) or talk between agents (message_send).",
         annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn memory_write(
@@ -1712,7 +1734,7 @@ impl TirithServer {
     /// Read one memory note.
     #[tool(
         name = "memory_read",
-        description = "Read a note by permalink, id, or title; depth (0 to 3) adds related notes. Only this call returns a body; use after memory_search finds the note. related are digests, at most 20.",
+        description = "Read one memory note in full by permalink, id or exact title. It is the only tool that returns a note's body; depth 1 to 3 adds the notes linked to it, as digests. Use after memory_search or a claim's brief names the note; to find notes use memory_search. not_found if there is none.",
         annotations(read_only_hint = true)
     )]
     async fn memory_read(
@@ -1743,7 +1765,7 @@ impl TirithServer {
     /// Search memory notes.
     #[tool(
         name = "memory_search",
-        description = "Search notes, best first; no query lists the newest. limit: default 10, max 50. Use to find a note or for recent activity; rows are 160-char digests, never bodies: memory_read for one.",
+        description = "Find memory notes by free text, path, kind, tag or time, best match first; with no query it lists the most recently updated, which is the call to make when a session starts. Rows are digests with a 160-character excerpt and a score, never bodies: read one with memory_read. Terms match as substrings, with no embeddings. truncated is true when limit hid matches.",
         annotations(read_only_hint = true)
     )]
     async fn memory_search(
@@ -1792,7 +1814,7 @@ impl TirithServer {
     /// Delete a memory note.
     #[tool(
         name = "memory_delete",
-        description = "Delete a note by permalink, id, or exact title; its file is removed for good. Use to retract a secret or a wrong fact; to edit use memory_write. not_found if absent.",
+        description = "Delete one memory note by permalink, id or exact title, permanently: its file is removed and does not return on restart. Use to retract a note that holds a secret or a wrong fact; to correct a note use memory_write, which updates in place. Returns a digest of what was removed; not_found if there is none.",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     async fn memory_delete(
@@ -1815,7 +1837,7 @@ impl TirithServer {
     /// Send a message to another agent.
     #[tool(
         name = "message_send",
-        description = "Message an agent (to: name, * for all active, human for the human queue); delivered on their next call. text: max 1000 chars.",
+        description = "Send a short message to one agent by name, to every agent active in the last hour with *, or to the human queue with human. It is delivered once, as inbox on the recipient's next call of any tool, and reply_to threads an answer. Use for coordination talk; not for lasting knowledge (memory_write, decision_record) or for code changes others must react to (notice_publish). Messages are dropped after 24 hours.",
         annotations(destructive_hint = false)
     )]
     async fn message_send(
@@ -1841,7 +1863,7 @@ impl TirithServer {
     /// List your messages.
     #[tool(
         name = "message_list",
-        description = "List your messages, newest first; filter by with, since, unread. Use to page history; new messages arrive as inbox on any call, so do not poll. with: human is the human queue.",
+        description = "List your own conversations, sent and received, newest first; filter by the other agent (with), since a time, or unread messages to you. New messages already arrive as inbox on every reply, so use this for history, not to poll. with=human shows the human queue thread. 20 rows per page; pass next_before as before for older rows.",
         annotations(read_only_hint = true)
     )]
     async fn message_list(
@@ -1866,6 +1888,25 @@ impl TirithServer {
         });
         self.finish(Some(&input.agent), outcome).await
     }
+
+    /// How to work with Tirith.
+    #[tool(
+        name = "guide",
+        description = "Explain what Tirith is for and how to work with it: the working loop from claim to release, the rules every reply follows (status, lost, inbox, paging), and which tool each situation calls for. Call it first in a session, or when unsure which tool fits; topic narrows it to one primitive with when to use each of its tools. Returns static guidance only: for the daemon's live state use status.",
+        annotations(read_only_hint = true)
+    )]
+    async fn guide(
+        &self,
+        Parameters(input): Parameters<GuideInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let outcome = run(|| {
+            input.agent.as_deref().map(agent).transpose()?;
+            guide::guide(input.topic.as_deref())
+                .map(ok)
+                .map_err(invalid)
+        });
+        self.finish(input.agent.as_deref(), outcome).await
+    }
 }
 
 // The `tool_handler` macro generates async trait methods that return
@@ -1880,7 +1921,8 @@ impl ServerHandler for TirithServer {
         config
     }
 
-    /// The generated `tools/list`, with every input schema slimmed. The
+    /// The generated `tools/list`, with every input schema slimmed and
+    /// each tool's output schema attached (ADR-0034). The
     /// `tool_handler` macro leaves this method alone because it is defined
     /// here.
     async fn list_tools(
@@ -1896,6 +1938,9 @@ impl ServerHandler for TirithServer {
                 slim_schema(&mut schema);
                 if let Value::Object(map) = schema {
                     tool.input_schema = Arc::new(map);
+                }
+                if let Some(output) = output_schemas::output_schema(&tool.name) {
+                    tool.output_schema = Some(Arc::new(output));
                 }
                 tool
             })
@@ -2149,7 +2194,7 @@ mod tests {
             schema,
             json!({
                 "properties": {
-                    "agent": {"type": "string"},
+                    "agent": {"description": "Your agent name.", "type": "string"},
                     "paths": {"items": {"type": "string"}, "type": "array"},
                     "ttl_secs": {"type": "integer"},
                     "kind": {"type": "string"},
@@ -2160,6 +2205,28 @@ mod tests {
                 "type": "object"
             })
         );
+    }
+
+    #[test]
+    fn the_guide_and_the_router_name_the_same_tools() {
+        let mut routed: Vec<String> = TirithServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        routed.sort_unstable();
+        assert_eq!(routed, guide::tool_names());
+    }
+
+    #[test]
+    fn every_routed_tool_declares_an_output_schema() {
+        for tool in TirithServer::tool_router().list_all() {
+            assert!(
+                output_schemas::output_schema(&tool.name).is_some(),
+                "{} has no output schema",
+                tool.name
+            );
+        }
     }
 
     #[test]

@@ -245,7 +245,7 @@ async fn dashboard_and_tool_list_are_served() {
     let handle = start(options(dir.path(), None)).await.unwrap();
     let tools = list_tools(&handle.mcp_url()).await.unwrap();
     let names: Vec<&str> = tools.iter().map(|(n, _)| n.as_str()).collect();
-    // The 22 tools docs/1-about/04-primitives.md documents, and no other.
+    // The 23 tools docs/1-about/04-primitives.md documents, and no other.
     let documented = [
         "claim",
         "release",
@@ -269,6 +269,7 @@ async fn dashboard_and_tool_list_are_served() {
         "message_send",
         "message_list",
         "status",
+        "guide",
     ];
     for expected in documented {
         assert!(names.contains(&expected), "missing tool {expected}");

@@ -26,7 +26,7 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0014](0014-brief-on-claim.md) | `claim` returns a brief of notices, contracts, decisions, and memory for the claimed paths | Accepted; refined by 0021 |
 | [0015](0015-lease-loss-and-max-age.md) | Lost leases are reported in the next response; activity alone cannot hold a lease past a maximum age | Accepted |
 | [0016](0016-shim-replaces-stale-daemon.md) | The stdio shim replaces a daemon of another version and refuses one of another repository | Accepted |
-| [0017](0017-tool-result-and-schema-budget.md) | Tool results travel once, and tool schemas have a byte budget | Accepted; refined by 0013; superseded in part by 0033 |
+| [0017](0017-tool-result-and-schema-budget.md) | Tool results travel once, and tool schemas have a byte budget | Accepted; refined by 0013; superseded in part by 0033, 0034 |
 | [0018](0018-task-ownership-and-contract-republish.md) | Tasks belong to their owner until they go silent; contract republishes are guarded | Accepted |
 | [0019](0019-menu-bar-tray.md) | A per-user daemon registry and a macOS menu bar tray | Accepted; refined by 0032 |
 | [0020](0020-agent-messages.md) | Agent-to-agent messages, delivered on the next call | Accepted |
@@ -39,7 +39,8 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0029](0029-symbol-anchored-claims.md) | Symbol-anchored claims and edit-window holds | Proposed |
 | [0031](0031-waits-end-when-the-caller-goes.md) | A waiting `claim` or `task_pull` ends when its caller cancels or disconnects | Accepted |
 | [0032](0032-tray-single-instance-lock.md) | One tray per state directory, held by an OS lock; test daemons stay off the user's machine state | Accepted |
-| [0033](0033-tool-annotations-and-usage-clauses.md) | Every tool carries MCP annotations and says when to use it; `tools/list` budget 10,500 | Accepted |
+| [0033](0033-tool-annotations-and-usage-clauses.md) | Every tool carries MCP annotations and says when to use it; `tools/list` budget 10,500 | Accepted; superseded in part by 0034 |
+| [0034](0034-complete-tool-definitions-and-guide.md) | Tool definitions are complete on the wire (parameter descriptions, enums, output schemas), and `guide` explains the protocol; `tools/list` budget 44,500 | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

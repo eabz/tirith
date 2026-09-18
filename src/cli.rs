@@ -116,6 +116,12 @@ enum Command {
     },
     /// Show daemon status and who holds what.
     Status,
+    /// Explain what Tirith is for and how to work with it.
+    Guide {
+        /// One primitive to explain: claims, tasks, contracts, notices,
+        /// decisions, memory, messages, lead, or server.
+        topic: Option<String>,
+    },
     /// Claim files or directories before editing them.
     Claim {
         /// Why you need them; shown to anyone refused.
@@ -520,6 +526,7 @@ pub(crate) async fn run() -> Result<ExitCode> {
         }
         // A human is reading, so ask for the per-agent rows.
         Command::Status => ("status".to_owned(), json!({ "verbose": true })),
+        Command::Guide { topic } => ("guide".to_owned(), json!({ "topic": topic })),
         Command::Claim { reason, ttl, paths } => (
             "claim".to_owned(),
             json!({ "paths": paths, "reason": reason, "ttl_secs": ttl }),
@@ -1292,6 +1299,7 @@ fn render_result(tool: &str, agent: &str, v: &Value) -> String {
             }));
             out.join("\n")
         }
+        ("guide", "ok") => guide_page(v),
         ("task_pull", "none") => "none     no unblocked todo tasks".to_owned(),
         ("task_create" | "task_pull" | "task_update", "ok") => task_line(&v["task"]),
         ("task_list", "ok") => page(v, "tasks", "no tasks", task_line),
@@ -1500,6 +1508,38 @@ fn excerpt(body: &str) -> String {
         cut.push('…');
     }
     cut
+}
+
+/// The guide as plain text: the overview's loop, tools and rules, or one
+/// topic's tools with when to call each.
+fn guide_page(v: &Value) -> String {
+    let mut out = Vec::new();
+    for key in ["purpose", "summary"] {
+        let text = s(&v[key]);
+        if !text.is_empty() {
+            out.push(text.to_owned());
+        }
+    }
+    for (n, step) in v["loop"].as_array().into_iter().flatten().enumerate() {
+        out.push(format!("{}. {}", n + 1, s(step)));
+    }
+    match &v["tools"] {
+        Value::Object(groups) => {
+            for (topic, names) in groups {
+                out.push(format!("{topic:<10} {}", strs(names)));
+            }
+        }
+        Value::Array(entries) => {
+            for entry in entries {
+                out.push(format!("{:<16} {}", s(&entry["tool"]), s(&entry["when"])));
+            }
+        }
+        _ => {}
+    }
+    for rule in v["rules"].as_array().into_iter().flatten() {
+        out.push(format!("- {}", s(rule)));
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]

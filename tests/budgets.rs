@@ -3,7 +3,7 @@
 //! notices and decisions, dozens of contracts and memory notes. Every
 //! agent pays these bytes on every call, so a budget that silently grows
 //! is a regression. The bounds here may be lowered, never raised without
-//! an ADR that names what the raise pays for (ADR-0017, ADR-0033).
+//! an ADR that names what the raise pays for (ADR-0017, ADR-0033, ADR-0034).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -36,9 +36,17 @@ use tirith::server::{ServeOptions, ServerHandle, start};
 ///   clause on the 17 tools whose guidance was only implied (ADR-0033):
 ///   about 950 chars of structured hints and 1,800 of prose. The per-tool
 ///   bound rises from 500 to 650 for the same reason.
-const TOOLS_LIST_MAX: usize = 10_500;
+/// - 10,500 to 44,500 for ADR-0034, where the owner ranks a complete tool
+///   definition above the per-session bytes: a description on every
+///   parameter, enums on the closed ones, an output schema on every tool,
+///   descriptions that say when not to call and what comes back, and the
+///   `guide` tool. Measured 43,607; the per-tool bound rises from 650 to
+///   T44,500 (largest: `claim`, 3,451).
+const TOOLS_LIST_MAX: usize = 44_500;
 /// Any single tool in `tools/list`.
-const TOOL_MAX: usize = 650;
+const TOOL_MAX: usize = 3_600;
+/// The `guide` overview, the largest page that tool returns.
+const GUIDE_MAX: usize = 3_072;
 /// The text content block of any result.
 const TEXT_MAX: usize = 200;
 /// Rows a list tool returns without a `limit`.
@@ -197,7 +205,7 @@ fn assert_compact(row: &Value, context: &str) {
 }
 
 #[tokio::test]
-async fn tools_list_stays_under_10500_chars_and_no_tool_over_650() {
+async fn tools_list_stays_under_44500_chars_and_no_tool_over_3600() {
     let daemon = Daemon::empty().await;
     let tools = daemon.client.list_all_tools().await.unwrap();
     let total = serde_json::to_string(&tools).unwrap().len();
@@ -224,14 +232,11 @@ async fn tools_list_stays_under_10500_chars_and_no_tool_over_650() {
     daemon.stop().await;
 }
 
-#[tokio::test]
-async fn every_result_text_block_is_a_status_line_under_200_bytes() {
-    let daemon = Daemon::seeded(30).await;
-    let task = daemon
-        .outcome("task_pull", json!({ "agent": "worker" }))
-        .await["task"]["id"]
-        .clone();
-    let calls = [
+/// One call per tool and per notable outcome, against [`Daemon::seeded`]:
+/// what the text-block budget and the output schemas are both checked on.
+/// Order matters: later calls read what earlier ones wrote.
+fn sample_calls(task: &Value) -> Vec<(&'static str, Value)> {
+    vec![
         (
             "claim",
             json!({ "agent": "alice", "paths": ["src/new/a.rs", "src/new/b.rs"], "reason": "r" }),
@@ -241,13 +246,19 @@ async fn every_result_text_block_is_a_status_line_under_200_bytes() {
             json!({ "agent": "bob", "paths": ["src/new/a.rs"], "reason": "r" }),
         ),
         ("renew", json!({ "agent": "alice" })),
+        ("renew", json!({ "agent": "nobody" })),
         ("claims_list", json!({ "agent": "alice" })),
         ("claims_list", json!({ "agent": "alice", "all": true })),
         ("release", json!({ "agent": "nobody" })),
         (
+            "release",
+            json!({ "agent": "alice", "paths": ["src/new/b.rs"] }),
+        ),
+        (
             "task_create",
             json!({ "agent": "alice", "title": "Budget the text" }),
         ),
+        ("task_pull", json!({ "agent": "idle" })),
         (
             "task_update",
             json!({ "agent": "worker", "task_id": task, "status": "done", "note": "n" }),
@@ -262,6 +273,10 @@ async fn every_result_text_block_is_a_status_line_under_200_bytes() {
             json!({ "agent": "alice", "name": "Contract 1", "kind": "type", "shape": {"v": 2} }),
         ),
         (
+            "contract_publish",
+            json!({ "agent": "bob", "name": "Contract 1", "kind": "type", "shape": {"v": 3}, "expected_version": 99 }),
+        ),
+        (
             "contract_get",
             json!({ "agent": "alice", "name": "Contract 1" }),
         ),
@@ -272,21 +287,173 @@ async fn every_result_text_block_is_a_status_line_under_200_bytes() {
         ),
         ("notice_list", json!({ "agent": "alice", "path": "src/m1" })),
         (
+            "notice_list",
+            json!({ "agent": "idle-two", "unread": true }),
+        ),
+        (
             "decision_record",
             json!({ "agent": "alice", "title": "T", "decision": "D" }),
         ),
         ("decision_list", json!({ "agent": "alice" })),
         ("status", json!({})),
+        ("status", json!({ "agent": "alice", "verbose": true })),
         (
             "memory_write",
             json!({ "agent": "alice", "title": "Note", "body": "Body." }),
         ),
+        (
+            "memory_write",
+            json!({ "agent": "bob", "title": "Note", "body": "Other.", "if_updated_at": "2000-01-01T00:00:00Z" }),
+        ),
         ("memory_read", json!({ "agent": "alice", "name": "note" })),
+        (
+            "memory_read",
+            json!({ "agent": "alice", "name": "no-such-note" }),
+        ),
         (
             "memory_search",
             json!({ "agent": "alice", "query": "module" }),
         ),
-    ];
+        ("memory_search", json!({ "agent": "alice" })),
+        (
+            "message_send",
+            json!({ "agent": "alice", "to": "bob", "text": "hello" }),
+        ),
+        ("message_list", json!({ "agent": "alice" })),
+        ("guide", json!({})),
+        ("guide", json!({ "agent": "alice", "topic": "claims" })),
+        ("guide", json!({ "topic": "nope" })),
+        ("memory_delete", json!({ "agent": "alice", "name": "note" })),
+    ]
+}
+
+/// The JSON Schema type name of `value`.
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// `actual` against the `type` a schema node declares, if it declares one.
+fn check_type(name: &str, node: &Value, actual: &Value) -> Result<(), String> {
+    let allowed: Vec<&str> = match node.get("type") {
+        Some(Value::String(one)) => vec![one.as_str()],
+        Some(Value::Array(many)) => many.iter().filter_map(Value::as_str).collect(),
+        _ => return Ok(()),
+    };
+    let kind = json_type(actual);
+    if allowed.contains(&kind) || (kind == "integer" && allowed.contains(&"number")) {
+        Ok(())
+    } else {
+        Err(format!("`{name}` is {kind}, the schema says {allowed:?}"))
+    }
+}
+
+/// Checks `value` against the parts of JSON Schema the output schemas
+/// use: `required`, the `type` and `enum` of each property that is
+/// present, and the item type of its arrays. A strict client validates at
+/// least this much, so a result that fails here is a tool it cannot call.
+fn conforms(schema: &serde_json::Map<String, Value>, value: &Value) -> Result<(), String> {
+    let object = value.as_object().ok_or("the result is not an object")?;
+    for key in schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !object.contains_key(key) {
+            return Err(format!("missing required `{key}`"));
+        }
+    }
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or("the schema has no properties")?;
+    for (name, node) in properties {
+        let Some(actual) = object.get(name) else {
+            continue;
+        };
+        check_type(name, node, actual)?;
+        if let Some(options) = node.get("enum").and_then(Value::as_array)
+            && !options.contains(actual)
+        {
+            return Err(format!("`{name}` is {actual}, not one of {options:?}"));
+        }
+        if let (Some(items), Some(rows)) = (node.get("items"), actual.as_array()) {
+            for row in rows {
+                check_type(&format!("{name}[]"), items, row)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_result_conforms_to_the_output_schema_its_tool_declares() {
+    let daemon = Daemon::seeded(30).await;
+    let schemas: std::collections::HashMap<String, serde_json::Map<String, Value>> = daemon
+        .client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tool| {
+            let schema = tool
+                .output_schema
+                .as_deref()
+                .cloned()
+                .unwrap_or_else(|| panic!("{} declares no output schema", tool.name));
+            (tool.name.to_string(), schema)
+        })
+        .collect();
+    let task = daemon
+        .outcome("task_pull", json!({ "agent": "worker" }))
+        .await["task"]["id"]
+        .clone();
+    let mut called = std::collections::BTreeSet::new();
+    for (tool, args) in sample_calls(&task) {
+        let outcome = daemon.outcome(tool, args).await;
+        if let Err(problem) = conforms(&schemas[tool], &outcome) {
+            panic!("{tool}: {problem}\n{outcome}");
+        }
+        called.insert(tool);
+    }
+    let skipped: Vec<&String> = schemas
+        .keys()
+        .filter(|name| !called.contains(name.as_str()))
+        .collect();
+    assert!(skipped.is_empty(), "sample_calls never calls {skipped:?}");
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn the_guide_overview_is_under_3_kb() {
+    let daemon = Daemon::empty().await;
+    let overview = daemon.outcome("guide", json!({})).await;
+    eprintln!("guide overview: {} bytes", bytes(&overview));
+    assert!(
+        bytes(&overview) <= GUIDE_MAX,
+        "guide overview is {} bytes, budget {GUIDE_MAX}",
+        bytes(&overview)
+    );
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn every_result_text_block_is_a_status_line_under_200_bytes() {
+    let daemon = Daemon::seeded(30).await;
+    let task = daemon
+        .outcome("task_pull", json!({ "agent": "worker" }))
+        .await["task"]["id"]
+        .clone();
+    let calls = sample_calls(&task);
     for (tool, args) in calls {
         let result = daemon.call(tool, args).await;
         let status = result.structured_content.as_ref().unwrap()["status"]

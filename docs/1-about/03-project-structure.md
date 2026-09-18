@@ -27,6 +27,8 @@ tirith/
 │   ├── lib.rs           Crate root: module declarations.
 │   ├── server.rs        MCP tool surface (rmcp) and `start`.
 │   ├── hangup.rs        Tells a waiting tool call that its caller left.
+│   ├── guide.rs         What the `guide` tool returns: the protocol as data.
+│   ├── output_schemas.rs  The output schema each tool declares in tools/list.
 │   ├── dashboard.rs     Dashboard routes.
 │   ├── dashboard.html   The dashboard page, embedded at build time.
 │   ├── dashboard-logo.png  The logo the dashboard serves at /logo.png.

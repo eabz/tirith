@@ -4,7 +4,11 @@
 [ADR-0017](0017-tool-result-and-schema-budget.md): the `tools/list`
 budget rises once, for structured hints and one usage clause per tool.
 The per-parameter rule of ADR-0017 stands. Updates the `tools/list` row
-of the table in [ADR-0013](0013-v1-definition.md).
+of the table in [ADR-0013](0013-v1-definition.md). Superseded in part by
+[ADR-0034](0034-complete-tool-definitions-and-guide.md): parameters are
+described on the wire and every tool declares an output schema after
+all, and `notice_list` is not read-only; the annotations and the usage
+clauses stand.
 
 ## Context
 

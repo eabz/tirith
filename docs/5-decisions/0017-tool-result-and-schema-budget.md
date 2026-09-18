@@ -8,7 +8,9 @@ after [ADR-0020](0020-agent-messages.md) added two tools and
 is the value at the time. Superseded in part by
 [ADR-0033](0033-tool-annotations-and-usage-clauses.md): every tool now
 carries MCP annotations and a usage clause, and the budget is 10,500;
-the per-parameter rule stands.
+the per-parameter rule stood until
+[ADR-0034](0034-complete-tool-definitions-and-guide.md) sent parameter
+descriptions again, by the owner's decision.
 
 ## Context
 
