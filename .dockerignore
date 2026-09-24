@@ -3,6 +3,11 @@ target/
 .tirith/
 .git/
 .github/
+.agents/
+.claude/
+.cursor/
+.serena/
+graphify-out/
 docs/
 tests/
 examples/

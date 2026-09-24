@@ -8,10 +8,11 @@ without a claim is a rule violation, not a fallback.
 
 ## The daemon
 
-Tirith is registered for Claude Code in `.mcp.json` and for Cursor in
-`.cursor/mcp.json` as the stdio server `tirith stdio`. The shim starts the
-daemon at `http://127.0.0.1:7477` on the first session if none is running,
-and nothing has to be started by hand. To start or inspect it anyway:
+Tirith is registered in `.mcp.json` as the stdio server `tirith stdio`
+(other clients add the same command to their own MCP config). The shim
+starts the daemon at `http://127.0.0.1:7477` on the first session if none
+is running, and nothing has to be started by hand. To start or inspect it
+anyway:
 
 ```bash
 tirith serve                        # or: cargo run --quiet -- serve
@@ -30,8 +31,18 @@ stops it cleanly, and starts the new one
 ([ADR-0016](../5-decisions/0016-shim-replaces-stale-daemon.md)); the
 restart is written to `.tirith/runtime/serve.log`. The one case it cannot
 detect is a daemon built from a working tree with the same version string
-as the installed binary. Stop that one by hand with the pid in
-`daemon.json`; the Serena memory `workflow/daemon-restart` has the steps.
+as the installed binary. Stop that one by hand: install with
+`cargo install --path . --locked --force` (a plain install refuses an
+equal version), read the pid from `.tirith/runtime/daemon.json` and
+`kill -INT <pid>`. Shutdown flushes pending writes, gives open streams at
+most 2 s, removes `daemon.json` and the registry entry, and exits; wait
+until the pid is gone before starting anything, so the old daemon cannot
+delete the new record. The next MCP session starts the new daemon, or
+`nohup tirith serve >> .tirith/runtime/serve.log 2>&1 &` does. Old shims
+reconnect on their own; sessions see the new tool list after their MCP
+client reconnects. If `scripts/check.sh` fails its last step, a test left
+a `tirith serve --root /var/folders/...` daemon behind: `pgrep -fl "tirith
+serve"` finds it.
 
 ## Protocol for every agent
 

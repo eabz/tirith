@@ -3,7 +3,8 @@
 There are two, with distinct jobs, and one rule for what goes where.
 
 **The rule is the path.** If you can name the files the knowledge is
-about, it is a Tirith memory note. If you cannot, it is a Serena memory.
+about, it is a Tirith memory note. If you cannot, it belongs in `docs/`;
+Serena memories only point there.
 
 ## Layer 1: Tirith memory notes
 
@@ -46,16 +47,15 @@ about the paths you touched, if the repository does not already say it.
 ## Layer 2: Serena memories
 
 - Location: `.serena/memories/`, committed to git.
-- Content: short facts for navigating and building the project, not tied
-  to any one path.
-- Tools: `list_memories`, `read_memory`, `write_memory`, `edit_memory`.
-- Good for: "the head-developer session runs as agent `head-dev-fable`",
-  "a daemon built from a tree with the installed version string must be
-  restarted by hand", "integration tests need their own `allow` attribute
-  because they are separate crates".
+- Content: entry points. `repo-map` says to read `AGENTS.md` and the
+  `docs/README.md` index, and that no other checkout or historical memory
+  is an authority.
+- Tools: `list_memories`, `read_memory`.
 
-Read the relevant ones at session start. Write one when you learn
-something non-obvious that no file in the repository would tell you.
+They carry no facts of their own, so nothing in them can go stale. A
+milestone, a session's agent name, or a restart procedure is not a memory:
+the first two belong on the Tirith board, the third in `docs/`
+([ADR-0035](../5-decisions/0035-shared-agent-conventions.md)).
 
 ## What goes where
 
@@ -65,7 +65,7 @@ something non-obvious that no file in the repository would tell you.
 | Design decisions about Tirith | `docs/5-decisions/` |
 | Behavior, usage, rules | `docs/` |
 | A lesson, trap, design note, or handoff about specific paths | Tirith memory notes |
-| A short fact for navigating or building, not tied to a path | Serena memory |
+| A short fact for navigating or building, not tied to a path | `docs/` |
 | Coordination state while working (who edits what, what changed) | Tirith itself |
 
 If a note would help a human reader of the repository understand how to

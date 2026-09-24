@@ -41,6 +41,7 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0032](0032-tray-single-instance-lock.md) | One tray per state directory, held by an OS lock; test daemons stay off the user's machine state | Accepted |
 | [0033](0033-tool-annotations-and-usage-clauses.md) | Every tool carries MCP annotations and says when to use it; `tools/list` budget 10,500 | Accepted; superseded in part by 0034 |
 | [0034](0034-complete-tool-definitions-and-guide.md) | Tool definitions are complete on the wire (parameter descriptions, enums, output schemas), and `guide` explains the protocol; `tools/list` budget 44,500 | Accepted |
+| [0035](0035-shared-agent-conventions.md) | Agent conventions shared with the other repositories: skills in `.agents/skills/`, committed Claude settings, graphify, a short `AGENTS.md`, memories as entry points | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

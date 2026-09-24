@@ -1,0 +1,16 @@
+# graphify: code and current documentation only (saves tokens in extraction)
+.agents/
+.claude/
+.cursor/
+.github/
+.serena/
+.tirith/runtime/
+graphify-out/
+target/
+Cargo.lock
+*.html
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.ico

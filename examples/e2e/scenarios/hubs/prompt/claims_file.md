@@ -1,1 +1,0 @@
-Claim whole files. Each entry in `paths` is a file path relative to the repository root, such as `tally/pricing.py` or `tests/test_gift_wrap.py`. A file claim covers everything in that file, so while you hold it no other agent can claim any part of it; claim every file you will write, including files you only add an import to.

@@ -1,1 +1,0 @@
-Hold claims only while you edit (an edit window): read the code and prepare the change without a claim, claim what you are about to write, write the change once, run the quickest check (`python3 -m unittest`), and release those paths with `tb release '{"paths":[...]}'`. Claim again when you need to come back.

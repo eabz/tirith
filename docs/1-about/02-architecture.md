@@ -145,10 +145,9 @@ on the same write, so a burst of claims from a swarm becomes one write of
 lease renewals are folded into the next claims write or picked up by a
 one-second tick. A failed write is logged, surfaced as `persist_error` in
 `status` and on the dashboard, and followed by a full rewrite on the next
-attempt; the in-memory state stays authoritative. Measured with
-`examples/swarm_bench.rs`: 200 agents on persistent sessions see single-
-digit millisecond medians, where the previous whole-snapshot-per-call
-design saw seconds. See
+attempt; the in-memory state stays authoritative. Measured on 2026-09-16
+with 200 agents on persistent sessions: single-digit millisecond medians,
+where the previous whole-snapshot-per-call design saw seconds. See
 [../5-decisions/0010-incremental-persistence.md](../5-decisions/0010-incremental-persistence.md).
 
 Committed files are human-readable and git-diffable on purpose: contracts

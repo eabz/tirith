@@ -3,7 +3,7 @@
 ```
 tirith/
 ├── AGENTS.md            Rules for coding agents. Read before editing.
-├── CLAUDE.md            Claude Code entry point; imports AGENTS.md.
+├── CLAUDE.md            Claude Code entry point; only imports AGENTS.md.
 ├── README.md            Overview, install, tool table, quick examples.
 ├── LICENSE              MIT.
 ├── index.html           The landing page GitHub Pages serves from the root.
@@ -62,10 +62,7 @@ tirith/
 │   ├── budgets.rs         Token budgets: tools/list, rows, text lines.
 │   └── common/            Shared helpers for the integration tests.
 ├── examples/
-│   ├── demo.sh          Two agents, overlapping claims, second refused.
-│   ├── swarm_bench.rs   200 simulated agents against one daemon.
-│   └── e2e/             End-to-end benchmark kit: LLM workers on the Forge
-│                        and hubs scenarios, scored against hidden tests.
+│   └── demo.sh          Two agents, overlapping claims, second refused.
 ├── docs/                All documentation. See docs/README.md.
 │   ├── README.md        Index and writing conventions.
 │   ├── index.html       Redirects to the root landing page.
@@ -77,9 +74,14 @@ tirith/
 │   ├── 6-agent-workflow/
 │   ├── 7-release/
 │   └── _static/images/
-├── .serena/             Serena project config and memories.
-├── .mcp.json            Claude Code project MCP servers (tirith stdio).
-├── .cursor/mcp.json     Cursor MCP servers (tirith stdio).
+├── .agents/skills/      Skills: less-code and dead-code (shared with the
+│                        other repositories), tirith (this repo's own).
+├── .claude/             settings.json (enabled MCP servers, read denials)
+│                        and the skills link. Everything else gitignored.
+├── .serena/             Serena project config and the entry-point memory.
+├── .mcp.json            Project MCP servers: tirith stdio, serena, graphify.
+├── .graphifyignore      What graphify leaves out of the knowledge graph.
+├── graphify-out/        The graph, built per machine. Gitignored.
 └── .tirith/             Created at runtime in the *target* repo. Exists here
     │                    too: Tirith coordinates its own development.
     ├── .gitignore       Written by tirith; ignores runtime/.
@@ -102,7 +104,7 @@ tirith/
 | A design decision | `docs/5-decisions/NNNN-title.md` |
 | A picture | `docs/_static/images/` |
 | A fact agents need that the code does not express, about paths in this repo | A memory note through `memory_write`, scoped to those paths |
-| A short fact for navigating or building, not tied to a path | A Serena memory |
+| A short fact for navigating or building, not tied to a path | `docs/` (Serena memories only point here) |
 
 ## Single crate, for now
 

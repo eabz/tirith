@@ -1,1 +1,0 @@
-Run `tb task_pull '{}'`. On `none`, run `tb task_list '{"status":"todo"}'`. If `total` is 0, stop: there is no work left. Otherwise the remaining tasks wait on work other agents are finishing: wait in the foreground with `python3 -c "import time; time.sleep(30)"` and pull again, for at most 15 minutes of waiting in total.

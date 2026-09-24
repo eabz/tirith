@@ -3,8 +3,24 @@
     "tirith": {
       "type": "stdio",
       "command": "tirith",
-      "args": ["stdio"],
-      "env": {}
+      "args": ["stdio"]
+    },
+    "serena": {
+      "type": "stdio",
+      "command": "serena",
+      "args": [
+        "start-mcp-server",
+        "--context",
+        "ide-assistant",
+        "--project-from-cwd",
+        "--open-web-dashboard",
+        "false"
+      ]
+    },
+    "graphify": {
+      "type": "stdio",
+      "command": "graphify-mcp",
+      "args": ["graphify-out/graph.json"]
     }
   }
 }

@@ -2,9 +2,12 @@
 /target/
 **/*.rs.bk
 
-# Tirith runtime state (leases, task board, daemon info). Contracts, notices
-# and decisions under .tirith/ are meant to be committed.
+# Tirith runtime state (leases, task board, daemon info). Contracts, notices,
+# decisions and memory under .tirith/ are meant to be committed.
 /.tirith/runtime/
+
+# graphify knowledge graph: built per machine with `graphify update .`
+/graphify-out/
 
 # Editors / OS
 .DS_Store
@@ -16,6 +19,11 @@
 # Serena local overrides and caches
 /.serena/cache/
 /.serena/project.local.yml
+
+# Claude Code: only the skills link and settings.json are versioned
+.claude/*
+!.claude/skills
+!.claude/settings.json
 
 # Local secrets. Never commit.
 .env

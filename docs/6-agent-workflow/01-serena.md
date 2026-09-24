@@ -41,12 +41,11 @@ complete across references; do not re-verify it by re-reading files.
 
 ## Memories
 
-Serena memories live in `.serena/memories/`, committed, and hold short
-facts that are not tied to a repository path: what the current milestone
-is, how to restart the daemon, which session is which agent. Name them by
-topic (`workflow/project-status`, `workflow/stdio-shim`), keep them short,
-and link to `docs/` instead of repeating it. Knowledge about specific
-paths goes in a Tirith memory note instead; the rule is in
+Serena memories live in `.serena/memories/`, committed, and are entry
+points only: `repo-map` says where the rules and the documentation are.
+They hold no facts of their own. A fact about specific paths goes in a
+Tirith memory note; a fact every reader needs goes in `docs/`; a
+milestone or a session's state goes on the Tirith board. The rule is in
 [02-memory.md](02-memory.md).
 
 ## Diagnostics

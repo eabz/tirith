@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "enabledMcpjsonServers": ["tirith", "serena", "graphify"],
+  "permissions": {
+    "deny": [
+      "Read(./Cargo.lock)",
+      "Read(./target/**)",
+      "Read(./.tirith/runtime/**)",
+      "Read(./graphify-out/cache/**)",
+      "Read(./graphify-out/graph.json)",
+      "Read(./graphify-out/.graphify_*)",
+      "Read(./docs/_static/images/**)",
+      "Read(./src/dashboard-logo.png)"
+    ]
+  }
+}

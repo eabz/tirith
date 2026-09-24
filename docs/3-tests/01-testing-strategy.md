@@ -17,7 +17,6 @@ are tested as such. The transport is tested once, end to end.
 | Budgets | `tests/budgets.rs` | One test per row of the ADR-0013 table against a daemon seeded with 300 claims, notices and decisions: `tools/list` size, status-line text blocks, 20 compact rows with a cursor, `status`, `claims_list`, `renew`, brief, and search rows without bodies | tokio + localhost network |
 | Persistence | `tests/persistence.rs` | The legacy decisions.jsonl importing into one file per decision, fifty agents claiming at once, reads that do not rewrite logs, lease renewals reaching disk by shutdown, seen marks that never rewrite the notice log, a bad line reported instead of stopping the daemon, a failed write reported on the response, everything surviving a restart | tokio + localhost network |
 | Memory | `tests/memory_layer.rs` | One Markdown file per note round-tripped through a directory, an edit rewriting exactly one file, hand-written and corrupt files, folders in permalinks, and every note the repository ships in `.tirith/memory/` parsing; then the memory tools through the daemon: write, read, search bounds, relations, a claim carrying its notes, a restart | tokio (+ localhost network for the tool half) |
-| Benchmark | `examples/swarm_bench.rs` | Throughput, latency percentiles, and response bytes per tool (structured, text, largest, ~tokens) for N agents on persistent MCP sessions against a seeded daemon, with a memory workload (search, read the top hit, write a note per round); also `tools/list` bytes, bytes per agent per round, and `.tirith/` growth on disk; then invariant checks (no overlapping claims, `persist_error` null, notices on disk equal notices in memory). Run before touching the write path or a response shape: `cargo run --release --example swarm_bench -- 200 10`, optionally `THINK_MS=3000` | Release build |
 | Shim | `tests/stdio_shim.rs` | Spawn the built binary as `tirith stdio` the way a client would, speak JSON-RPC over its pipes: it starts one daemon and a second shim reuses it, replaces a daemon of another version or a dead record, and leaves another repository's daemon alone | tokio + localhost network + built binary |
 | Demo | `examples/demo.sh` | Human-readable acceptance for each milestone | Built binary |
 
@@ -80,8 +79,9 @@ pay the flush, about 17 ms alone and a queue under load; `memory_write`
 pays one fsync per note file on top (task fc218faa). The remaining bytes
 are unpaged lists and the full-board `status` and `claims_list`, which
 grow with the number of live agents (tasks 89b35cb6, d50d3346), plus
-search rows that carry bodies (task 6137f8af). The harness that produced
-this table is `examples/swarm_bench.rs`.
+search rows that carry bodies (task 6137f8af). The load benchmark that
+produced this table was removed with ADR-0035 and will be rebuilt; the
+table stays as the recorded baseline.
 
 ## Running
 

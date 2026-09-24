@@ -210,7 +210,8 @@ escalations are appended to the lead decision log: `tirith lead log`, or
 
 Coding agents must read [AGENTS.md](AGENTS.md) first. This repository is
 coordinated with Tirith itself: a daemon runs for the repo and agents claim
-files through it before editing.
+files through it before editing. The skills in
+[`.agents/skills/`](.agents/skills/README.md) say how.
 
 ## License
 
