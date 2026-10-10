@@ -20,6 +20,7 @@ are tested as such. The transport is tested once, end to end.
 | Memory | `tests/memory_layer.rs` | One Markdown file per note round-tripped through a directory, an edit rewriting exactly one file, hand-written and corrupt files, folders in permalinks, and every note the repository ships in `.tirith/memory/` parsing; then the memory tools through the daemon: write, read, search bounds, relations, a claim carrying its notes, a restart | tokio (+ localhost network for the tool half) |
 | Shim | `tests/stdio_shim.rs` | Spawn the built binary as `tirith stdio` the way a client would, speak JSON-RPC over its pipes: it starts one daemon and a second shim reuses it, replaces a daemon of another version or a dead record, and leaves another repository's daemon alone | tokio + localhost network + built binary |
 | Demo | `examples/demo.sh` | Human-readable acceptance for each milestone | Built binary |
+| Bench | `examples/swarm_bench.rs` | A scripted swarm against an in-process daemon, with and without claims; see [Benchmarks](#benchmarks) | tokio + localhost network |
 
 ## Rules
 
@@ -115,6 +116,45 @@ incremental build and caught 10 of the 11 mutants the whole suite detected
 in the 2026-09-16 verification probe; the integration targets caught one
 more and take 20 s or more. Use it while editing; the full chain is still
 the definition of done.
+
+## Benchmarks
+
+The coordination itself is benchmarked by a scripted swarm, not by an
+LLM: `examples/swarm_bench.rs` starts a daemon in a temp directory, seeds
+a board whose tasks overlap on purpose (task `i` edits `src/mod_{i mod
+files}.rs`, every `hub-every`th task also edits `src/hub.rs`), and runs
+`agents` fake workers that pull with `wait_secs`, claim with `wait_secs`,
+hold their paths for `work-ms`, release and finish. Mode `none` is the
+counterfactual: the same workers edit without claiming, and the bench
+counts edits that overlapped another agent's edit of the same path.
+
+```bash
+cargo run --release --example swarm_bench                       # both modes, defaults
+cargo run --release --example swarm_bench -- --agents 20 --tasks 200 --hub-every 2 --json
+```
+
+Measured 2026-10-10 on an Apple M1 Pro, release build, defaults (8
+workers, 40 tasks, 12 files, every third task on the hub, 150 ms per
+edit):
+
+| Mode | Wall | Overlapping edit pairs | Paths collided | Waits | Waited (sum) | `claim` p50 / p95 | `task_pull` p50 / p95 | Bytes per call |
+|---|---|---|---|---|---|---|---|---|
+| claims | 3.4 s | 0 | 0 | 9 | 4.8 s | 54 / 759 ms | 51 / 766 ms | 60–304 B |
+| none | 1.2 s | 35 | 5 | 0 | 0 | n/a | 44 / 52 ms | 294–304 B |
+
+What the numbers say: the cost of coordination on this scenario is the
+waiting (the p95 of `claim` and `task_pull` is the hub file's queue),
+and what it buys is zero overlapping edits where the uncoordinated run
+had 35. The instructions every session receives were 2,731 bytes. Change
+`--hub-every` to move the overlap: at 0 the two modes converge.
+
+Two layers are not benchmarked here and are on the board. Protocol
+compliance (do real agents claim before editing, publish notices, idle)
+is read from the lead log and git after a real swarm under the playbook.
+The outcome A/B (the same scenario, same prompts, with and without the
+daemon, five runs each: does the tree build, agent-minutes, human
+interventions) needs the real-swarm harness; its scenarios must contain
+deliberate overlap, since on disjoint files coordination shows nothing.
 
 ## Coverage expectations
 

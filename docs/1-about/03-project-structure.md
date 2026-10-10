@@ -27,7 +27,9 @@ tirith/
 │   ├── lib.rs           Crate root: module declarations.
 │   ├── server.rs        MCP tool surface (rmcp) and `start`.
 │   ├── hangup.rs        Tells a waiting tool call that its caller left.
-│   ├── guide.rs         What the `guide` tool returns: the protocol as data.
+│   ├── instructions.rs  The protocol served on connect (ADR-0038), from
+│   ├── instructions.md  this file, unless the repo has .tirith/instructions.md.
+│   ├── init.rs          `tirith init`: .mcp.json, the agents block, the copy.
 │   ├── output_schemas.rs  The output schema each tool declares in tools/list.
 │   ├── dashboard.rs     Dashboard routes.
 │   ├── dashboard.html   The dashboard page, embedded at build time.
@@ -63,7 +65,9 @@ tirith/
 │   ├── budgets.rs         Token budgets: tools/list, rows, text lines.
 │   └── common/            Shared helpers for the integration tests.
 ├── examples/
-│   └── demo.sh          Two agents, overlapping claims, second refused.
+│   ├── demo.sh          Two agents, overlapping claims, second refused.
+│   └── swarm_bench.rs   Scripted swarm against a real daemon, with and
+│                        without claims (docs/3-tests).
 ├── docs/                All documentation. See docs/README.md.
 │   ├── README.md        Index and writing conventions.
 │   ├── index.html       Redirects to the root landing page.
@@ -86,6 +90,7 @@ tirith/
 └── .tirith/             Created at runtime in the *target* repo. Exists here
     │                    too: Tirith coordinates its own development.
     ├── .gitignore       Written by tirith; ignores runtime/.
+    ├── instructions.md  Optional: the repository's own protocol (ADR-0038).
     ├── memory/          Memory notes, one Markdown file each. Committed.
     ├── contracts/       One JSON file per contract. Committed.
     ├── notices.jsonl    Change notices. Committed.

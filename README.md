@@ -64,10 +64,21 @@ Listed in the [MCP Registry](https://registry.modelcontextprotocol.io/):
 
 ## Quick start
 
-Register `tirith stdio` with your client, the same way as any other stdio
-MCP server. It starts the repository's daemon the first time a session
-needs it, replaces a daemon of another version, and proxies to it after
-that; nothing has to be started by hand.
+In the repository, run:
+
+```bash
+tirith init
+```
+
+It registers `tirith stdio` in `.mcp.json` and puts a short block in
+`AGENTS.md` (`--file` for another). The protocol itself, from the first
+claim to who leads a swarm, arrives as the MCP server's instructions
+every time a session connects; a repository that wants its own protocol
+keeps it in `.tirith/instructions.md` (`tirith init --instructions`
+writes the built-in one there to edit). Other clients register the same
+command by hand: the shim starts the repository's daemon the first time a
+session needs it, replaces a daemon of another version, and proxies to it
+after that; nothing has to be started by hand.
 
 | Client | Setup |
 |---|---|
@@ -88,7 +99,7 @@ protocol block from
 [docs/2-examples/03-swarm-playbook.md](docs/2-examples/03-swarm-playbook.md)
 into your project's agent instructions: it says which session leads,
 when it spawns workers, what each worker is told, and which model each
-runs on. The daemon serves the same rules as `guide` with topic `roles`.
+runs on. The daemon serves the same rules in its instructions.
 
 ## What it does
 
@@ -102,10 +113,10 @@ runs on. The daemon serves the same rules as `guide` with topic `roles`.
 | **Memory notes** | `memory_write`, `memory_read`, `memory_search`, `memory_delete` | Lessons, traps, and handoffs scoped to repository paths. Committed Markdown, searchable, and delivered to whoever claims the paths a note is about. |
 | **Messages** | `message_send`, `message_list` | Short notes between agents, delivered on the recipient's next call, so any MCP client can take part. Runtime only. |
 | **Status** | `status` | Counts, persistence and load problems; `verbose` adds who holds what. |
-| **Guide** | `guide` | What Tirith is for, the working loop, and which tool a situation calls for; `topic` narrows it to one primitive. |
 
-Twenty-three tools, each with a description of every parameter, MCP
-annotations, and an output schema. Every result is JSON with a `status`
+Twenty-two tools, each with a description of every parameter, MCP
+annotations, and an output schema, plus the protocol as the server's
+instructions on connect ([ADR-0038](docs/5-decisions/0038-instructions-carry-the-protocol.md)). Every result is JSON with a `status`
 field, lists are paged, and any result may carry `lost` (a lease that
 ended) or `inbox` (messages waiting). The full reference, the single source of truth for
 tool schemas, is [docs/1-about/04-primitives.md](docs/1-about/04-primitives.md).
@@ -151,7 +162,7 @@ tirith serve                               # run the repo's daemon by hand
 tirith stdio                               # per-session shim clients spawn; starts the daemon if needed
 tirith update                              # replace the binary with the latest release
 tirith status                              # counts, and who holds what
-tirith guide [topic]                       # what Tirith is for, and which tool fits
+tirith init [--file AGENTS.md] [--instructions]  # register the server, add the agents block
 tirith claim | release | renew | claims
 tirith task     create | pull | update | list
 tirith contract publish | get | list

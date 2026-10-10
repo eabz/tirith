@@ -1,6 +1,9 @@
 # ADR-0034: Tool definitions are complete on the wire, and `guide` explains the protocol
 
-**Status:** Accepted, 2026-09-18, by the owner's decision. Supersedes the
+**Status:** Accepted, 2026-09-18, by the owner's decision. The `guide`
+tool is superseded by [ADR-0038](0038-instructions-carry-the-protocol.md),
+the budget and the prose rule by
+[ADR-0039](0039-fewest-words-on-the-wire.md). Supersedes the
 per-parameter rule of
 [ADR-0017](0017-tool-result-and-schema-budget.md) and, in part,
 [ADR-0033](0033-tool-annotations-and-usage-clauses.md) ("Parameters stay

@@ -46,6 +46,11 @@ serve"` finds it.
 
 ## Protocol for every agent
 
+The daemon sends the protocol as the MCP server's instructions when a
+session connects ([ADR-0038](../5-decisions/0038-instructions-carry-the-protocol.md));
+`src/instructions.md` is the text. What follows is the same loop with
+this repository's specifics.
+
 1. **Identify.** Pick a stable `agent` name for the session, e.g.
    `claude-claims-refactor` or `cursor-docs`. Use it in every call.
 2. **Claim before editing.** `claim` the files or directories, with a

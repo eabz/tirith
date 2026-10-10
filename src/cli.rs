@@ -116,11 +116,18 @@ enum Command {
     },
     /// Show daemon status and who holds what.
     Status,
-    /// Explain what Tirith is for and how to work with it.
-    Guide {
-        /// One primitive to explain: claims, tasks, contracts, notices,
-        /// decisions, memory, messages, lead, or server.
-        topic: Option<String>,
+    /// Prepare the repository at --root for agents: register `tirith stdio`
+    /// in .mcp.json and put a short block in the agents' instructions
+    /// file. The protocol itself arrives with the MCP server on connect.
+    Init {
+        /// The agents' instructions file, relative to --root.
+        #[arg(long, default_value = "AGENTS.md")]
+        file: String,
+        /// Also copy the built-in protocol to .tirith/instructions.md,
+        /// where the repository can edit it; the daemon serves that file
+        /// when it exists.
+        #[arg(long)]
+        instructions: bool,
     },
     /// Claim files or directories before editing them.
     Claim {
@@ -503,6 +510,7 @@ pub(crate) async fn run() -> Result<ExitCode> {
                 .map_err(anyhow::Error::from);
         }
         Command::Tools => return tools(&remote).await,
+        Command::Init { file, instructions } => return init_repo(&cli.root, &file, instructions),
         Command::Lead {
             command: LeadCommand::Log { limit, event },
         } => return lead_log(&remote, limit, event).await,
@@ -526,7 +534,6 @@ pub(crate) async fn run() -> Result<ExitCode> {
         }
         // A human is reading, so ask for the per-agent rows.
         Command::Status => ("status".to_owned(), json!({ "verbose": true })),
-        Command::Guide { topic } => ("guide".to_owned(), json!({ "topic": topic })),
         Command::Claim { reason, ttl, paths } => (
             "claim".to_owned(),
             json!({ "paths": paths, "reason": reason, "ttl_secs": ttl }),
@@ -889,6 +896,24 @@ async fn tools(remote: &Remote) -> Result<ExitCode> {
             println!("{name:<width$}  {}", first_sentence(&description));
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `tirith init`: the repository's agent file and MCP registration
+/// (ADR-0038).
+fn init_repo(root: &Path, file: &str, instructions: bool) -> Result<ExitCode> {
+    let report = tirith::init::init(root, file, instructions)?;
+    for path in &report.written {
+        println!("wrote     {}", path.display());
+    }
+    for path in &report.unchanged {
+        println!("unchanged {}", path.display());
+    }
+    println!(
+        "Other clients: Cursor `.cursor/mcp.json` or Codex `codex mcp add tirith -- tirith stdio`; \
+         the protocol is served on connect, and `{}` overrides it when present.",
+        tirith::instructions::OVERRIDE
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1299,7 +1324,6 @@ fn render_result(tool: &str, agent: &str, v: &Value) -> String {
             }));
             out.join("\n")
         }
-        ("guide", "ok") => guide_page(v),
         ("task_pull", "none") => "none     no unblocked todo tasks".to_owned(),
         ("task_create" | "task_pull" | "task_update", "ok") => task_line(&v["task"]),
         ("task_list", "ok") => page(v, "tasks", "no tasks", task_line),
@@ -1508,38 +1532,6 @@ fn excerpt(body: &str) -> String {
         cut.push('…');
     }
     cut
-}
-
-/// The guide as plain text: the overview's loop, tools and rules, or one
-/// topic's tools with when to call each.
-fn guide_page(v: &Value) -> String {
-    let mut out = Vec::new();
-    for key in ["purpose", "summary"] {
-        let text = s(&v[key]);
-        if !text.is_empty() {
-            out.push(text.to_owned());
-        }
-    }
-    for (n, step) in v["loop"].as_array().into_iter().flatten().enumerate() {
-        out.push(format!("{}. {}", n + 1, s(step)));
-    }
-    match &v["tools"] {
-        Value::Object(groups) => {
-            for (topic, names) in groups {
-                out.push(format!("{topic:<10} {}", strs(names)));
-            }
-        }
-        Value::Array(entries) => {
-            for entry in entries {
-                out.push(format!("{:<16} {}", s(&entry["tool"]), s(&entry["when"])));
-            }
-        }
-        _ => {}
-    }
-    for rule in v["rules"].as_array().into_iter().flatten() {
-        out.push(format!("- {}", s(rule)));
-    }
-    out.join("\n")
 }
 
 #[cfg(test)]

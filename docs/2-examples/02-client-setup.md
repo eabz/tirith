@@ -9,7 +9,16 @@ client launches per session. When it starts it looks for the repository's
 daemon and starts one if none is running, then proxies every call to it.
 The daemon keeps running after the session so other agents share it.
 
-Claude Code:
+Any client, in the repository:
+
+```bash
+tirith init
+```
+
+It writes `tirith` into `.mcp.json`, which Claude Code reads, and a short
+block into `AGENTS.md`. The protocol itself arrives as the server's
+instructions when a session connects, so no further text is needed.
+Claude Code by hand:
 
 ```bash
 claude mcp add tirith -- tirith stdio

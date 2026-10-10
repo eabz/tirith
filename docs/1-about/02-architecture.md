@@ -34,8 +34,11 @@ src/server.rs      MCP surface (rmcp): tool inputs, outcome formatting,
                    and `start`, which wires everything into one HTTP server.
 src/hangup.rs      Middleware on `/mcp` that ties a hangup signal to each
                    response, so a waiting call stops when its caller leaves.
-src/guide.rs       What the `guide` tool returns, as data: the purpose, the
-                   working loop, the rules, and when to call each tool. Pure.
+src/instructions.rs  The protocol served as MCP instructions on connect:
+                   `instructions.md` next to it, or the repository's
+                   `.tirith/instructions.md` (ADR-0038). Pure.
+src/init.rs        `tirith init`: `.mcp.json`, the agents-file block, the
+                   protocol copy. Pure file edits.
 src/output_schemas.rs  The output schema each tool declares in `tools/list`.
                    They document and never constrain (ADR-0034). Pure.
 src/dashboard.rs   `/` (embedded dashboard.html), `/logo.png`, `/api/state`,

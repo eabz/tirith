@@ -1,53 +1,42 @@
 # Running a swarm on your project
 
-This is what to tell your agents so that a session knows, the moment it
-starts, whether it is the lead or a worker and what each does. The daemon
-serves the same rules as `guide` with topic `roles`; this page is the
-human-readable version, with the text to paste into your project.
+This is what a session knows, the moment it connects, about whether it
+is the lead or a worker and what each does. The daemon serves it as the
+MCP server's instructions ([ADR-0038](../5-decisions/0038-instructions-carry-the-protocol.md)),
+so nothing below has to be pasted anywhere; this page is the
+human-readable version, with the reasoning.
 
-Setup is two steps, both in [02-client-setup.md](02-client-setup.md):
-install `tirith` and register `tirith stdio` with your client. State lives
-in `.tirith/`; commit `contracts/`, `decisions/`, `memory/` and
+Setup: install `tirith` ([../1-about/05-installation.md](../1-about/05-installation.md)),
+then in the repository:
+
+```bash
+tirith init
+```
+
+That registers `tirith stdio` in `.mcp.json` and adds a short block to
+`AGENTS.md` saying the protocol arrives on connect. State lives in
+`.tirith/`; commit `contracts/`, `decisions/`, `memory/` and
 `notices.jsonl`.
 
-## 1. Put the protocol in the project
+## 1. The protocol a session receives
 
-Add this to the file your agents read first (`AGENTS.md`, `CLAUDE.md`, a
-Cursor rule). It is short on purpose: the daemon's `guide` tool carries
-the rest, and it matches the version that answers.
-
-```markdown
-## Coordination (Tirith)
-
-This repository runs a Tirith daemon (`tirith stdio` in the MCP config).
-Start every session with `guide` (topic `roles`) and `memory_search` with
-no query. Pick one stable `agent` name and pass it on every call.
-
-- The session the human talks to is the **lead**. Before spawning anyone
-  it claims `.tirith/lead` (ttl 3600). It publishes the contracts,
-  creates the tasks, spawns one worker per task whose paths overlap no
-  other open task, reads its inbox on every call, reviews each worker's
-  diff, and is the only session that commits, pushes, opens pull
-  requests or deploys. It releases `.tirith/lead` last.
-- A spawned session is a **worker**. It loops on `task_pull` with
-  `wait_secs: 120`, claims the task's paths (a `path#Symbol` anchor on a
-  file others edit), reads the brief, edits, runs the module tests,
-  publishes a notice for every rename or signature change, writes a
-  memory note for what the next agent must know, releases, marks the
-  task done and reports to the lead with `message_send`. It never claims
-  `.tirith/lead`, never messages `human`, never commits or pushes, and
-  proposes contracts, tasks and decisions to the lead instead of
-  writing them (the daemon refuses them with `conflict`).
-- Claim before editing. A `conflict` means do not edit: take other work
-  or claim again with `wait_secs`. A `lost` field means claim again.
-```
+The daemon sends `src/instructions.md` as the MCP server's instructions
+on every connect: what every result carries, the loop, and the two roles
+with the spawn rule, the model split and the worker brief. It is kept
+under 4 KB because every session pays for it. A team with its own rules
+runs `tirith init --instructions`, which copies it to
+`.tirith/instructions.md`; edit it there and the daemon serves that file
+instead. Nothing has to be pasted into the project.
 
 ## 2. What the lead does when it starts
 
 In this order, before any code:
 
 1. `memory_search` with no query, then `status`: what happened last, and
-   whether another lead is live (`lead` in the result).
+   whether another lead is live (`lead` in the result). Then `task_pull`:
+   the board is the committed plan, and open tasks come before new work.
+   A task you create is a commitment: assign it or do it, and name what
+   is still `todo` when you report.
 2. `claim` `.tirith/lead` with `ttl_secs: 3600` and a reason naming the
    swarm. If that is refused, another session leads; join it as a worker
    or wait.
@@ -156,12 +145,10 @@ split them or add anchors.
 
 A bench for the coordination itself is a scripted swarm: fake workers
 that pull, claim with `wait_secs`, hold their paths for a scripted
-duration, release and finish, against a real daemon, reporting wall
-time, time spent waiting in `claim` and `task_pull`, refused claims and
-escalations. The previous harness was removed with
-[ADR-0035](../5-decisions/0035-shared-agent-conventions.md) and its
-numbers kept in [../3-tests/01-testing-strategy.md](../3-tests/01-testing-strategy.md);
-rebuilding it is on this repository's board.
+duration, release and finish, against a real daemon, with and without
+claims. It is `examples/swarm_bench.rs`; what it measures and the
+numbers are in
+[../3-tests/01-testing-strategy.md](../3-tests/01-testing-strategy.md#benchmarks).
 
 ## 6. GitHub, deploys and other services
 

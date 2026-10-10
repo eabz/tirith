@@ -20,7 +20,7 @@ Then reconnect the MCP server, or use the CLI, which speaks the same protocol (`
 ```bash
 tirith --agent <name> claim --ttl 3600 -r "<why>" <paths...>
 tirith --agent <name> release
-tirith --agent <name> guide            # the protocol as the daemon states it
+cat src/instructions.md                # the protocol every session receives on connect
 ```
 
 If the daemon cannot be reached or started, stop and say so in the report.

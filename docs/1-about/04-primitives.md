@@ -5,7 +5,8 @@ schemas are written down. Tool names and input fields here are the
 contract; a change to them must update this file, the examples, and
 `README.md` in the same commit.
 
-The daemon exposes 23 tools. Every tool takes an `agent` string
+The daemon exposes 22 tools, and serves the protocol as its MCP
+`instructions` on every handshake (see [Instructions](#instructions)). Every tool takes an `agent` string
 identifying the caller and returns JSON with a `status` field (see
 [02-architecture.md](02-architecture.md#tool-response-shape)). Timestamps
 are RFC 3339 in UTC. Schemas may still change before 1.0.
@@ -59,9 +60,9 @@ unknown one `not_found`.
 what it changes, when to call it, when not and which sibling to call
 instead, and what comes back; a description on every parameter, with an
 `enum` on the closed ones (task status, contract, notice and memory kinds,
-guide topics); MCP annotations; and an output schema that describes every
+memory kinds); MCP annotations; and an output schema that describes every
 top-level field of the result. The annotations mark the get, search, read,
-status and guide tools and the list tools `readOnlyHint: true`, except
+and status tools and the list tools `readOnlyHint: true`, except
 `notice_list`, which with `unread` marks what it lists as seen; every
 additive tool `destructiveHint: false`; `renew`, `release`, `task_update`,
 `memory_write` and `memory_delete` `idempotentHint: true`; and
@@ -70,7 +71,9 @@ to the protocol default are not sent. Output schemas document and never
 constrain: only `status` is required, extra fields such as `lost` and
 `inbox` are allowed, and a field is typed only when its JSON type is
 certain (`tests/budgets.rs` checks real results against them). All of it
-summarizes this file and never adds behavior.
+summarizes this file and never adds behavior, in the fewest words: the
+listing is budgeted at 33,000 characters and the instructions at 4 KB
+([ADR-0039](../5-decisions/0039-fewest-words-on-the-wire.md)).
 
 ## Claims
 
@@ -502,30 +505,22 @@ lease `expires_at`, and `tasks_in_progress`, plus `lead_expires_at` when
 there is a lead. The dashboard's `/api/state` remains the full view for
 humans; it shows the lead and its lease in the header (`server.lead`).
 
-## Guide
+## Instructions
 
-`guide` explains Tirith to an agent in one call: what it is for, the
-working loop from `claim` to `release`, the rules every reply follows, and
-which tool a situation calls for
-([ADR-0034](../5-decisions/0034-complete-tool-definitions-and-guide.md)). It is
-static text served by the daemon, so it matches the tool surface of the
-version that answers; a test fails when a tool is missing from it.
-
-| Field | Type | Notes |
-|---|---|---|
-| `agent` | string, optional | With it, `lost` and `inbox` ride on the reply as on any call |
-| `topic` | string, optional | `overview` (default), `claims`, `tasks`, `contracts`, `notices`, `decisions`, `memory`, `messages`, `lead`, `roles`, `server` |
-
-The overview returns `purpose`, `loop` (the ordered steps), `rules`,
-`tools` (topic to tool names) and `topics`. A topic returns `summary`,
-`tools` (each with `tool` and `when`) and `rules`. `roles` is the page a
-session reads when it spawns agents or was spawned: what the lead does
-and when it spawns, what a worker does, which model each runs on, and
-what the worker brief must say
-([../2-examples/03-swarm-playbook.md](../2-examples/03-swarm-playbook.md)). An unknown topic is
-`invalid` and names the valid ones. The overview stays under 3 KB
-(`tests/budgets.rs`). The server's `instructions` text is the short form
-and points here. CLI: `tirith guide [TOPIC]`.
+The protocol is not a tool. It is the MCP `instructions` field of the
+initialize result, which every client places in front of its model once
+per session ([ADR-0038](../5-decisions/0038-instructions-carry-the-protocol.md)):
+what Tirith is, what every result carries, the working loop from
+`memory_search` to `release`, and the two roles, lead and worker, with
+when the lead spawns, which model each runs on and what the worker brief
+says. The built-in text is `src/instructions.md`, under 4 KB
+(`tests/budgets.rs`), and every tool it names exists (a test in
+`server.rs`). A repository that runs its own protocol keeps it in
+`.tirith/instructions.md`: when that file exists and is not blank the
+daemon serves it instead, read on every handshake. `tirith init
+--instructions` writes the built-in text there once, to edit; `tirith
+init` alone registers `tirith stdio` in `.mcp.json` and adds a short
+block to the agents' file saying the protocol arrives on connect.
 
 ## The lead decision log
 

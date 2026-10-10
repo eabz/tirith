@@ -40,10 +40,12 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0031](0031-waits-end-when-the-caller-goes.md) | A waiting `claim` or `task_pull` ends when its caller cancels or disconnects | Accepted |
 | [0032](0032-tray-single-instance-lock.md) | One tray per state directory, held by an OS lock; test daemons stay off the user's machine state | Accepted |
 | [0033](0033-tool-annotations-and-usage-clauses.md) | Every tool carries MCP annotations and says when to use it; `tools/list` budget 10,500 | Accepted; superseded in part by 0034 |
-| [0034](0034-complete-tool-definitions-and-guide.md) | Tool definitions are complete on the wire (parameter descriptions, enums, output schemas), and `guide` explains the protocol; `tools/list` budget 44,500 | Accepted |
+| [0034](0034-complete-tool-definitions-and-guide.md) | Tool definitions are complete on the wire (parameter descriptions, enums, output schemas), and `guide` explains the protocol; `tools/list` budget 44,500 | Accepted; `guide` superseded by 0038, budget and prose by 0039 |
 | [0035](0035-shared-agent-conventions.md) | Agent conventions shared with the other repositories: skills in `.agents/skills/`, committed Claude settings, graphify, a short `AGENTS.md`, memories as entry points | Accepted |
 | [0036](0036-lead-only-writes.md) | Contracts, the board, decisions and deletions are the lead's while a swarm has one; others get `conflict` naming the lead | Accepted |
 | [0037](0037-lead-owns-the-integration-boundary.md) | The lead alone commits, pushes, opens pull requests and deploys; Tirith adds no GitHub or deploy tools | Proposed |
+| [0038](0038-instructions-carry-the-protocol.md) | The MCP instructions carry the protocol, overridable per repository; `guide` is removed; `tirith init` prepares a repository | Accepted |
+| [0039](0039-fewest-words-on-the-wire.md) | Every text an agent reads uses the fewest words; `tools/list` budget 33,000 | Accepted |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

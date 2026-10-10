@@ -42,7 +42,8 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::{mpsc, watch};
 
-use crate::server::{INSTRUCTIONS, VERSION};
+use crate::instructions;
+use crate::server::VERSION;
 use crate::store::{DaemonInfo, JsonStore, StoreError};
 
 /// How long to wait for a freshly spawned daemon to answer.
@@ -570,7 +571,7 @@ pub async fn run(root: PathBuf, bind: String) -> Result<(), StdioError> {
     let instructions = daemon
         .peer_info()
         .and_then(|peer| peer.instructions.clone())
-        .unwrap_or_else(|| INSTRUCTIONS.to_owned());
+        .unwrap_or_else(|| instructions::load(&root));
     tracing::info!(url = %info.url, pid = info.pid, "proxying stdio to daemon");
     let (closed_tx, closed) = watch::channel(false);
     let (calls, mut calls_done) = mpsc::channel(1);

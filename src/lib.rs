@@ -20,6 +20,9 @@
 //! [`lead`]: the swarm lead, the holder of the reserved `.tirith/lead` claim
 //! (ADR-0027).
 //!
+//! [`instructions`] is the protocol every session receives on connect,
+//! and [`init`] prepares a repository for it (ADR-0038).
+//!
 //! [`stdio`] is the shim MCP clients spawn per session; it starts the
 //! daemon when needed and proxies to it. [`registry`] lists every daemon
 //! on the machine for the menu bar tray. [`update`] replaces the running
@@ -34,8 +37,9 @@ pub mod clock;
 pub mod contracts;
 pub mod dashboard;
 pub mod decisions;
-mod guide;
 mod hangup;
+pub mod init;
+pub mod instructions;
 pub mod lead;
 pub mod memory;
 pub mod messages;

@@ -41,12 +41,18 @@ use tirith::server::{ServeOptions, ServerHandle, start};
 ///   parameter, enums on the closed ones, an output schema on every tool,
 ///   descriptions that say when not to call and what comes back, and the
 ///   `guide` tool. Measured 43,607; the per-tool bound rises from 650 to
-///   T44,500 (largest: `claim`, 3,451).
-const TOOLS_LIST_MAX: usize = 44_500;
+///   3,600 (largest: `claim`, 3,451).
+/// - ADR-0036 adds a lead-only clause to five tools (about 800 chars);
+///   ADR-0038 removes the `guide` tool, whose text moved to the server
+///   instructions, measured separately below.
+/// - 44,500 down to 33,000 for ADR-0039: every description, parameter and
+///   output field cut to the fewest words, completeness kept. Measured
+///   32,522 for 22 tools.
+const TOOLS_LIST_MAX: usize = 33_000;
 /// Any single tool in `tools/list`.
-const TOOL_MAX: usize = 3_600;
-/// The `guide` overview, the largest page that tool returns.
-const GUIDE_MAX: usize = 3_072;
+const TOOL_MAX: usize = 2_700;
+/// The instructions every session receives on connect (ADR-0038).
+const INSTRUCTIONS_MAX: usize = 4_096;
 /// The text content block of any result.
 const TEXT_MAX: usize = 200;
 /// Rows a list tool returns without a `limit`.
@@ -320,9 +326,6 @@ fn sample_calls(task: &Value) -> Vec<(&'static str, Value)> {
             json!({ "agent": "alice", "to": "bob", "text": "hello" }),
         ),
         ("message_list", json!({ "agent": "alice" })),
-        ("guide", json!({})),
-        ("guide", json!({ "agent": "alice", "topic": "claims" })),
-        ("guide", json!({ "topic": "nope" })),
         ("memory_delete", json!({ "agent": "alice", "name": "note" })),
     ]
 }
@@ -434,14 +437,20 @@ async fn every_result_conforms_to_the_output_schema_its_tool_declares() {
 }
 
 #[tokio::test]
-async fn the_guide_overview_is_under_3_kb() {
+async fn the_instructions_are_under_4_kb_and_reach_the_client() {
     let daemon = Daemon::empty().await;
-    let overview = daemon.outcome("guide", json!({})).await;
-    eprintln!("guide overview: {} bytes", bytes(&overview));
+    let client = raw_client(&daemon.handle.as_ref().unwrap().mcp_url()).await;
+    let instructions = client
+        .peer_info()
+        .and_then(|info| info.instructions.clone())
+        .unwrap_or_default();
+    let _ = client.cancel().await;
+    eprintln!("instructions: {} bytes", instructions.len());
+    assert_eq!(instructions, tirith::instructions::DEFAULT);
     assert!(
-        bytes(&overview) <= GUIDE_MAX,
-        "guide overview is {} bytes, budget {GUIDE_MAX}",
-        bytes(&overview)
+        instructions.len() <= INSTRUCTIONS_MAX,
+        "instructions are {} bytes, budget {INSTRUCTIONS_MAX}",
+        instructions.len()
     );
     daemon.stop().await;
 }
