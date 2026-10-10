@@ -41,8 +41,8 @@ use crate::notices::{
 use crate::store::LoadError;
 use crate::tasks::{Hold, NewTask, NotReady, Pulled, Task, TaskBoard, TaskError, TaskStatus};
 use crate::types::{
-    AgentId, ClaimId, ContractId, DecisionId, MemoryId, MessageId, NoticeId, Page, PrefixError,
-    RepoPath, TaskId,
+    AgentId, ClaimId, ContractId, DecisionId, LeadOnly, MemoryId, MessageId, NoticeId, Page,
+    PrefixError, RepoPath, TaskId,
 };
 
 /// Everything worth persisting, as plain values.
@@ -435,6 +435,12 @@ impl Inner {
     /// waits for: lease renewals and new lead log rows.
     fn has_background_writes(&self) -> bool {
         self.touched || self.lead_log_cursor.is_dirty(self.lead_log.entries().len())
+    }
+
+    /// Whether `agent` may perform the lead-only write `action` now
+    /// (ADR-0036). See [`Lead::require`].
+    fn lead_only(&self, agent: &AgentId, action: &'static str) -> Result<(), LeadOnly> {
+        Lead::require(self.claims.claims(), agent, action)
     }
 }
 
@@ -922,9 +928,11 @@ impl State {
         })
     }
 
-    /// Creates a task.
+    /// Creates a task. While a swarm has a lead, only the lead may
+    /// (ADR-0036).
     pub fn task_create(&self, agent: AgentId, new: NewTask) -> Result<Task, TaskError> {
         let created = self.access(Some(&agent.clone()), |inner, now| {
+            inner.lead_only(&agent, "creates tasks")?;
             let task = inner.tasks.create(agent, new, now)?.clone();
             inner.tasks_dirty = true;
             Ok(task)
@@ -973,7 +981,9 @@ impl State {
         pulled
     }
 
-    /// Updates a task's status.
+    /// Updates a task's status. Taking another agent's task with `force`
+    /// is the lead's alone while a swarm has one (ADR-0036); `force` on a
+    /// task nobody else holds is not a reassignment and is never refused.
     pub fn task_update(
         &self,
         agent: AgentId,
@@ -983,9 +993,16 @@ impl State {
         force: bool,
     ) -> Result<Task, TaskError> {
         let updated = self.access(Some(&agent.clone()), |inner, now| {
+            let gate = force
+                .then(|| inner.lead_only(&agent, "forces tasks").err())
+                .flatten();
             let task = inner
                 .tasks
-                .update(agent, id, status, note, force, now)?
+                .update(agent, id, status, note, force && gate.is_none(), now)
+                .map_err(|e| match (e, gate) {
+                    (TaskError::OwnedByOther { .. }, Some(refused)) => refused.into(),
+                    (e, _) => e,
+                })?
                 .clone();
             inner.tasks_dirty = true;
             Ok(task)
@@ -1033,13 +1050,15 @@ impl State {
 
     /// Publishes a contract. A new version of an existing contract also
     /// publishes a `contract` notice to its consumers; that notice is
-    /// returned alongside.
+    /// returned alongside. While a swarm has a lead, only the lead may
+    /// (ADR-0036).
     pub fn contract_publish(
         &self,
         agent: AgentId,
         new: NewContract,
     ) -> Result<(Published, Option<Notice>), ContractError> {
         self.access(Some(&agent.clone()), |inner, now| {
+            inner.lead_only(&agent, "publishes contracts")?;
             let published = inner.contracts.publish(agent.clone(), new, now)?;
             inner.contracts_changed.mark(published.contract.id);
             let notice = published.previous_version.and_then(|previous| {
@@ -1105,13 +1124,15 @@ impl State {
         })
     }
 
-    /// Records a decision.
+    /// Records a decision. While a swarm has a lead, only the lead may
+    /// (ADR-0036).
     pub fn decision_record(
         &self,
         agent: AgentId,
         new: NewDecision,
     ) -> Result<Decision, DecisionError> {
         self.access(Some(&agent.clone()), |inner, now| {
+            inner.lead_only(&agent, "records decisions")?;
             let decision = inner.decisions.record(agent, new, now)?.clone();
             inner.decisions_changed.mark(decision.id);
             Ok(decision)
@@ -1155,11 +1176,16 @@ impl State {
     /// holding a secret or a wrong fact has to be retractable through the
     /// same path that wrote it; deleting the file by hand is undone by the
     /// next full rewrite.
-    pub fn memory_delete(&self, agent: &AgentId, name: &str) -> Option<MemoryNote> {
+    ///
+    /// While a swarm has a lead, only the lead may delete (ADR-0036).
+    pub fn memory_delete(&self, agent: &AgentId, name: &str) -> Result<MemoryNote, MemoryError> {
         self.access(Some(agent), |inner, _| {
-            let removed = Arc::make_mut(&mut inner.memory).remove(name)?;
+            inner.lead_only(agent, "deletes notes")?;
+            let removed = Arc::make_mut(&mut inner.memory)
+                .remove(name)
+                .ok_or_else(|| MemoryError::NotFound(name.to_owned()))?;
             inner.memory_changed.remove(removed.id);
-            Some(removed)
+            Ok(removed)
         })
     }
 
@@ -1811,7 +1837,10 @@ mod tests {
         assert_eq!(delta.seq, 1);
         assert_eq!(delta.claims.map(|c| c.len()), Some(1));
         assert!(delta.tasks.is_none(), "tasks untouched");
-        assert!(delta.contracts.is_empty());
+        assert!(
+            delta.contracts.is_empty(),
+            "delta.contracts should be empty"
+        );
         assert!(delta.notices.is_unchanged());
         assert!(!state.is_dirty());
         assert_eq!(state.persist_target(false), 1);
@@ -2028,7 +2057,10 @@ mod tests {
             .unwrap();
         let pulled = state.task_pull(agent("dave")).unwrap();
         assert_eq!(pulled.task.id, free);
-        assert!(pulled.waiting_on.is_empty());
+        assert!(
+            pulled.waiting_on.is_empty(),
+            "pulled.waiting_on should be empty"
+        );
     }
 
     #[test]
@@ -2041,7 +2073,10 @@ mod tests {
             .unwrap();
         let pulled = state.task_pull(agent("alice")).unwrap();
         assert_eq!(pulled.task.id, top);
-        assert!(pulled.waiting_on.is_empty());
+        assert!(
+            pulled.waiting_on.is_empty(),
+            "pulled.waiting_on should be empty"
+        );
     }
 
     #[test]
@@ -2054,7 +2089,10 @@ mod tests {
             .unwrap();
         let pulled = state.task_pull(agent("bob")).unwrap();
         assert_eq!(pulled.task.id, pathless);
-        assert!(pulled.waiting_on.is_empty());
+        assert!(
+            pulled.waiting_on.is_empty(),
+            "pulled.waiting_on should be empty"
+        );
     }
 
     #[test]
@@ -2184,7 +2222,10 @@ mod tests {
             )
             .await;
         assert!(matches!(gone, Err(ClaimError::Cancelled)));
-        assert!(state.claims(None, None).is_empty());
+        assert!(
+            state.claims(None, None).is_empty(),
+            "state.claims(None, None) should be empty"
+        );
         assert_eq!(state.lead_log(10, Some(LeadEvent::ClaimWaited)).len(), 1);
     }
 

@@ -61,8 +61,9 @@ machine, many-agent setup over multi-tenant deployment.
 | 1 | `tirith serve`, the claims tools, a CLI, JSON persistence, and a demo where two agents claim overlapping files and the second is refused | Done (0.1.0) |
 | 1b | Initial versions of the task board, contracts, change notices, decisions log, and a web dashboard at `/` | Done (0.1.0) |
 | 2 | `tirith stdio` shim that starts the daemon on demand, Tirith used on its own repo | Done (0.1.3) |
-| 2b | Agent-facing hardening from real multi-agent use: the brief on claim, lost-lease reporting, orphaned tasks, contract republish, the shim replacing stale daemons, agent messages | Done (unreleased, ships in v1) |
-| 2c | Memory notes: the `memory_*` tools over committed Markdown files, and notes for a claimed path returned by `claim` | Done (unreleased, ships in v1) |
-| v1 | Coordination, memory, and token budgets all enforced by tests; see [ADR-0013](../5-decisions/0013-v1-definition.md) | In progress |
+| 2b | Agent-facing hardening from real multi-agent use: the brief on claim, lost-lease reporting, orphaned tasks, contract republish, the shim replacing stale daemons, agent messages | Done (1.0.0) |
+| 2c | Memory notes: the `memory_*` tools over committed Markdown files, and notes for a claimed path returned by `claim` | Done (1.0.0) |
+| v1 | Coordination, memory, and token budgets all enforced by tests; see [ADR-0013](../5-decisions/0013-v1-definition.md) | Done (1.0.0) |
+| v1.x | The swarm lead, escalations and the human queue (ADR-0027), claim-aware pulls (ADR-0028), symbol anchors (ADR-0029), complete tool definitions and the `guide` tool (ADR-0034), lead-only writes (ADR-0036) | Done (1.2.x) |
 | 3 | Contract shape validation (JSON Schema), notices linked to claims, richer dashboard filters | Planned |
 | 4 | MCP resources for read-only views, optional glob claims | Planned |

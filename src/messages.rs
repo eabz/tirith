@@ -365,8 +365,14 @@ mod tests {
                 t0(),
             )
             .unwrap();
-        assert!(board.take_inbox(&agent("carol")).messages.is_empty());
-        assert!(board.take_inbox(&agent("alice")).messages.is_empty());
+        assert!(
+            board.take_inbox(&agent("carol")).messages.is_empty(),
+            "board.take_inbox(&agent(\"carol\")).messages should be empty"
+        );
+        assert!(
+            board.take_inbox(&agent("alice")).messages.is_empty(),
+            "board.take_inbox(&agent(\"alice\")).messages should be empty"
+        );
         let inbox = board.take_inbox(&agent("bob"));
         assert_eq!(inbox.messages.len(), 1);
         assert_eq!(inbox.messages[0].text, "take task X");
@@ -390,7 +396,8 @@ mod tests {
                         ..Default::default()
                     }
                 )
-                .is_empty()
+                .is_empty(),
+            "bob has nothing unread"
         );
     }
 
@@ -407,7 +414,10 @@ mod tests {
             .unwrap();
         assert_eq!(board.take_inbox(&agent("alice")).messages.len(), 1);
         assert_eq!(board.take_inbox(&agent("bob")).messages.len(), 1);
-        assert!(board.take_inbox(&agent("head")).messages.is_empty());
+        assert!(
+            board.take_inbox(&agent("head")).messages.is_empty(),
+            "board.take_inbox(&agent(\"head\")).messages should be empty"
+        );
         assert!(
             board.take_inbox(&agent("late")).messages.is_empty(),
             "not seen before the send"
@@ -438,7 +448,10 @@ mod tests {
             .unwrap();
         let broadcast = board.messages().last().unwrap();
         assert_eq!(broadcast.audience, vec![agent("w")]);
-        assert!(board.take_inbox(&agent("human")).messages.is_empty());
+        assert!(
+            board.take_inbox(&agent("human")).messages.is_empty(),
+            "board.take_inbox(&agent(\"human\")).messages should be empty"
+        );
         assert_eq!(
             board.list(&agent("lead"), &MessageFilter::default()).len(),
             2,
@@ -500,7 +513,10 @@ mod tests {
         let rest = board.list_page(&agent("bob"), &with_alice, Some(&cursor), 2);
         assert_eq!(rest.items.len(), 1);
         assert_eq!(rest.items[0].text, "a0");
-        assert!(board.list(&agent("carol"), &with_alice).is_empty());
+        assert!(
+            board.list(&agent("carol"), &with_alice).is_empty(),
+            "board.list(&agent(\"carol\"), &with_alice) should be empty"
+        );
     }
 
     #[test]

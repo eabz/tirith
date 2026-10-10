@@ -53,8 +53,8 @@ use crate::state::{Brief, State};
 use crate::store::{DaemonInfo, JsonStore, Persister, StoreError};
 use crate::tasks::{NewTask, Pulled, TaskError, TaskStatus};
 use crate::types::{
-    AgentId, ClaimId, ContractId, DecisionId, IdError, MessageId, NoticeId, Page, PathError,
-    PrefixError, RepoPath, TaskId, clamp_limit, parse_paths,
+    AgentId, ClaimId, ContractId, DecisionId, IdError, LeadOnly, MessageId, NoticeId, Page,
+    PathError, PrefixError, RepoPath, TaskId, clamp_limit, parse_paths,
 };
 
 /// Crate version reported to clients and the dashboard.
@@ -74,7 +74,9 @@ the ok reply carries a brief of the unread notices, contracts, decisions and mem
 paths, so read it first. `conflict` means do not edit those paths. `contract_publish` before \
 implementing an interface another agent consumes; `notice_publish` for renames or signature changes \
 that affect other files; `release` when done. Any call renews your leases; a `lost` field means a \
-lease ended and you must claim again. Call `guide` for the whole protocol.";
+lease ended and you must claim again. Call `guide` for the whole protocol, and `guide` with topic \
+`roles` when you spawn agents or were spawned: five writes are the lead's while it holds \
+`.tirith/lead`.";
 
 // ---------------------------------------------------------------------------
 // Tool inputs. Doc comments become schema descriptions.
@@ -954,7 +956,27 @@ macro_rules! invalid_from {
     };
 }
 
-invalid_from!(IdError, PathError, DecisionError);
+invalid_from!(IdError, PathError);
+
+/// A write reserved for the lead while a swarm has one (ADR-0036): a
+/// `conflict` naming the lead, so the caller knows whom to message.
+impl From<LeadOnly> for Value {
+    fn from(e: LeadOnly) -> Self {
+        with_status(
+            "conflict",
+            json!({ "lead": e.lead, "message": e.to_string() }),
+        )
+    }
+}
+
+impl From<DecisionError> for Value {
+    fn from(e: DecisionError) -> Self {
+        match e {
+            DecisionError::LeadOnly(e) => e.into(),
+            other => invalid(other),
+        }
+    }
+}
 
 impl From<ClaimError> for Value {
     fn from(e: ClaimError) -> Self {
@@ -980,6 +1002,7 @@ impl From<TaskError> for Value {
                 "conflict",
                 json!({ "owner": owner, "since": since, "message": message }),
             ),
+            TaskError::LeadOnly(e) => e.into(),
         }
     }
 }
@@ -998,6 +1021,7 @@ impl From<ContractError> for Value {
                 "conflict",
                 json!({ "current_version": current, "published_by": published_by, "message": message }),
             ),
+            ContractError::LeadOnly(e) => e.into(),
         }
     }
 }
@@ -1035,6 +1059,7 @@ impl From<MemoryError> for Value {
                     "message": e.to_string(),
                 }),
             ),
+            MemoryError::LeadOnly(e) => e.into(),
             other => invalid(other),
         }
     }
@@ -1287,7 +1312,7 @@ impl TirithServer {
     /// Create a task.
     #[tool(
         name = "task_create",
-        description = "Add a todo task to the shared board for any agent to pull. depends_on holds it back until those tasks are done, higher priority is pulled first, and paths lets task_pull keep agents off each other's files. Use to queue work, not to start it: task_pull assigns work and task_update changes a task. Returns the task with its id.",
+        description = "Add a todo task to the shared board for any agent to pull. depends_on holds it back until those tasks are done, higher priority is pulled first, and paths lets task_pull keep agents off each other's files. Use to queue work, not to start it: task_pull assigns work and task_update changes a task. Lead-only while a swarm has a lead. Returns the task with its id.",
         annotations(destructive_hint = false)
     )]
     async fn task_create(
@@ -1369,7 +1394,7 @@ impl TirithServer {
     /// Update a task's status.
     #[tool(
         name = "task_update",
-        description = "Change one task's status: done to finish it, todo to hand it back, blocked to park it with note as the reason, in_progress to take it by id. Changing a task another agent has in_progress is a conflict naming the owner, unless force, which is recorded in the task's notes. To get the next task without naming one use task_pull. Returns the task in full.",
+        description = "Change one task's status: done to finish it, todo to hand it back, blocked to park it with note as the reason, in_progress to take it by id. Changing a task another agent has in_progress is a conflict naming the owner, unless force, which is recorded in the task's notes, lead-only while a swarm has a lead. To get the next task without naming one use task_pull. Returns the task in full.",
         annotations(destructive_hint = false, idempotent_hint = true)
     )]
     async fn task_update(
@@ -1422,7 +1447,7 @@ impl TirithServer {
     /// Publish an interface contract.
     #[tool(
         name = "contract_publish",
-        description = "Publish the shape of an interface (an endpoint, function, type, event or CLI) before either side implements it, with the paths that will consume it. Publishing an existing name creates a new version and sends its consumers a change notice by itself, so do not also call notice_publish. Omitting consumers on a republish keeps the list, and expected_version refuses the write with conflict if another agent published first. To read contracts use contract_get or contract_list.",
+        description = "Publish the shape of an interface (an endpoint, function, type, event or CLI) before either side implements it, with the paths that will consume it. Publishing an existing name creates a new version and sends its consumers a change notice by itself, so do not also call notice_publish. Omitting consumers on a republish keeps the list, and expected_version refuses the write with conflict if another agent published first. Lead-only while a swarm has a lead. To read contracts use contract_get or contract_list.",
         annotations(destructive_hint = false)
     )]
     async fn contract_publish(
@@ -1591,7 +1616,7 @@ impl TirithServer {
     /// Record a decision.
     #[tool(
         name = "decision_record",
-        description = "Record a settled project choice with its rationale, the alternatives considered and the paths it constrains, so no agent decides it again. It is written as one committed Markdown file under .tirith/decisions/ and appears in the brief of later claims on those paths. Use only once the choice is final; for discussion use message_send, and for lessons about code use memory_write. Returns the decision with its permalink.",
+        description = "Record a settled project choice with its rationale, the alternatives considered and the paths it constrains, so no agent decides it again. It is written as one committed Markdown file under .tirith/decisions/ and appears in the brief of later claims on those paths. Use only once the choice is final; for discussion use message_send, and for lessons about code use memory_write. Lead-only while a swarm has a lead. Returns the decision with its permalink.",
         annotations(destructive_hint = false)
     )]
     async fn decision_record(
@@ -1814,7 +1839,7 @@ impl TirithServer {
     /// Delete a memory note.
     #[tool(
         name = "memory_delete",
-        description = "Delete one memory note by permalink, id or exact title, permanently: its file is removed and does not return on restart. Use to retract a note that holds a secret or a wrong fact; to correct a note use memory_write, which updates in place. Returns a digest of what was removed; not_found if there is none.",
+        description = "Delete one memory note by permalink, id or exact title, permanently: its file is removed and does not return on restart. Use to retract a note that holds a secret or a wrong fact; to correct a note use memory_write, which updates in place. Lead-only while a swarm has a lead. Returns a digest of what was removed; not_found if there is none.",
         annotations(destructive_hint = true, idempotent_hint = true)
     )]
     async fn memory_delete(
@@ -1823,12 +1848,7 @@ impl TirithServer {
     ) -> Result<CallToolResult, McpError> {
         let outcome = run(|| {
             let agent = agent(&input.agent)?;
-            let Some(removed) = self.state.memory_delete(&agent, &input.name) else {
-                return Ok(not_found(format!(
-                    "no memory note matching `{}`",
-                    input.name
-                )));
-            };
+            let removed = self.state.memory_delete(&agent, &input.name)?;
             Ok(ok(json!({ "removed": memory_digest(&removed) })))
         });
         self.finish(Some(&input.agent), outcome).await

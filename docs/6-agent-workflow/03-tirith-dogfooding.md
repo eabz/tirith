@@ -132,6 +132,15 @@ knows it by one reserved claim:
    message `human`; they escalate to you. While there is no lead, blocked
    tasks and repeated refusals go to the human queue directly.
 4. **Release it last**, after the workers have finished.
+5. **The plan is yours.** While you hold the lead, `contract_publish`,
+   `task_create`, `decision_record`, `memory_delete` and `task_update`
+   with `force` are refused to every other agent with `conflict` naming
+   you ([ADR-0036](../5-decisions/0036-lead-only-writes.md)); workers
+   propose them in your inbox. You are also the only session that
+   commits or pushes
+   ([ADR-0037](../5-decisions/0037-lead-owns-the-integration-boundary.md)).
+   What a worker is told, and when to spawn one, is in
+   [../2-examples/03-swarm-playbook.md](../2-examples/03-swarm-playbook.md).
 
 **Idle workers wait on the board, not on the turn.** A worker with nothing
 to do calls `task_pull` with `wait_secs` (up to 120) instead of ending its

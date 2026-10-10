@@ -502,6 +502,19 @@ impl<T> Page<T> {
     }
 }
 
+/// A write the lead reserves while a swarm has one (ADR-0036), refused
+/// because the caller is not the agent holding `.tirith/lead`.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[error(
+    "only the lead ({lead}) {action} while it holds .tirith/lead; propose it with message_send"
+)]
+pub struct LeadOnly {
+    /// The current lead, whom to message.
+    pub lead: AgentId,
+    /// What was refused, as a verb phrase: `creates tasks`.
+    pub action: &'static str,
+}
+
 /// Why an id given by a caller could not be resolved to one item.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PrefixError {

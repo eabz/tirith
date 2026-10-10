@@ -528,7 +528,10 @@ mod tests {
         assert_eq!(out.status(), StatusCode::OK);
         let out = tokio::task::block_in_place(|| body(out));
         assert_eq!(out["answered"]["reply"]["from"], "human", "{out}");
-        assert!(human_queue_of(state).is_empty());
+        assert!(
+            human_queue_of(state).is_empty(),
+            "human_queue_of(state) should be empty"
+        );
         let inbox = state.take_inbox(&AgentId::new("worker").unwrap());
         assert_eq!(inbox.messages.len(), 1);
         assert_eq!(inbox.messages[0].text, "the key is in the keychain");

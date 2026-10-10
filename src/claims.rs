@@ -502,7 +502,10 @@ mod tests {
             t0(),
         );
         assert!(matches!(err, Err(ClaimError::Conflict(_))));
-        assert!(book.list(Some(&path("b"))).is_empty());
+        assert!(
+            book.list(Some(&path("b"))).is_empty(),
+            "book.list(Some(&path(\"b\"))) should be empty"
+        );
     }
 
     #[test]
@@ -593,7 +596,7 @@ mod tests {
         assert_eq!(released, vec![path("a")]);
         assert_eq!(book.claims()[0].paths, vec![path("b")]);
         book.release(&agent("alice"), None).unwrap();
-        assert!(book.claims().is_empty());
+        assert!(book.claims().is_empty(), "book.claims() should be empty");
         assert!(matches!(
             book.release(&agent("alice"), None),
             Err(ClaimError::NoClaims(_))
@@ -639,7 +642,7 @@ mod tests {
         let late = t0() + Duration::seconds(2401);
         book.touch(&agent("a"), late);
         assert_eq!(book.reap(late).len(), 1);
-        assert!(book.claims().is_empty());
+        assert!(book.claims().is_empty(), "book.claims() should be empty");
     }
 
     #[test]
@@ -673,7 +676,7 @@ mod tests {
         assert_eq!(book.claims()[0].paths, vec![path("src/a")]);
         book.release(&agent("a"), Some(vec![path("src/a")]))
             .unwrap();
-        assert!(book.claims().is_empty());
+        assert!(book.claims().is_empty(), "book.claims() should be empty");
     }
 
     #[test]
@@ -716,8 +719,14 @@ mod tests {
         assert_eq!(lost.len(), 1);
         assert_eq!(lost[0].path, path("src/x.rs"));
         assert_eq!(lost[0].at, t0() + Duration::seconds(600));
-        assert!(reaped.take_for(&agent("alice")).is_empty());
-        assert!(reaped.take_for(&agent("bob")).is_empty());
+        assert!(
+            reaped.take_for(&agent("alice")).is_empty(),
+            "reaped.take_for(&agent(\"alice\")) should be empty"
+        );
+        assert!(
+            reaped.take_for(&agent("bob")).is_empty(),
+            "reaped.take_for(&agent(\"bob\")) should be empty"
+        );
         let previous = reaped.previous_owner(&path("src")).unwrap();
         assert_eq!(previous.owner, agent("alice"));
         assert!(reaped.previous_owner(&path("docs")).is_none());
@@ -787,7 +796,10 @@ mod tests {
                 t0(),
             )
             .unwrap();
-        assert!(granted.new_paths.is_empty());
+        assert!(
+            granted.new_paths.is_empty(),
+            "granted.new_paths should be empty"
+        );
         assert_eq!(granted.renewed_paths.len(), 1);
         // Claiming the enclosing symbol absorbs it.
         let granted = book
@@ -817,7 +829,7 @@ mod tests {
             book.release(&agent("a"), Some(vec![path(f)])).unwrap(),
             vec![path(f)]
         );
-        assert!(book.claims().is_empty());
+        assert!(book.claims().is_empty(), "book.claims() should be empty");
     }
 
     #[test]

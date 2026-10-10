@@ -34,7 +34,7 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0022](0022-decisions-as-markdown.md) | Decisions are one Markdown file each, in the memory-note format | Accepted |
 | [0023](0023-stable-toolchain-for-release-containers.md) | A `rust-toolchain.toml` pins the stable channel so release containers meet `rust-version` | Accepted |
 | [0025](0025-no-release-build-cache.md) | Release builds drop the dependency cache | Accepted |
-| [0027](0027-swarm-lead-and-escalation.md) | Every swarm has a lead; escalations, the human queue, and the lead log are deterministic | Accepted |
+| [0027](0027-swarm-lead-and-escalation.md) | Every swarm has a lead; escalations, the human queue, and the lead log are deterministic | Accepted; refined by 0036, 0037 |
 | [0028](0028-claim-aware-task-pull.md) | `task_pull` prefers tasks whose paths no other agent holds; it waits only behind claims | Accepted; revised 2026-09-17 |
 | [0029](0029-symbol-anchored-claims.md) | Symbol-anchored claims and edit-window holds | Proposed |
 | [0031](0031-waits-end-when-the-caller-goes.md) | A waiting `claim` or `task_pull` ends when its caller cancels or disconnects | Accepted |
@@ -42,6 +42,8 @@ Format: `NNNN-short-title.md`, with sections **Status**, **Context**,
 | [0033](0033-tool-annotations-and-usage-clauses.md) | Every tool carries MCP annotations and says when to use it; `tools/list` budget 10,500 | Accepted; superseded in part by 0034 |
 | [0034](0034-complete-tool-definitions-and-guide.md) | Tool definitions are complete on the wire (parameter descriptions, enums, output schemas), and `guide` explains the protocol; `tools/list` budget 44,500 | Accepted |
 | [0035](0035-shared-agent-conventions.md) | Agent conventions shared with the other repositories: skills in `.agents/skills/`, committed Claude settings, graphify, a short `AGENTS.md`, memories as entry points | Accepted |
+| [0036](0036-lead-only-writes.md) | Contracts, the board, decisions and deletions are the lead's while a swarm has one; others get `conflict` naming the lead | Accepted |
+| [0037](0037-lead-owns-the-integration-boundary.md) | The lead alone commits, pushes, opens pull requests and deploys; Tirith adds no GitHub or deploy tools | Proposed |
 
 These are decisions about building Tirith. Decisions that agents make while
 using Tirith on some other project go in that project's `.tirith/decisions/`

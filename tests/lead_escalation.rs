@@ -11,12 +11,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod common;
+#[path = "common/lead.rs"]
+mod lead;
 
 use serde_json::{Value, json};
 use tirith::lead::{LeadEntry, LeadEvent, human_queue_of};
 use tirith::server::{ServerHandle, start};
 
 use common::{call, options};
+use lead::claim_lead;
 
 /// A daemon where `worker` owns an in-progress task, and `boss` holds the
 /// lead lease when `lead` is set.
@@ -24,13 +27,7 @@ async fn swarm(lead: bool) -> (tempfile::TempDir, ServerHandle, String) {
     let dir = tempfile::tempdir().unwrap();
     let handle = start(options(dir.path(), None)).await.unwrap();
     if lead {
-        let out = call(
-            &handle,
-            "claim",
-            json!({ "agent": "boss", "paths": [".tirith/lead"], "reason": "swarm", "brief": false }),
-        )
-        .await;
-        assert_eq!(out["status"], "ok", "{out}");
+        claim_lead(&handle, "boss").await;
     }
     let task = call(
         &handle,
@@ -134,8 +131,14 @@ async fn a_block_goes_to_the_lead_and_unblocking_answers_it() {
         "{lead:?}"
     );
     assert!(lead[0].ends_with("which order for t2 and t3?"), "{lead:?}");
-    assert!(from_tirith(&handle, "worker").await.is_empty());
-    assert!(human_queue_of(handle.state()).is_empty());
+    assert!(
+        from_tirith(&handle, "worker").await.is_empty(),
+        "from_tirith(&handle, \"worker\").await should be empty"
+    );
+    assert!(
+        human_queue_of(handle.state()).is_empty(),
+        "human_queue_of(handle.state()) should be empty"
+    );
 
     // Unblocking the task answers the escalation.
     call(
@@ -194,7 +197,10 @@ async fn with_no_lead_an_escalation_goes_to_the_human_queue_and_an_answer_clears
         json!({ "agent": "helper", "to": "worker", "text": "the key is in the keychain" }),
     )
     .await;
-    assert!(human_queue_of(handle.state()).is_empty());
+    assert!(
+        human_queue_of(handle.state()).is_empty(),
+        "human_queue_of(handle.state()) should be empty"
+    );
     let outcome = escalations(&handle)[0].outcome.clone().unwrap();
     assert_eq!(outcome["via"], "message");
     assert_eq!(outcome["answered_by"], "helper");
@@ -223,7 +229,10 @@ async fn a_message_to_the_lead_is_never_an_escalation() {
         .await;
         assert_eq!(out["status"], "ok", "{out}");
     }
-    assert!(escalations(&handle).is_empty());
+    assert!(
+        escalations(&handle).is_empty(),
+        "escalations(&handle) should be empty"
+    );
     assert_eq!(human(&handle).await["count"], 0);
     let lead = call(&handle, "status", json!({ "agent": "boss" })).await;
     let inbox = lead["inbox"].as_array().unwrap();

@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 /// The topics `guide` accepts, in the order it lists them. `overview` is
 /// the default.
-pub(crate) const TOPICS: [&str; 10] = [
+pub(crate) const TOPICS: [&str; 11] = [
     "overview",
     "claims",
     "tasks",
@@ -18,6 +18,7 @@ pub(crate) const TOPICS: [&str; 10] = [
     "memory",
     "messages",
     "lead",
+    "roles",
     "server",
 ];
 
@@ -50,7 +51,7 @@ const LOOP: [&str; 7] = [
     "release when you are done.",
 ];
 
-const RULES: [&str; 7] = [
+const RULES: [&str; 8] = [
     "Every result is JSON with a status: ok, conflict, not_found, none or invalid. Failures are statuses, never MCP errors.",
     "Any call renews your leases. A lease still ends after four TTLs, until you claim or renew.",
     "lost on any reply names leases of yours that ended: stop editing those paths and claim them again.",
@@ -58,9 +59,10 @@ const RULES: [&str; 7] = [
     "persist_error on a reply means the change stands in memory but was not written to disk.",
     "List tools return 20 rows, newest first. Pass next_before back as before for the next page.",
     "Hold files many agents edit only while writing them: prepare, claim with wait_secs, write, release.",
+    "While a swarm has a lead, task_create, contract_publish, decision_record, memory_delete and task_update with force are the lead's: anyone else gets conflict naming the lead. See topic roles.",
 ];
 
-const SECTIONS: [Section; 9] = [
+const SECTIONS: [Section; 10] = [
     Section {
         name: "claims",
         summary: "Leases on files or directories. A path covers everything beneath it, overlaps are refused, and a lease ends when its TTL passes without a call from you.",
@@ -226,7 +228,42 @@ const SECTIONS: [Section; 9] = [
                 when: "Workers escalate to the lead by name. Only the lead messages human, with a text written for the human.",
             },
         ],
-        rules: &["Workers never claim .tirith/lead."],
+        rules: &[
+            "Workers never claim .tirith/lead.",
+            "Five writes are the lead's while it holds the path (the overview rules list them); workers propose them with message_send.",
+        ],
+    },
+    Section {
+        name: "roles",
+        summary: "A swarm is one lead and its workers. The lead is the session the human talks to: it plans, publishes the contracts, seeds the board, spawns and briefs the workers, reviews their work, and alone commits, pushes, opens pull requests and deploys. A worker takes one task at a time from the board. A session that spawns nobody is solo: no lead, no gates.",
+        tools: &[
+            Entry {
+                tool: "claim",
+                when: "Worker: claim the task's paths; on a file others edit, claim a symbol anchor (path#Symbol) and edit by replacement. Lead: .tirith/lead, as topic lead says.",
+            },
+            Entry {
+                tool: "contract_publish",
+                when: "Lead, before the tasks that consume it: the shape every worker builds against. A worker that needs it changed proposes the change by message_send.",
+            },
+            Entry {
+                tool: "task_create",
+                when: "Lead: one task per independent change, with paths, priority and depends_on, all before spawning. Spawn when two or more todo tasks have disjoint paths; otherwise do the work yourself. One worker per such task, never more workers than free tasks.",
+            },
+            Entry {
+                tool: "task_pull",
+                when: "Worker: with wait_secs, in a loop, until none while no todo task is left, then release, report, and stop. Never sleep or end the turn to wait.",
+            },
+            Entry {
+                tool: "message_send",
+                when: "Worker: report done or blocked and send proposals to the lead by name; never to human. Lead: read the inbox on every call and answer; relay to human only what the human alone can settle.",
+            },
+        ],
+        rules: &[
+            "Model choice: the lead runs on the strongest model, because it plans, designs contracts, reviews and merges. A worker runs on a smaller, cheaper model: its brief, contract and paths leave it the execution, not the judgment.",
+            "The worker brief names: its agent name, the lead's name, the task id, the contract, the paths, the loop above, and that it never claims .tirith/lead, never messages human, and never commits, pushes or deploys.",
+            "The lead merges: it reads each worker's diff against its claims and contract, runs the full check once, and is the only session that talks to GitHub, a deploy target or any other service outside the repository.",
+            "Work the next worker needs is a task with depends_on, not a message; a decision a worker reached is a proposal until the lead records it.",
+        ],
     },
     Section {
         name: "server",

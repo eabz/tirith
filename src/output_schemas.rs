@@ -24,6 +24,9 @@ const STATUSES: [&str; 6] = [
     "cancelled",
 ];
 
+/// The `lead` field of a lead-only refusal (ADR-0036).
+const LEAD: &str = "On a lead-only conflict: the lead to message.";
+
 /// What any result may carry besides its own fields.
 const PIGGYBACKS: &str =
     "Any result may also carry lost, inbox, inbox_more and persist_error; see guide.";
@@ -203,8 +206,11 @@ fn claims(tool: &str) -> Option<Map<String, Value>> {
 fn tasks(tool: &str) -> Option<Map<String, Value>> {
     Some(match tool {
         "task_create" => schema(
-            "ok. not_found: an unknown depends_on id. invalid: bad input or an ambiguous id prefix.",
-            vec![("task", typed("object", &format!("The new task: {TASK}")))],
+            "ok. conflict: lead-only while a swarm has a lead. not_found: an unknown depends_on id. invalid: bad input or an ambiguous id prefix.",
+            vec![
+                ("task", typed("object", &format!("The new task: {TASK}"))),
+                ("lead", untyped(LEAD)),
+            ],
         ),
         "task_pull" => schema(
             "ok: the task is yours, in_progress. none: no todo task is unblocked. cancelled: a wait whose caller left. invalid: bad input.",
@@ -222,12 +228,13 @@ fn tasks(tool: &str) -> Option<Map<String, Value>> {
             ],
         ),
         "task_update" => schema(
-            "ok. conflict: another agent has it in_progress and force was not set. not_found: no such task. invalid: bad status or an ambiguous id prefix.",
+            "ok. conflict: another agent has it in_progress and force was not set, or force is lead-only. not_found: no such task. invalid: bad status or an ambiguous id prefix.",
             vec![
                 (
                     "task",
                     typed("object", &format!("The task after the change: {TASK}")),
                 ),
+                ("lead", untyped(LEAD)),
                 (
                     "owner",
                     untyped("On conflict: the agent that has the task in_progress."),
@@ -252,8 +259,9 @@ fn tasks(tool: &str) -> Option<Map<String, Value>> {
 fn contracts_and_notices(tool: &str) -> Option<Map<String, Value>> {
     Some(match tool {
         "contract_publish" => schema(
-            "ok. conflict: expected_version was set and the contract is at another version. invalid: bad input.",
+            "ok. conflict: expected_version was set and the contract is at another version, or lead-only. invalid: bad input.",
             vec![
+                ("lead", untyped(LEAD)),
                 (
                     "contract",
                     typed(
@@ -320,14 +328,17 @@ fn contracts_and_notices(tool: &str) -> Option<Map<String, Value>> {
 fn decisions_and_memory(tool: &str) -> Option<Map<String, Value>> {
     Some(match tool {
         "decision_record" => schema(
-            "ok. invalid: bad input.",
-            vec![(
-                "decision",
-                typed(
-                    "object",
-                    "id, title, decision, rationale, alternatives, affects_paths, recorded_by, recorded_at, and the permalink of its committed file.",
+            "ok. conflict: lead-only while a swarm has a lead. invalid: bad input.",
+            vec![
+                (
+                    "decision",
+                    typed(
+                        "object",
+                        "id, title, decision, rationale, alternatives, affects_paths, recorded_by, recorded_at, and the permalink of its committed file.",
+                    ),
                 ),
-            )],
+                ("lead", untyped(LEAD)),
+            ],
         ),
         "decision_list" => schema(
             "ok. invalid: bad input.",
@@ -395,14 +406,17 @@ fn decisions_and_memory(tool: &str) -> Option<Map<String, Value>> {
             ],
         ),
         "memory_delete" => schema(
-            "ok. not_found: no such note.",
-            vec![(
-                "removed",
-                typed(
-                    "object",
-                    &format!("A digest of the deleted note: {DIGEST}."),
+            "ok. conflict: lead-only while a swarm has a lead. not_found: no such note.",
+            vec![
+                ("lead", untyped(LEAD)),
+                (
+                    "removed",
+                    typed(
+                        "object",
+                        &format!("A digest of the deleted note: {DIGEST}."),
+                    ),
                 ),
-            )],
+            ],
         ),
         _ => return None,
     })

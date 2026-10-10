@@ -765,7 +765,10 @@ async fn a_daemon_registers_on_start_and_unregisters_on_shutdown() {
     assert_eq!(entry.root, dir.path());
     assert_eq!(entry.dashboard_url, handle.dashboard_url());
     handle.shutdown().await.unwrap();
-    assert!(Registry::load(&registry).unwrap().entries().is_empty());
+    assert!(
+        Registry::load(&registry).unwrap().entries().is_empty(),
+        "Registry::load(&registry).unwrap().entries() should be empty"
+    );
 }
 
 /// ADR-0020: a message rides on the recipient's next result, once; a

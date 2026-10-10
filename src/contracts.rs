@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::types::{AgentId, ContractId, Page, PrefixError, RepoPath, resolve_prefix};
+use crate::types::{AgentId, ContractId, LeadOnly, Page, PrefixError, RepoPath, resolve_prefix};
 
 /// What kind of interface a contract describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +216,9 @@ pub enum ContractError {
         /// Who published the current version, if any.
         published_by: Option<AgentId>,
     },
+    /// Reserved for the lead while a swarm has one (ADR-0036).
+    #[error(transparent)]
+    LeadOnly(#[from] LeadOnly),
 }
 
 /// All contracts.
@@ -401,7 +404,10 @@ mod tests {
         let mut cleared = new("Foo", json!({"v": 4}));
         cleared.consumers = Some(Vec::new());
         let none = reg.publish(agent("a"), cleared, t0()).unwrap();
-        assert!(none.contract.consumers.is_empty());
+        assert!(
+            none.contract.consumers.is_empty(),
+            "none.contract.consumers should be empty"
+        );
         assert_eq!(none.notify, vec![path("src/cli")]);
     }
 
@@ -476,8 +482,14 @@ mod tests {
         let inside = RepoPath::new("src/client/sessions.rs").unwrap();
         let outside = RepoPath::new("src/server").unwrap();
         assert_eq!(reg.list(Some(&inside), None).len(), 1);
-        assert!(reg.list(Some(&outside), None).is_empty());
-        assert!(reg.list(None, Some(ContractKind::Cli)).is_empty());
+        assert!(
+            reg.list(Some(&outside), None).is_empty(),
+            "reg.list(Some(&outside), None) should be empty"
+        );
+        assert!(
+            reg.list(None, Some(ContractKind::Cli)).is_empty(),
+            "reg.list(None, Some(ContractKind::Cli)) should be empty"
+        );
     }
 
     #[test]

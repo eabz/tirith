@@ -301,7 +301,7 @@ curl -LsSf https://eabz.github.io/tirith/install.sh | sh</pre>
           <pre>irm https://eabz.github.io/tirith/install.ps1 | iex</pre>
           <button class="copy" type="button" data-copy='irm https://eabz.github.io/tirith/install.ps1 | iex'>Copy</button>
         </div>
-        <p>Run it in PowerShell. It installs <code>tirith.exe</code> for x86_64 or ARM64 and adds it to your user <code>PATH</code>; open a new terminal afterwards so the change is picked up. Pin a version with <code>$env:TIRITH_VERSION = "v0.1.3"</code> first.</p>
+        <p>Run it in PowerShell. It installs <code>tirith.exe</code> for x86_64 or ARM64 and adds it to your user <code>PATH</code>; open a new terminal afterwards so the change is picked up. Pin a version with <code>$env:TIRITH_VERSION = "v1.2.1"</code> first.</p>
         <p>From <code>cmd.exe</code>, or if your execution policy blocks the one-liner:</p>
         <div class="code">
           <pre>powershell -ExecutionPolicy Bypass -c "irm https://eabz.github.io/tirith/install.ps1 | iex"</pre>
@@ -430,7 +430,7 @@ cargo install --path .">Copy</button>
 
       <details>
         <summary>Alternative: run the daemon yourself and connect over HTTP</summary>
-        <p class="muted" style="margin-top:10px">The stdio shim ships in Tirith 0.1.3 and later. With an older binary, or when you want the daemon under your own supervision, start it from the repository root and point clients at its URL.</p>
+        <p class="muted" style="margin-top:10px">The stdio shim ships in every release since 0.1.3. With an older binary, or when you want the daemon under your own supervision, start it from the repository root and point clients at its URL.</p>
         <div class="code">
           <pre>cd /path/to/your/repo
 tirith serve
@@ -457,7 +457,7 @@ codex mcp add tirith --url http://127.0.0.1:7477/mcp
       <p class="lead">The CLI goes through the same MCP path agents use, so it doubles as a way to watch or nudge a running swarm.</p>
       <div class="code">
         <pre>tirith status
-<span class="cm"># tirith 0.1.3 up 42s  seq 0  claims 0  tasks 0 open / 0 done  contracts 0  notices 0  decisions 0
+<span class="cm"># tirith 1.2.1 up 42s  seq 0  claims 0  tasks 0 open / 0 done  contracts 0  notices 0  decisions 0
 # no active agents</span></pre>
         <button class="copy" type="button" data-copy="tirith status">Copy</button>
       </div>

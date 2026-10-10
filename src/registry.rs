@@ -418,7 +418,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state/tirith/daemons.json");
         let mut registry = Registry::load(&path).unwrap();
-        assert!(registry.entries().is_empty());
+        assert!(
+            registry.entries().is_empty(),
+            "registry.entries() should be empty"
+        );
         registry.register(entry("/repos/a", 10)).unwrap();
         registry.register(entry("/repos/b", 11)).unwrap();
         let reloaded = Registry::load(&path).unwrap();
@@ -455,7 +458,7 @@ mod tests {
         third.unregister(10).unwrap();
         assert_eq!(on_disk(), vec![entry("/repos/b", 11)]);
         assert_eq!(first.prune(|e| e.pid != 11).unwrap(), 1);
-        assert!(on_disk().is_empty());
+        assert!(on_disk().is_empty(), "on_disk() should be empty");
     }
 
     #[test]
@@ -541,7 +544,7 @@ mod tests {
 
         // A tray took the busy daemon for a dead one.
         Registry::load(&path).unwrap().unregister(ours.pid).unwrap();
-        assert!(on_disk().is_empty());
+        assert!(on_disk().is_empty(), "on_disk() should be empty");
         eventually(|| on_disk() == vec![ours.clone()]).await;
 
         registration.leave().await;

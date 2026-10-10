@@ -55,12 +55,10 @@ its tool calls; the setups below suggest where to put that instruction.
 claude mcp add --transport http tirith http://127.0.0.1:7477/mcp
 ```
 
-Add to the project's `CLAUDE.md` or `AGENTS.md`:
-
-```
-Before editing files, call the tirith `claim` tool with agent="<your session name>".
-If the result is a conflict, do not edit those files.
-```
+Add the protocol block from
+[03-swarm-playbook.md](03-swarm-playbook.md#1-put-the-protocol-in-the-project)
+to the project's `CLAUDE.md` or `AGENTS.md`: it says who leads, what a
+worker does, and that a conflict means do not edit.
 
 ### Cursor
 
@@ -74,7 +72,7 @@ If the result is a conflict, do not edit those files.
 }
 ```
 
-Add the same claim instruction to `.cursor/rules/` or `AGENTS.md`.
+Add the same protocol block to `.cursor/rules/` or `AGENTS.md`.
 
 ### Codex CLI
 
@@ -153,7 +151,7 @@ speaks the protocol, keeps the session, and prints compact text or
 
 ```bash
 tirith status
-# tirith 0.1.3 up 1s  seq 0  claims 0  tasks 0 open / 0 done  contracts 0  notices 0  decisions 0
+# tirith 1.2.1 up 1s  seq 0  claims 0  tasks 0 open / 0 done  contracts 0  notices 0  decisions 0
 # no active agents
 ```
 

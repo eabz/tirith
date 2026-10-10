@@ -59,6 +59,7 @@ tirith/
 │   ├── memory_layer.rs    Notes on disk, including this repo's own.
 │   ├── stdio_shim.rs      The shim over its pipes.
 │   ├── lead_escalation.rs Escalation triggers, routing, the human queue.
+│   ├── lead_gates.rs      Lead-only writes while a swarm has a lead (ADR-0036).
 │   ├── budgets.rs         Token budgets: tools/list, rows, text lines.
 │   └── common/            Shared helpers for the integration tests.
 ├── examples/

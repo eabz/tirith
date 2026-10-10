@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::types::{AgentId, Page, PrefixError, RepoPath, TaskId, resolve_prefix};
+use crate::types::{AgentId, LeadOnly, Page, PrefixError, RepoPath, TaskId, resolve_prefix};
 
 /// Where a task is in its life, plus who is responsible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +237,9 @@ pub enum TaskError {
         /// When it last changed under that owner.
         since: DateTime<Utc>,
     },
+    /// Reserved for the lead while a swarm has one (ADR-0036).
+    #[error(transparent)]
+    LeadOnly(#[from] LeadOnly),
 }
 
 /// A path another agent is working on, through a live claim or an
@@ -726,7 +729,10 @@ mod tests {
                 .len(),
             1
         );
-        assert!(board.list(Some(TaskStatus::Todo), None).is_empty());
+        assert!(
+            board.list(Some(TaskStatus::Todo), None).is_empty(),
+            "board.list(Some(TaskStatus::Todo), None) should be empty"
+        );
     }
 
     #[test]
@@ -811,7 +817,8 @@ mod tests {
         assert!(
             board
                 .reap_orphans(|_| Some(t0()), threshold, t0())
-                .is_empty()
+                .is_empty(),
+            "nothing is orphaned at t0"
         );
         // `alive` was seen recently, `dead` only at t0 (and holds `first`).
         let seen = |a: &AgentId| (a == &agent("alive")).then_some(later).or(Some(t0()));
@@ -872,7 +879,10 @@ mod tests {
         board.pull(agent("b"), &[], t0()).unwrap();
         let pulled = board.pull(agent("c"), &[], t0()).unwrap();
         assert_eq!(pulled.task.id, free);
-        assert!(pulled.waiting_on.is_empty());
+        assert!(
+            pulled.waiting_on.is_empty(),
+            "pulled.waiting_on should be empty"
+        );
     }
 
     #[test]
@@ -910,7 +920,10 @@ mod tests {
         let holds = [hold("app/config.py#Config::from_env", "x")];
         let pulled = board.pull(agent("b"), &holds, t0()).unwrap();
         assert_eq!(pulled.task.id, sibling);
-        assert!(pulled.waiting_on.is_empty());
+        assert!(
+            pulled.waiting_on.is_empty(),
+            "pulled.waiting_on should be empty"
+        );
         // The anchored claim still holds the whole-file task for a waiter.
         assert_eq!(
             board.pull_ready(agent("c"), &holds, t0()),
@@ -955,7 +968,10 @@ mod tests {
         board.pull(agent("b"), &[], t0()).unwrap();
         let pulled = board.pull(agent("b"), &[], t0()).unwrap();
         assert_eq!(pulled.task.id, next);
-        assert!(pulled.waiting_on.is_empty());
+        assert!(
+            pulled.waiting_on.is_empty(),
+            "pulled.waiting_on should be empty"
+        );
     }
 
     #[test]
@@ -995,7 +1011,10 @@ mod tests {
         board.pull(agent("x"), &[], t0()).unwrap();
         let pulled = board.pull_ready(agent("b"), &[], t0()).unwrap();
         assert_eq!(pulled.task.id, free);
-        assert!(pulled.waiting_on.is_empty());
+        assert!(
+            pulled.waiting_on.is_empty(),
+            "pulled.waiting_on should be empty"
+        );
     }
 
     #[test]

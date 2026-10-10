@@ -513,7 +513,7 @@ mod tests {
             at: later,
         };
         let pruned = NoticeBoard::from_parts(board.notices().to_vec(), vec![stray]);
-        assert!(pruned.seen().is_empty());
+        assert!(pruned.seen().is_empty(), "pruned.seen() should be empty");
     }
 
     #[test]

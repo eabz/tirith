@@ -6,7 +6,7 @@ order is obvious. Files inside a section are also numbered.
 | Section | Contents |
 |---|---|
 | [1-about/](1-about/) | What Tirith is, how it is built, how the repo is organized, what each primitive does |
-| [2-examples/](2-examples/) | The two-agent demo and client setup for Claude Code, Cursor, Python frameworks, and raw JSON-RPC |
+| [2-examples/](2-examples/) | The two-agent demo, client setup for Claude Code, Cursor, Python frameworks, and raw JSON-RPC, and the swarm playbook: what the lead and the workers do, the worker brief, which model runs what |
 | [3-tests/](3-tests/) | Testing strategy, layout, and commands |
 | [4-style/](4-style/) | Rust rules agents must follow, the sources they come from, git and docs conventions |
 | [5-decisions/](5-decisions/) | Architecture decision records (ADRs). Settled. Supersede, do not silently re-decide |

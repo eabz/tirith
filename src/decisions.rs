@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::memory::{MemoryKind, MemoryNote, Permalink};
-use crate::types::{AgentId, DecisionId, MemoryId, Page, RepoPath};
+use crate::types::{AgentId, DecisionId, LeadOnly, MemoryId, Page, RepoPath};
 
 const RATIONALE_HEADING: &str = "## Rationale";
 const ALTERNATIVES_HEADING: &str = "## Alternatives";
@@ -229,6 +229,9 @@ pub enum DecisionError {
     /// The decision text was empty.
     #[error("decision text must not be empty")]
     EmptyDecision,
+    /// Reserved for the lead while a swarm has one (ADR-0036).
+    #[error(transparent)]
+    LeadOnly(#[from] LeadOnly),
 }
 
 /// All decisions, oldest first.
@@ -380,14 +383,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(log.list(None, Some("DIFFABLE")).len(), 1);
-        assert!(log.list(None, Some("sqlite")).is_empty());
+        assert!(
+            log.list(None, Some("sqlite")).is_empty(),
+            "log.list(None, Some(\"sqlite\")) should be empty"
+        );
         assert_eq!(
             log.list(Some(&RepoPath::new("src").unwrap()), None).len(),
             1
         );
         assert!(
             log.list(Some(&RepoPath::new("docs").unwrap()), None)
-                .is_empty()
+                .is_empty(),
+            "no decision affects docs"
         );
     }
 

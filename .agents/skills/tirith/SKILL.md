@@ -40,7 +40,7 @@ The report names the claims held, the notices published and any claim refused.
 
 ## Swarm lead
 
-A session that spawns agents claims `.tirith/lead` first (`ttl_secs: 3600`, reason naming the swarm), re-claims it on `lost`, releases it last, and is the only one that messages `human`. Workers never claim `.tirith/lead`; they escalate to its holder (`status` reports it as `lead`) with `message_send`, and wait for work with `task_pull` and `wait_secs` instead of sleeping. Rules: [ADR-0027](../../../docs/5-decisions/0027-swarm-lead-and-escalation.md), [ADR-0028](../../../docs/5-decisions/0028-claim-aware-task-pull.md).
+A session that spawns agents claims `.tirith/lead` first (`ttl_secs: 3600`, reason naming the swarm), re-claims it on `lost`, releases it last, and is the only one that messages `human`. Workers never claim `.tirith/lead`; they escalate to its holder (`status` reports it as `lead`) with `message_send`, and wait for work with `task_pull` and `wait_secs` instead of sleeping. While a lead holds it, `contract_publish`, `task_create`, `decision_record`, `memory_delete` and `task_update` with `force` are the lead's: a worker proposes them by message and gets `conflict` if it calls them. When to spawn, the worker brief and which model runs what: [docs/2-examples/03-swarm-playbook.md](../../../docs/2-examples/03-swarm-playbook.md). Rules: [ADR-0027](../../../docs/5-decisions/0027-swarm-lead-and-escalation.md), [ADR-0028](../../../docs/5-decisions/0028-claim-aware-task-pull.md), [ADR-0036](../../../docs/5-decisions/0036-lead-only-writes.md).
 
 ## Memory routing
 

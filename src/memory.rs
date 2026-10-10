@@ -28,7 +28,7 @@ use chrono::{DateTime, SecondsFormat, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::types::{AgentId, MemoryId, PathError, RepoPath};
+use crate::types::{AgentId, LeadOnly, MemoryId, PathError, RepoPath};
 
 /// The longest a note title may be.
 ///
@@ -671,7 +671,7 @@ pub enum MemoryError {
     #[error("tag `{0}` must not contain control characters, `:`, `[`, or `]`")]
     InvalidTag(String),
     /// A write targeted a permalink that does not exist.
-    #[error("no memory note with permalink `{0}`")]
+    #[error("no memory note matching `{0}`")]
     NotFound(String),
     /// The note changed since the caller last read it.
     #[error("memory note `{permalink}` was updated at {updated_at}; re-read it before writing")]
@@ -710,6 +710,9 @@ pub enum MemoryError {
     /// A path field was not a usable repository path.
     #[error(transparent)]
     Path(#[from] PathError),
+    /// Reserved for the lead while a swarm has one (ADR-0036).
+    #[error(transparent)]
+    LeadOnly(#[from] LeadOnly),
 }
 
 /// One note's searchable text, lowercased once instead of per query.
@@ -1658,8 +1661,8 @@ mod tests {
         let mut book = MemoryBook::default();
         let bare = write(&mut book, "Bare note", "Body.");
         let parsed = MemoryNote::from_markdown(&bare.to_markdown(), at(0)).unwrap();
-        assert!(parsed.tags.is_empty());
-        assert!(parsed.paths.is_empty());
+        assert!(parsed.tags.is_empty(), "parsed.tags should be empty");
+        assert!(parsed.paths.is_empty(), "parsed.paths should be empty");
         assert_eq!(parsed, bare);
     }
 
@@ -2035,7 +2038,7 @@ mod tests {
             query: Some("nothing matches this".to_owned()),
             ..MemorySearch::default()
         });
-        assert!(hits.is_empty());
+        assert!(hits.is_empty(), "hits should be empty");
 
         let all = book.search(&MemorySearch {
             limit: Some(2),
@@ -2180,8 +2183,14 @@ mod tests {
         assert_eq!(book.for_path(&path("src"), None).len(), 1);
         assert_eq!(book.for_path(&path("src/store.rs"), None).len(), 1);
         // But not a sibling that merely shares a prefix.
-        assert!(book.for_path(&path("srcs"), None).is_empty());
-        assert!(book.for_path(&path("docs"), None).is_empty());
+        assert!(
+            book.for_path(&path("srcs"), None).is_empty(),
+            "book.for_path(&path(\"srcs\"), None) should be empty"
+        );
+        assert!(
+            book.for_path(&path("docs"), None).is_empty(),
+            "book.for_path(&path(\"docs\"), None) should be empty"
+        );
     }
 
     #[test]
@@ -2203,7 +2212,10 @@ mod tests {
         let from_child = book.context("child-note", 1);
         assert!(from_child.iter().any(|n| n.title == "Root note"));
 
-        assert!(book.context("no-such-note", 2).is_empty());
+        assert!(
+            book.context("no-such-note", 2).is_empty(),
+            "book.context(\"no-such-note\", 2) should be empty"
+        );
     }
 
     #[test]
@@ -2262,7 +2274,7 @@ mod tests {
             "Observed",
             "- [lesson] Something happened #claims",
         );
-        assert!(observed.tags.is_empty());
+        assert!(observed.tags.is_empty(), "observed.tags should be empty");
         assert!(observed.has_tag("claims"));
     }
 

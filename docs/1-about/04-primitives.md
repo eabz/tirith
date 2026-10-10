@@ -187,6 +187,22 @@ the swarm; workers never claim it. A claim on an ancestor such as
 holder the lead. When the lease ends the swarm has no lead until someone
 claims it again. `status` reports the holder as `lead`.
 
+### Lead-only writes
+
+While an agent holds `.tirith/lead`, five writes are its alone
+([ADR-0036](../5-decisions/0036-lead-only-writes.md)): `contract_publish`,
+`task_create`, `decision_record`, `memory_delete`, and `task_update` with
+`force` when it would take another agent's task (`force` on a task the
+caller holds is not a reassignment and passes). Any other agent calling
+them gets `conflict` with `lead` (the
+agent to message) and a `message` saying to propose the change with
+`message_send`; nothing is written. The lead itself is never refused,
+and with no lead nothing is gated, so a solo session or a human at the
+CLI sees every tool open. The gates lift the moment the lead's lease
+ends or is released. The worker's own loop (`claim`, `task_pull`,
+`task_update` on its task, `notice_publish`, `memory_write`,
+`message_send`, `release`) is untouched.
+
 ### `release`
 
 | Field | Type | Notes |
@@ -224,9 +240,9 @@ built.
 
 | Tool | Purpose |
 |---|---|
-| `task_create` | `title`, `description`, `priority` (higher pulls first, default 0), `depends_on[]` (task ids), `paths[]` (hint for claims). Returns `task` |
+| `task_create` | `title`, `description`, `priority` (higher pulls first, default 0), `depends_on[]` (task ids), `paths[]` (hint for claims). Returns `task`. [Lead-only](#lead-only-writes) while a swarm has a lead |
 | `task_pull` | Returns the highest-priority `todo` task whose dependencies are all `done`, assigns it to `agent`, marks it `in_progress`. Ties go to the oldest task. A free task beats one whose `paths` overlap another agent's in-progress task, which beats one under another agent's live claim; a held task comes back with `waiting_on` (`path`, `owner`). Status `none` if nothing is unblocked. Optional `wait_secs` (default 0, max 120, larger values are capped) waits while every candidate is claimed or the `todo` tasks wait on dependencies; see below |
-| `task_update` | `task_id`, `status` in `todo`, `in_progress`, `blocked`, `done`, plus optional `note` and `force`. `in_progress` makes the caller the owner; `blocked` keeps the current owner and stores the note as `reason`. Changing a task another agent has `in_progress` returns `conflict` with `owner` and `since` unless `force` is true, which records who forced it in the notes |
+| `task_update` | `task_id`, `status` in `todo`, `in_progress`, `blocked`, `done`, plus optional `note` and `force`. `in_progress` makes the caller the owner; `blocked` keeps the current owner and stores the note as `reason`. Changing a task another agent has `in_progress` returns `conflict` with `owner` and `since` unless `force` is true, which records who forced it in the notes; `force` is [lead-only](#lead-only-writes) while a swarm has a lead |
 | `task_list` | Filter by `status` or `owner`; most recently updated first, paged (`limit`, `before`). Returns `count`, `total`, `truncated`, `next_before`, and `tasks` |
 
 A task's owner lives inside its status: `in_progress` has `owner`,
@@ -285,7 +301,7 @@ An interface shape published before implementation.
 
 | Tool | Purpose |
 |---|---|
-| `contract_publish` | `name`, `kind` (`http`, `function`, `type`, `event`, `cli`, `other`), `shape` (free JSON), `consumers[]` (paths expected to depend on it), `notes`, optional `expected_version`. Returns `contract`, `previous_version`, and `notice_id`. When `expected_version` is set and the contract is at another version (0 means it must not exist yet), the result is `conflict` with `current_version` and `published_by` |
+| `contract_publish` | `name`, `kind` (`http`, `function`, `type`, `event`, `cli`, `other`), `shape` (free JSON), `consumers[]` (paths expected to depend on it), `notes`, optional `expected_version`. Returns `contract`, `previous_version`, and `notice_id`. When `expected_version` is set and the contract is at another version (0 means it must not exist yet), the result is `conflict` with `current_version` and `published_by`. [Lead-only](#lead-only-writes) while a swarm has a lead |
 | `contract_get` | `name` is a contract name, id, or unique id prefix. Returns `contract` with `current` and `history` |
 | `contract_list` | Filter by `path` (overlaps `consumers`) or `kind`; most recently published first, paged (`limit`, `before`). Returns `count`, `total`, `truncated`, `next_before`, and `contracts` |
 
@@ -314,7 +330,7 @@ new version; agents do not publish it themselves.
 
 | Tool | Purpose |
 |---|---|
-| `decision_record` | `title`, `decision`, `rationale`, `alternatives[]`, `affects_paths[]`. Returns `decision`, which carries the `permalink` of its file under `.tirith/decisions/` (one committed Markdown file per decision, in the memory-note format, ADR-0022) |
+| `decision_record` | `title`, `decision`, `rationale`, `alternatives[]`, `affects_paths[]`. Returns `decision`, which carries the `permalink` of its file under `.tirith/decisions/` (one committed Markdown file per decision, in the memory-note format, ADR-0022). [Lead-only](#lead-only-writes) while a swarm has a lead |
 | `decision_list` | Filter by `path` or case-insensitive `query` over title, decision, and rationale; newest first, paged (`limit`, `before`). Returns `count`, `total`, `truncated`, `next_before`, and `decisions` |
 
 Decisions recorded here are agent-level project decisions, distinct from
@@ -430,7 +446,8 @@ deliberately: see the alternatives in ADR-0011.
 | `agent` | string | |
 | `name` | string | A permalink, an id, or an exact title |
 
-Returns `ok` with `removed` (a digest) or `not_found`. The note's file is
+Returns `ok` with `removed` (a digest) or `not_found`; [lead-only](#lead-only-writes)
+while a swarm has a lead. The note's file is
 deleted and does not come back on restart. A note holding a secret or a
 plainly wrong fact has to be retractable through the same path that wrote
 it; deleting the file by hand is undone by the next full rewrite.
@@ -497,11 +514,15 @@ version that answers; a test fails when a tool is missing from it.
 | Field | Type | Notes |
 |---|---|---|
 | `agent` | string, optional | With it, `lost` and `inbox` ride on the reply as on any call |
-| `topic` | string, optional | `overview` (default), `claims`, `tasks`, `contracts`, `notices`, `decisions`, `memory`, `messages`, `lead`, `server` |
+| `topic` | string, optional | `overview` (default), `claims`, `tasks`, `contracts`, `notices`, `decisions`, `memory`, `messages`, `lead`, `roles`, `server` |
 
 The overview returns `purpose`, `loop` (the ordered steps), `rules`,
 `tools` (topic to tool names) and `topics`. A topic returns `summary`,
-`tools` (each with `tool` and `when`) and `rules`. An unknown topic is
+`tools` (each with `tool` and `when`) and `rules`. `roles` is the page a
+session reads when it spawns agents or was spawned: what the lead does
+and when it spawns, what a worker does, which model each runs on, and
+what the worker brief must say
+([../2-examples/03-swarm-playbook.md](../2-examples/03-swarm-playbook.md)). An unknown topic is
 `invalid` and names the valid ones. The overview stays under 3 KB
 (`tests/budgets.rs`). The server's `instructions` text is the short form
 and points here. CLI: `tirith guide [TOPIC]`.

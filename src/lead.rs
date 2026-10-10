@@ -39,7 +39,7 @@ use crate::messages::{HUMAN, Message, MessageError, NewMessage};
 use crate::notices::Notice;
 use crate::state::{MAX_CLAIM_WAIT_SECS, State};
 use crate::tasks::{NotReady, Pulled, Task, TaskState};
-use crate::types::{AgentId, MessageId, RepoPath, TaskId};
+use crate::types::{AgentId, LeadOnly, MessageId, RepoPath, TaskId};
 
 /// The reserved path whose holder is the swarm lead. Workers never claim it.
 pub const LEAD_PATH: &str = ".tirith/lead";
@@ -73,6 +73,26 @@ impl Lead {
                 agent: c.owner.clone(),
                 expires_at: c.expires_at,
             })
+    }
+
+    /// Whether `agent` may perform the lead-only write `action` given the
+    /// live `claims` (ADR-0036): refused only when another agent holds
+    /// the lead, so a solo session and the lead itself always pass.
+    pub fn require<'a>(
+        claims: impl IntoIterator<Item = &'a Claim>,
+        agent: &AgentId,
+        action: &'static str,
+    ) -> Result<(), LeadOnly> {
+        match claims
+            .into_iter()
+            .find(|c| c.paths.iter().any(|p| p.as_str() == LEAD_PATH))
+        {
+            Some(c) if &c.owner != agent => Err(LeadOnly {
+                lead: c.owner.clone(),
+                action,
+            }),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -1249,6 +1269,30 @@ mod tests {
     }
 
     #[test]
+    fn a_write_is_refused_only_when_someone_else_leads() {
+        let worker = AgentId::new("worker").unwrap();
+        let boss = AgentId::new("boss").unwrap();
+        let led = book_with("boss", &[LEAD_PATH]);
+        assert_eq!(
+            Lead::require(led.claims(), &worker, "creates tasks"),
+            Err(LeadOnly {
+                lead: boss.clone(),
+                action: "creates tasks"
+            })
+        );
+        assert_eq!(Lead::require(led.claims(), &boss, "creates tasks"), Ok(()));
+        let unled = book_with("boss", &["src"]);
+        assert_eq!(
+            Lead::require(unled.claims(), &worker, "creates tasks"),
+            Ok(())
+        );
+        assert_eq!(
+            Lead::require(ClaimBook::default().claims(), &worker, "creates tasks"),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn the_holder_of_the_exact_lead_path_is_the_lead() {
         let book = book_with("boss", &["src/a.rs", "./.tirith/lead/"]);
         let lead = Lead::from_claims(book.claims()).unwrap();
@@ -1393,7 +1437,10 @@ mod tests {
                 .unwrap();
             let pulled = pulling.await.unwrap().unwrap();
             assert_eq!(pulled.task.id, late.id);
-            assert!(pulled.waiting_on.is_empty());
+            assert!(
+                pulled.waiting_on.is_empty(),
+                "pulled.waiting_on should be empty"
+            );
             assert!(started.elapsed() < Duration::from_secs(5));
         }
 
@@ -1502,7 +1549,10 @@ mod tests {
             state.release(&agent("w"), None).unwrap();
             let pulled = pulling.await.unwrap().unwrap();
             assert_eq!(pulled.task.id, auth.id);
-            assert!(pulled.waiting_on.is_empty());
+            assert!(
+                pulled.waiting_on.is_empty(),
+                "pulled.waiting_on should be empty"
+            );
         }
 
         /// With no `todo` task, no claim ending or dependency finishing can
@@ -1571,7 +1621,10 @@ mod tests {
                 assert_eq!(inbox.messages.len(), 1, "{who}");
                 assert!(inbox.messages[0].text.contains("tokens refresh async"));
             }
-            assert!(state.take_inbox(&agent("away")).messages.is_empty());
+            assert!(
+                state.take_inbox(&agent("away")).messages.is_empty(),
+                "state.take_inbox(&agent(\"away\")).messages should be empty"
+            );
             let rows = state.lead_log(5, Some(LeadEvent::NoticePublished));
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].candidates, ["inner", "same"]);
@@ -1695,7 +1748,10 @@ mod tests {
             let reply = answered.reply.unwrap();
             assert_eq!((reply.from.as_str(), reply.to.as_str()), (HUMAN, "boss"));
             assert_eq!(reply.reply_to, Some(sent.id));
-            assert!(human_queue_of(&state).is_empty());
+            assert!(
+                human_queue_of(&state).is_empty(),
+                "human_queue_of(&state) should be empty"
+            );
             let row = &state.lead_log(1, Some(LeadEvent::EscalationRaised))[0];
             assert_eq!(row.outcome.as_ref().unwrap()["via"], "reply");
             assert_eq!(

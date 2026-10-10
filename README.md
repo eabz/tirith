@@ -83,7 +83,12 @@ be committed; `.tirith/runtime/` (claims, tasks, messages) is gitignored
 by a `.gitignore` Tirith writes itself.
 
 Every agent passes a stable `agent` name with each call. That is the only
-convention it has to follow.
+convention it has to follow. To run several agents at once, paste the
+protocol block from
+[docs/2-examples/03-swarm-playbook.md](docs/2-examples/03-swarm-playbook.md)
+into your project's agent instructions: it says which session leads,
+when it spawns workers, what each worker is told, and which model each
+runs on. The daemon serves the same rules as `guide` with topic `roles`.
 
 ## What it does
 
@@ -172,6 +177,14 @@ The session that spawns other agents claims the reserved path
 who holds it. The daemon then handles routine escalations with fixed
 rules, without spending an LLM turn:
 
+- **What is the lead's:** while it holds `.tirith/lead`, only the lead
+  publishes contracts, creates tasks, records decisions, deletes memory
+  notes and forces another agent's task; anyone else gets `conflict`
+  naming the lead and proposes the change with `message_send`
+  ([ADR-0036](docs/5-decisions/0036-lead-only-writes.md)). With no lead
+  nothing is gated. The lead is also the only session that commits,
+  pushes, opens pull requests or deploys
+  ([ADR-0037](docs/5-decisions/0037-lead-owns-the-integration-boundary.md)).
 - **What escalates:** a task set to `blocked` (its note is the reason), or
   the third refusal of the same claim within 360 s. A message to the lead
   is never an escalation.
@@ -198,7 +211,7 @@ escalations are appended to the lead decision log: `tirith lead log`, or
 | Section | Contents |
 |---|---|
 | [1-about](docs/1-about/) | Purpose, architecture, project structure, tool reference, installation |
-| [2-examples](docs/2-examples/) | The demo and client setup for every supported framework |
+| [2-examples](docs/2-examples/) | The demo, client setup for every supported framework, and the swarm playbook: lead, workers, briefs, models |
 | [3-tests](docs/3-tests/) | Testing strategy |
 | [4-style](docs/4-style/) | Rust rules and their sources, git conventions |
 | [5-decisions](docs/5-decisions/) | Architecture decision records |
